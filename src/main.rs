@@ -30,6 +30,23 @@ enum Command {
         /// `age1…` recipients and/or a path to an armored OpenPGP public key file.
         keys: Vec<String>,
     },
+    /// Encrypt new plaintext files as `.amaga` ciphertext.
+    Add {
+        /// Overwrite the refusal when `<path>.amaga` appears in git history.
+        #[arg(long)]
+        force: bool,
+        /// Plaintext or `.amaga` paths to add.
+        #[arg(required = true)]
+        paths: Vec<String>,
+    },
+    /// Re-encrypt local plaintext edits.
+    Seal {
+        /// Seal an `Outdated`/`Conflict` plaintext, overwriting the repository version.
+        #[arg(long)]
+        force: bool,
+        /// Plaintext or `.amaga` paths to seal (default: every secret whose plaintext exists).
+        paths: Vec<String>,
+    },
 }
 
 fn main() -> ExitCode {
@@ -37,6 +54,8 @@ fn main() -> ExitCode {
     let result = match cli.command {
         Command::Keygen { path } => git_amaga::cmd_keygen(path.as_deref()),
         Command::Init { name, keys } => git_amaga::cmd_init(&name, &keys),
+        Command::Add { force, paths } => git_amaga::cmd_add(force, &paths),
+        Command::Seal { force, paths } => git_amaga::cmd_seal(force, &paths),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,

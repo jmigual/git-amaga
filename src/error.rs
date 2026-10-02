@@ -2,6 +2,8 @@
 
 use thiserror::Error;
 
+use crate::secret::PlaintextState;
+
 #[derive(Debug, Error)]
 pub enum Error {
     /// age failed to encrypt a secret to its recipients.
@@ -165,4 +167,48 @@ pub enum Error {
     /// "at most one is allowed per member").
     #[error("at most one OpenPGP key file is allowed per member")]
     MultipleGpgKeys,
+
+    /// An `add` path is not a regular file (symlinks are rejected, plan section 7).
+    #[error("'{0}' is not a regular file")]
+    NotARegularFile(String),
+
+    /// A plaintext path is tracked by git; the remediation is printed, never run.
+    #[error(
+        "'{0}' is already tracked by git; run `git rm --cached -- {0}` to untrack it, then retry"
+    )]
+    PlaintextTracked(String),
+
+    /// `add` found `<path>.amaga` already on disk.
+    #[error("'{0}' already exists; run `seal` to update it instead of `add`")]
+    CiphertextExists(String),
+
+    /// `add` found `<path>.amaga` in history and `--force` was not given.
+    #[error(
+        "'{0}' already exists in git history; run `git checkout <rev> -- {0}` then `seal` to keep its exposure history, or rerun `add` with --force to drop it"
+    )]
+    CiphertextInHistory(String),
+
+    /// `git ls-files -u -- '*.amaga'` is non-empty (plan section 7).
+    #[error("unmerged *.amaga files must be resolved first: {0}")]
+    UnmergedAmagaFiles(String),
+
+    /// The ensure-ignored step (plan 5.4) could not make the path ignored, for example because
+    /// of a negation rule elsewhere.
+    #[error("'{0}' could not be ignored (check for a conflicting negation rule in .gitignore)")]
+    PlaintextNotIgnored(String),
+
+    /// A secret failed to decrypt; names the `.amaga` file and, for a gpg failure, the member.
+    #[error("{path}{}: {source}", .member.as_ref().map(|m| format!(" (member {m})")).unwrap_or_default())]
+    SecretUndecryptable {
+        path: String,
+        member: Option<String>,
+        #[source]
+        source: Box<Error>,
+    },
+
+    /// `seal` refused an `Outdated` or `Conflict` plaintext without `--force`.
+    #[error(
+        "'{0}' is not in sync with the repository (state: {1:?}); `seal --force` overwrites the repository version with your local copy, `open --force` replaces your copy"
+    )]
+    SealRefused(String, PlaintextState),
 }
