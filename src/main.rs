@@ -61,6 +61,12 @@ enum Command {
         /// Plaintext or `.amaga` paths to close (default: every secret whose plaintext exists).
         paths: Vec<String>,
     },
+    /// Stop managing secrets: delete their `.amaga` files but keep the plaintext.
+    Remove {
+        /// Plaintext or `.amaga` paths to remove.
+        #[arg(required = true)]
+        paths: Vec<String>,
+    },
     /// Add or remove a member and re-encrypt every secret.
     User {
         #[command(subcommand)]
@@ -99,6 +105,7 @@ fn main() -> ExitCode {
         Command::Seal { force, paths } => git_amaga::cmd_seal(force, &paths),
         Command::Open { force, paths } => git_amaga::cmd_open(force, &paths),
         Command::Close { paths } => git_amaga::cmd_close(&paths),
+        Command::Remove { paths } => git_amaga::cmd_remove(&paths),
         Command::User {
             command: UserCommand::Add { name, keys },
         } => git_amaga::cmd_user_add(&name, &keys),

@@ -1598,3 +1598,143 @@ fn parallel_adds_merge_cleanly() {
     assert!(stdout.contains("ok a.env.amaga"), "got {stdout:?}");
     assert!(stdout.contains("ok b.env.amaga"), "got {stdout:?}");
 }
+
+/// `remove` deletes only the `.amaga` file and its base entry: the plaintext and its ignore entry
+/// stay, and the event is audited.
+#[test]
+fn remove_deletes_ciphertext_and_keeps_plaintext_and_ignore_entry() {
+    let (repo, _identity_path) = repo_with_alice();
+    std::fs::write(repo.path().join("a.env"), b"a").unwrap();
+    std::fs::write(repo.path().join("b.env"), b"b").unwrap();
+    repo.run(&["add", "a.env", "b.env"]).assert_success();
+    let gitignore = std::fs::read_to_string(repo.path().join(".gitignore")).unwrap();
+
+    repo.run(&["remove", "a.env"]).assert_success();
+
+    assert!(!repo.path().join("a.env.amaga").exists());
+    assert!(repo.path().join("b.env.amaga").exists());
+    assert_eq!(std::fs::read(repo.path().join("a.env")).unwrap(), b"a");
+    assert_eq!(
+        std::fs::read_to_string(repo.path().join(".gitignore")).unwrap(),
+        gitignore
+    );
+    repo.git(&["check-ignore", "-q", "a.env"]).assert_success();
+    let base = base_file(&repo);
+    assert!(!base.contains("a.env"), "got {base:?}");
+    assert!(base.contains("b.env"), "got {base:?}");
+    let audit = std::fs::read_to_string(repo.path().join(".amaga/audit.jsonl")).unwrap();
+    let last = audit.lines().last().unwrap();
+    assert!(
+        last.contains("\"event\":\"secret.removed\""),
+        "got {last:?}"
+    );
+    assert!(last.contains("\"path\":\"a.env\""), "got {last:?}");
+}
+
+/// `remove` of an unmanaged path fails, and nothing named alongside it is removed.
+#[test]
+fn remove_refuses_unmanaged_path_and_removes_nothing() {
+    let (repo, _identity_path) = repo_with_alice();
+    std::fs::write(repo.path().join("a.env"), b"a").unwrap();
+    repo.run(&["add", "a.env"]).assert_success();
+
+    let remove = repo.run(&["remove", "a.env", "missing.env"]);
+    remove.assert_failure();
+    assert!(String::from_utf8_lossy(&remove.stderr).contains("missing.env"));
+    assert!(repo.path().join("a.env.amaga").exists());
+}
+
+/// Test 22: after a teammate pulls a `remove`, their plaintext is still ignored.
+#[test]
+fn remove_keeps_teammates_plaintext_ignored() {
+    let (repo, _identity_path) = repo_with_alice();
+    std::fs::write(repo.path().join("secret.env"), b"v1").unwrap();
+    repo.run(&["add", "secret.env"]).assert_success();
+    repo.commit_all("add secret");
+
+    let clones = tempfile::tempdir().unwrap();
+    let source = repo.path().to_str().unwrap();
+    repo.git_in(clones.path(), &["clone", "-q", source, "mate"])
+        .assert_success();
+    let mate = clones.path().join("mate");
+    repo.run_in(&mate, &["open", "secret.env"]).assert_success();
+    repo.git_in(&mate, &["check-ignore", "-q", "secret.env"])
+        .assert_success();
+
+    repo.run(&["remove", "secret.env"]).assert_success();
+    repo.commit_all("remove secret");
+    repo.git_in(&mate, &["pull", "-q", "--ff-only"])
+        .assert_success();
+
+    assert!(!mate.join("secret.env.amaga").exists());
+    assert_eq!(std::fs::read(mate.join("secret.env")).unwrap(), b"v1");
+    repo.git_in(&mate, &["check-ignore", "-q", "secret.env"])
+        .assert_success();
+}
+
+/// `rotate`, `user add`, `user remove` and `remove` refuse while a `*.amaga` is unmerged.
+#[test]
+fn membership_commands_refuse_during_amaga_merge_conflict() {
+    let repo = repo_with_unmerged_secret("a.env");
+    // A second member, so that `user remove alice` is not refused as the last member.
+    let bob = age::x25519::Identity::generate().to_public();
+    std::fs::write(repo.path().join(".amaga/users/bob.txt"), format!("{bob}\n")).unwrap();
+    let carol = age::x25519::Identity::generate().to_public().to_string();
+
+    for args in [
+        vec!["rotate"],
+        vec!["user", "add", "carol", &carol],
+        vec!["user", "remove", "bob"],
+        vec!["remove", "a.env"],
+    ] {
+        let output = repo.run(&args);
+        output.assert_failure();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("unmerged"), "{args:?} gave {stderr:?}");
+    }
+    assert!(!repo.path().join(".amaga/users/carol.txt").exists());
+    assert!(repo.path().join(".amaga/users/bob.txt").exists());
+    assert!(repo.path().join("a.env.amaga").exists());
+}
+
+/// `remove` needs the plaintext open and in sync, so the user keeps a copy; nothing is removed
+/// when any path is refused.
+#[test]
+fn remove_refuses_closed_and_modified_plaintext() {
+    let (repo, _identity_path) = repo_with_alice();
+    for name in ["a.env", "b.env"] {
+        std::fs::write(repo.path().join(name), b"v1").unwrap();
+        repo.run(&["add", name]).assert_success();
+    }
+    repo.run(&["close", "a.env"]).assert_success();
+
+    let closed = repo.run(&["remove", "b.env", "a.env"]);
+    closed.assert_failure();
+    assert!(String::from_utf8_lossy(&closed.stderr).contains("a.env"));
+    assert!(repo.path().join("a.env.amaga").exists());
+    assert!(repo.path().join("b.env.amaga").exists());
+
+    repo.run(&["open", "a.env"]).assert_success();
+    std::fs::write(repo.path().join("a.env"), b"edited").unwrap();
+    repo.run(&["remove", "a.env"]).assert_failure();
+    assert!(repo.path().join("a.env.amaga").exists());
+
+    repo.run(&["seal", "a.env"]).assert_success();
+    repo.run(&["remove", "a.env", "b.env"]).assert_success();
+    assert!(!repo.path().join("a.env.amaga").exists());
+    assert_eq!(std::fs::read(repo.path().join("a.env")).unwrap(), b"edited");
+}
+
+/// Naming a secret twice (plaintext and `.amaga` form) removes and audits it once.
+#[test]
+fn remove_dedupes_paths() {
+    let (repo, _identity_path) = repo_with_alice();
+    std::fs::write(repo.path().join("a.env"), b"a").unwrap();
+    repo.run(&["add", "a.env"]).assert_success();
+
+    repo.run(&["remove", "a.env", "a.env.amaga"])
+        .assert_success();
+
+    let audit = std::fs::read_to_string(repo.path().join(".amaga/audit.jsonl")).unwrap();
+    assert_eq!(audit.matches("secret.removed").count(), 1, "got {audit:?}");
+}

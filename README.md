@@ -42,7 +42,7 @@ Prebuilt static binaries for Linux and Windows are planned. With `git-amaga` on 
 | `git amaga user add <name> <KEY>…` | Add a member and re-encrypt every secret | implemented |
 | `git amaga user remove <name>` | Remove a member, re-encrypt, flag exposed secrets | implemented |
 | `git amaga rotate` | Re-encrypt everything with fresh keys; also finishes an interrupted run | implemented |
-| `git amaga remove <path>…` | Stop managing a secret (deletes the `.amaga` file only) | in development |
+| `git amaga remove <path>…` | Stop managing a secret (deletes the `.amaga` file only; the plaintext must be open and in sync, so you keep a copy) | implemented |
 
 A `KEY` is an `age1…` public key, an exported `.asc` OpenPGP key file, or a GPG key ID,
 fingerprint or email that the tool exports from your local keyring (for `init` and `user add`).

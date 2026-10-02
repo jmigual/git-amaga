@@ -212,6 +212,14 @@ pub enum Error {
     #[error("cannot re-encrypt, these secrets do not decrypt (nothing was changed):\n{0}")]
     ReencryptAborted(String),
 
+    #[error("no paths given")]
+    NoPaths,
+
+    #[error(
+        "'{0}' must be open and in sync before its `.amaga` is removed (state: {1:?}); run `open` (or `seal`) first so you keep a copy"
+    )]
+    RemoveRefused(String, PlaintextState),
+
     /// The details were printed by `status`.
     #[error("status found problems with {0} secret(s)")]
     StatusProblems(usize),
