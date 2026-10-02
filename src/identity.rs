@@ -5,9 +5,12 @@ use std::path::{Path, PathBuf};
 
 use age::secrecy::ExposeSecret;
 use age::x25519;
+use pgp::types::KeyDetails;
 
 use crate::error::Error;
 use crate::git;
+use crate::paths;
+use crate::users;
 
 /// The default identity path when `amaga.identity` is unset (plan 5.5):
 /// `~/.config/git-amaga/identity.txt`.
@@ -106,63 +109,132 @@ fn write_identity(path: Option<&Path>) -> Result<(PathBuf, x25519::Recipient), E
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    write_atomic(&path, contents.as_bytes())?;
+    paths::atomic_write(&path, contents.as_bytes(), Some(0o600))?;
 
     Ok((path, public))
 }
 
-/// Writes `contents` to `path` via a `0600` temp file, `sync_all`, then rename (plan section 7):
-/// never a partially written identity file at `path`. Removes any stale temp file first, since
-/// `OpenOptions::mode` only applies when *creating* a file (a leftover temp file would otherwise
-/// keep its old permissions, or — if it were a symlink — be followed instead of replaced), and
-/// cleans up the temp file if writing or the final rename fails.
-fn write_atomic(path: &Path, contents: &[u8]) -> std::io::Result<()> {
-    use std::io::Write;
-
-    let mut tmp_name = path.as_os_str().to_owned();
-    tmp_name.push(".amaga-tmp");
-    let tmp_path = PathBuf::from(tmp_name);
-
-    match fs::remove_file(&tmp_path) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => return Err(e),
+/// Matches the actor to a member (plan 5.5): the member whose age public key matches an
+/// identity in `age_identities`, else the first held GPG member by name. `is_held` is injected
+/// (production passes [`crate::gpg::is_held`]) so tests do not need a real `gpg`. GPG is probed
+/// only once no age identity has matched, so age-only users never start gpg.
+pub fn find_actor(
+    members: &users::Members,
+    age_identities: &[x25519::Identity],
+    is_held: impl Fn(&str) -> std::io::Result<bool>,
+) -> Result<String, Error> {
+    let age_publics: Vec<String> = age_identities
+        .iter()
+        .map(|id| id.to_public().to_string())
+        .collect();
+    for (name, member) in members {
+        if member
+            .age_keys
+            .iter()
+            .any(|k| age_publics.contains(&k.to_string()))
+        {
+            return Ok(name.clone());
+        }
     }
 
-    let result = (|| -> std::io::Result<()> {
-        let mut file = create_identity_file(&tmp_path)?;
-        file.write_all(contents)?;
-        file.sync_all()?;
-        drop(file);
-        fs::rename(&tmp_path, path)
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&tmp_path);
+    let mut gpg_absent = false;
+    for (name, member) in members {
+        let Some(asc) = &member.asc else { continue };
+        let primary_fpr = format!("{:X}", asc.key.primary_key.fingerprint());
+        match is_held(&primary_fpr) {
+            Ok(true) => return Ok(name.clone()),
+            Ok(false) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => gpg_absent = true,
+            Err(_) => {}
+        }
     }
-    result
+
+    Err(Error::NotAMember(member_summary(members, gpg_absent)))
 }
 
-#[cfg(unix)]
-fn create_identity_file(path: &Path) -> std::io::Result<fs::File> {
-    use std::os::unix::fs::OpenOptionsExt;
-    fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(path)
-}
-
-#[cfg(not(unix))]
-fn create_identity_file(path: &Path) -> std::io::Result<fs::File> {
-    fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)
+fn member_summary(members: &users::Members, gpg_absent: bool) -> String {
+    let descriptions: Vec<String> = members
+        .iter()
+        .map(|(name, member)| {
+            let mut kinds = Vec::new();
+            if !member.age_keys.is_empty() {
+                kinds.push("age");
+            }
+            if member.asc.is_some() {
+                kinds.push("gpg");
+            }
+            format!("{name} ({})", kinds.join(", "))
+        })
+        // `members` is a `BTreeMap`, so iteration (and this collected `Vec`) is already sorted
+        // by name.
+        .collect();
+    let mut summary = descriptions.join(", ");
+    if gpg_absent {
+        summary.push_str("; gpg not found on PATH");
+    }
+    summary
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn find_actor_matches_age_before_probing_gpg() {
+        let identity = x25519::Identity::generate();
+        let asc =
+            crate::gpg::validate(include_str!("../tests/fixtures/valid_cv25519.asc")).unwrap();
+        let mut members = users::Members::new();
+        members.insert(
+            "alice".to_string(),
+            users::Member {
+                age_keys: vec![identity.to_public()],
+                asc: Some(asc),
+            },
+        );
+
+        let actor = find_actor(&members, std::slice::from_ref(&identity), |_| {
+            panic!("gpg should not be probed when an age identity matches")
+        })
+        .unwrap();
+        assert_eq!(actor, "alice");
+    }
+
+    #[test]
+    fn find_actor_falls_back_to_held_gpg_member() {
+        let asc =
+            crate::gpg::validate(include_str!("../tests/fixtures/valid_cv25519.asc")).unwrap();
+        let mut members = users::Members::new();
+        members.insert(
+            "bob".to_string(),
+            users::Member {
+                age_keys: Vec::new(),
+                asc: Some(asc),
+            },
+        );
+
+        let actor = find_actor(&members, &[], |_| Ok(true)).unwrap();
+        assert_eq!(actor, "bob");
+    }
+
+    #[test]
+    fn find_actor_errors_and_lists_members_when_nothing_matches() {
+        let member_key = x25519::Identity::generate().to_public();
+        let mut members = users::Members::new();
+        members.insert(
+            "alice".to_string(),
+            users::Member {
+                age_keys: vec![member_key],
+                asc: None,
+            },
+        );
+
+        let err = find_actor(&members, &[], |_| Ok(false)).unwrap_err();
+        match err {
+            Error::NotAMember(summary) => assert!(summary.contains("alice")),
+            other => panic!("expected NotAMember, got {other:?}"),
+        }
+    }
 
     #[test]
     fn resolve_configured_identity_path_prefers_configured_value() {
@@ -191,6 +263,29 @@ mod tests {
         let default_path = dir.path().join("identity.txt");
 
         assert_eq!(resolve_configured_identity_path(None, &default_path), None);
+    }
+
+    #[test]
+    fn find_actor_reports_gpg_absent_in_the_member_summary() {
+        let asc =
+            crate::gpg::validate(include_str!("../tests/fixtures/valid_cv25519.asc")).unwrap();
+        let mut members = users::Members::new();
+        members.insert(
+            "bob".to_string(),
+            users::Member {
+                age_keys: Vec::new(),
+                asc: Some(asc),
+            },
+        );
+
+        let err = find_actor(&members, &[], |_| {
+            Err(std::io::Error::from(std::io::ErrorKind::NotFound))
+        })
+        .unwrap_err();
+        match err {
+            Error::NotAMember(summary) => assert!(summary.contains("gpg not found on PATH")),
+            other => panic!("expected NotAMember, got {other:?}"),
+        }
     }
 
     #[test]
@@ -261,22 +356,5 @@ mod tests {
         let contents = fs::read_to_string(&path).unwrap();
         assert!(contents.starts_with(&format!("# public key: {public}\n")));
         assert!(contents.contains("AGE-SECRET-KEY-1"));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn write_identity_ignores_stale_tmp_file_permissions() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("identity.txt");
-        let tmp_path = dir.path().join("identity.txt.amaga-tmp");
-        fs::write(&tmp_path, b"stale").unwrap();
-        fs::set_permissions(&tmp_path, fs::Permissions::from_mode(0o644)).unwrap();
-
-        write_identity(Some(&path)).unwrap();
-
-        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o600);
     }
 }

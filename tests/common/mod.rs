@@ -63,14 +63,15 @@ impl Repo {
     /// Runs the built `git-amaga` binary with `args` inside this repository, isolated the same
     /// way. `git-amaga` in turn spawns `git` as a subprocess, inheriting this isolation.
     pub fn run(&self, args: &[&str]) -> Output {
+        self.run_in(self.path(), args)
+    }
+
+    /// Like [`Repo::run`], but inside `cwd` (for example a subdirectory of the repository),
+    /// to exercise commands that resolve paths relative to the current directory.
+    pub fn run_in(&self, cwd: &Path, args: &[&str]) -> Output {
         let mut command = Command::new(env!("CARGO_BIN_EXE_git-amaga"));
         command.args(args);
-        Self::isolate(
-            &mut command,
-            self.path(),
-            &self.global_config,
-            self.home.path(),
-        );
+        Self::isolate(&mut command, cwd, &self.global_config, self.home.path());
         command.output().expect("spawn git-amaga")
     }
 }

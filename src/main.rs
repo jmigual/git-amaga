@@ -23,12 +23,20 @@ enum Command {
         /// Where to write the identity (default: ~/.config/git-amaga/identity.txt).
         path: Option<PathBuf>,
     },
+    /// Initialize this repository: create the first member and the managed state.
+    Init {
+        /// The new member's name.
+        name: String,
+        /// `age1…` recipients and/or a path to an armored OpenPGP public key file.
+        keys: Vec<String>,
+    },
 }
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let result = match cli.command {
         Command::Keygen { path } => git_amaga::cmd_keygen(path.as_deref()),
+        Command::Init { name, keys } => git_amaga::cmd_init(&name, &keys),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,

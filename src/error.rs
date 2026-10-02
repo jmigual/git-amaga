@@ -124,4 +124,45 @@ pub enum Error {
         #[source]
         source: Box<Error>,
     },
+
+    /// No loaded identity (age or GPG) matches any member (plan 5.5).
+    #[error(
+        "not a member of this repository (members: {0}). Run `keygen` and have a member run `user add`, set `amaga.identity`, or import your GPG secret key / insert your card."
+    )]
+    NotAMember(String),
+
+    /// No age identity is configured, and no `KEY` was given to supply one (plan: `init`).
+    #[error(
+        "no age identity configured (hint: run `git-amaga keygen`, or pass KEY arguments explicitly)"
+    )]
+    NoIdentity,
+
+    /// A path argument resolves outside the repository (plan section 7).
+    #[error("path '{0}' is outside the repository")]
+    PathOutsideRepo(String),
+
+    /// A path argument contains control characters (plan section 7).
+    #[error("path '{0}' contains control characters")]
+    PathControlChar(String),
+
+    /// A path argument lies under `.git/` or `.amaga/` (plan section 7).
+    #[error("path '{0}' is under .git/ or .amaga/")]
+    PathManaged(String),
+
+    /// A path argument's plaintext name ends in `.amaga` or `.amaga-tmp` (plan section 7).
+    #[error("path '{0}' must not end in .amaga or .amaga-tmp")]
+    PathBadSuffix(String),
+
+    /// `init`'s `<name>` argument is not a valid member name (plan 5.1).
+    #[error("'{0}' is not a valid member name (expected [a-z0-9][a-z0-9._-]{{0,63}})")]
+    InvalidMemberName(String),
+
+    /// `init` found an existing `.amaga/` directory (plan: `init`).
+    #[error(".amaga already exists (repository is already initialized)")]
+    AlreadyInitialized,
+
+    /// More than one OpenPGP key file was given among the `KEY` arguments (plan section 7:
+    /// "at most one is allowed per member").
+    #[error("at most one OpenPGP key file is allowed per member")]
+    MultipleGpgKeys,
 }
