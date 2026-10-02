@@ -890,6 +890,217 @@ fn gpg_decrypt_failure_writes_nothing() {
     assert!(!repo.path().join("secret.env").exists());
 }
 
+fn gnupghome_env(home: &common::GpgHome) -> [(&'static str, &std::ffi::OsStr); 1] {
+    [("GNUPGHOME", home.path().as_os_str())]
+}
+
+/// Test 33 (gpg): a unique email resolves to exactly that key, not the `malice@` substring match.
+#[test]
+fn init_gpg_key_by_unique_email() {
+    let repo = Repo::new();
+    let Some(gpg_home) = common::GpgHome::new("init_gpg_key_by_unique_email") else {
+        return;
+    };
+    let alice = gpg_home.generate_key("Alice <alice@example.invalid>");
+    gpg_home.generate_key("Malice <malice@example.invalid>");
+
+    let init = repo.run_with_env(
+        &["init", "alice", "alice@example.invalid"],
+        &gnupghome_env(&gpg_home),
+    );
+    init.assert_success();
+
+    let stored = std::fs::read_to_string(repo.path().join(".amaga/users/alice.asc")).unwrap();
+    assert_eq!(stored, gpg_home.export_minimal(&alice));
+    assert_eq!(
+        git_amaga::gpg::validate(&stored).unwrap().primary_fpr(),
+        alice
+    );
+    let stdout = String::from_utf8_lossy(&init.stdout);
+    assert!(stdout.contains(&alice), "got {stdout:?}");
+    assert!(
+        stdout.contains("Alice <alice@example.invalid>"),
+        "got {stdout:?}"
+    );
+    let audit = std::fs::read_to_string(repo.path().join(".amaga/audit.jsonl")).unwrap();
+    assert!(
+        audit.contains(&format!("\"gpg_fpr\":\"{alice}\"")),
+        "got {audit:?}"
+    );
+    assert!(
+        audit.contains("\"gpg_uid\":\"Alice <alice@example.invalid>\""),
+        "got {audit:?}"
+    );
+}
+
+/// Test 34 (gpg): two keys with one email are refused and listed; nothing is written.
+#[test]
+fn gpg_lookup_refuses_ambiguous_email() {
+    let repo = Repo::new();
+    let Some(gpg_home) = common::GpgHome::new("gpg_lookup_refuses_ambiguous_email") else {
+        return;
+    };
+    let one = gpg_home.generate_key("Alice One <dup@example.invalid>");
+    let two = gpg_home.generate_key("Alice Two <dup@example.invalid>");
+
+    let init = repo.run_with_env(
+        &["init", "alice", "dup@example.invalid"],
+        &gnupghome_env(&gpg_home),
+    );
+
+    init.assert_failure();
+    let stderr = String::from_utf8_lossy(&init.stderr);
+    assert!(
+        stderr.contains(&one) && stderr.contains(&two),
+        "got {stderr:?}"
+    );
+    assert!(!repo.path().join(".amaga").exists());
+}
+
+/// A revoked key cannot be added, so it does not make a shared email ambiguous.
+#[test]
+fn gpg_lookup_skips_a_revoked_key_under_the_same_email() {
+    let repo = Repo::new();
+    let Some(gpg_home) = common::GpgHome::new("gpg_lookup_skips_a_revoked_key") else {
+        return;
+    };
+    let old = gpg_home.generate_key("Alice Old <dup@example.invalid>");
+    gpg_home.revoke_key(&old);
+    let new = gpg_home.generate_key("Alice New <dup@example.invalid>");
+
+    repo.run_with_env(
+        &["init", "alice", "dup@example.invalid"],
+        &gnupghome_env(&gpg_home),
+    )
+    .assert_success();
+
+    let stored = std::fs::read_to_string(repo.path().join(".amaga/users/alice.asc")).unwrap();
+    assert_eq!(
+        git_amaga::gpg::validate(&stored).unwrap().primary_fpr(),
+        new
+    );
+}
+
+/// A revoked-only match is reported as such, not as a plain miss.
+#[test]
+fn gpg_lookup_reports_when_only_a_revoked_key_matches() {
+    let repo = Repo::new();
+    let Some(gpg_home) = common::GpgHome::new("gpg_lookup_reports_only_revoked") else {
+        return;
+    };
+    let old = gpg_home.generate_key("Alice Old <old@example.invalid>");
+    gpg_home.revoke_key(&old);
+
+    let init = repo.run_with_env(
+        &["init", "alice", "old@example.invalid"],
+        &gnupghome_env(&gpg_home),
+    );
+
+    init.assert_failure();
+    let stderr = String::from_utf8_lossy(&init.stderr);
+    assert!(
+        stderr.contains("only revoked, expired or disabled"),
+        "got {stderr:?}"
+    );
+    assert!(!repo.path().join(".amaga").exists());
+}
+
+/// A mistyped `.asc` path says the file is missing, not just that the keyring has no match.
+#[test]
+fn missing_asc_file_says_the_file_does_not_exist() {
+    let repo = Repo::new();
+    let Some(gpg_home) = common::GpgHome::new("missing_asc_file_says_the_file_does_not_exist")
+    else {
+        return;
+    };
+    gpg_home.generate_key("Alice <alice@example.invalid>");
+
+    let init = repo.run_with_env(&["init", "alice", "alcie.asc"], &gnupghome_env(&gpg_home));
+
+    init.assert_failure();
+    let stderr = String::from_utf8_lossy(&init.stderr);
+    assert!(stderr.contains("not an existing file"), "got {stderr:?}");
+    assert!(!repo.path().join(".amaga").exists());
+}
+
+/// Test 35 (gpg): an unknown key is reported as not in the keyring; nothing is written.
+#[test]
+fn gpg_lookup_unknown_key_errors() {
+    let repo = Repo::new();
+    let Some(gpg_home) = common::GpgHome::new("gpg_lookup_unknown_key_errors") else {
+        return;
+    };
+    gpg_home.generate_key("Alice <alice@example.invalid>");
+
+    let init = repo.run_with_env(
+        &["init", "bob", "bob@example.invalid"],
+        &gnupghome_env(&gpg_home),
+    );
+
+    init.assert_failure();
+    let stderr = String::from_utf8_lossy(&init.stderr);
+    assert!(
+        stderr.contains("not in your local gpg keyring"),
+        "got {stderr:?}"
+    );
+    assert!(!repo.path().join(".amaga").exists());
+}
+
+/// Test 36 (gpg): a third-party certification in the keyring is left out of the stored key.
+#[test]
+fn gpg_lookup_exports_minimal() {
+    let repo = Repo::new();
+    let Some(gpg_home) = common::GpgHome::new("gpg_lookup_exports_minimal") else {
+        return;
+    };
+    let alice = gpg_home.generate_key("Alice <alice@example.invalid>");
+    let signer = gpg_home.generate_key("Signer <signer@example.invalid>");
+    gpg_home.certify(&signer, &alice);
+
+    repo.run_with_env(&["init", "alice", &alice], &gnupghome_env(&gpg_home))
+        .assert_success();
+
+    let stored = std::fs::read_to_string(repo.path().join(".amaga/users/alice.asc")).unwrap();
+    git_amaga::gpg::validate(&stored).expect("stored key passes verify_bindings");
+}
+
+/// Test 37: keygen's stdout is the bare public key; the `user add` line goes to stderr.
+#[test]
+fn keygen_prints_user_add_line() {
+    let repo = Repo::new();
+    let identity_path = repo.path().join("identity.txt");
+
+    let keygen = repo.run(&["keygen", identity_path.to_str().unwrap()]);
+
+    keygen.assert_success();
+    let key = String::from_utf8_lossy(&keygen.stdout).trim().to_string();
+    assert!(key.starts_with("age1") && !key.contains(' '), "got {key:?}");
+    let stderr = String::from_utf8_lossy(&keygen.stderr);
+    assert!(
+        stderr.contains(&format!("git-amaga user add <name> {key}")),
+        "got {stderr:?}"
+    );
+}
+
+/// Test 38 (Unix): with no gpg on PATH, a keyring lookup fails with the gpg-not-found error.
+#[cfg(unix)]
+#[test]
+fn gpg_lookup_without_gpg_errors() {
+    let repo = Repo::new();
+    let bin_dir = tempfile::tempdir().unwrap();
+    std::os::unix::fs::symlink(common::find_on_path("git"), bin_dir.path().join("git")).unwrap();
+
+    let init = repo.run_with_env(
+        &["init", "alice", "alice@example.invalid"],
+        &[("PATH", bin_dir.path().as_os_str())],
+    );
+
+    init.assert_failure();
+    let stderr = String::from_utf8_lossy(&init.stderr);
+    assert!(stderr.contains("gpg not found on PATH"), "got {stderr:?}");
+    assert!(!repo.path().join(".amaga").exists());
+}
+
 fn base_file(repo: &Repo) -> String {
     std::fs::read_to_string(repo.path().join(".git/amaga-base")).unwrap_or_default()
 }

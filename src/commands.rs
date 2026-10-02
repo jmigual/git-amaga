@@ -4,7 +4,8 @@ use std::path::Path;
 use crate::context::{
     Context, ensure_ignored, read_plaintext, read_repo_file, secret_paths_for, write_repo_file,
 };
-use crate::{Error, audit, git, gpg, identity, paths, secret, users};
+use crate::keyring::ResolvedKeys;
+use crate::{Error, audit, git, identity, keyring, paths, secret, users};
 
 const GITATTRIBUTES_LINES: [&str; 3] = [
     "*.amaga binary",
@@ -16,6 +17,7 @@ const GITATTRIBUTES_LINES: [&str; 3] = [
 pub fn cmd_keygen(path: Option<&Path>) -> Result<(), Error> {
     let (_path, public) = identity::keygen(path)?;
     println!("{public}");
+    eprintln!("to join a repository, send this to a member: git-amaga user add <name> {public}");
     Ok(())
 }
 
@@ -31,7 +33,7 @@ pub fn cmd_init(name: &str, keys: &[String]) -> Result<(), Error> {
         return Err(Error::AlreadyInitialized);
     }
 
-    let (age_lines, asc_content) = if keys.is_empty() {
+    let ResolvedKeys { age_lines, gpg } = if keys.is_empty() {
         let identity_path = identity::configured_identity_path()?.ok_or(Error::NoIdentity)?;
         let identities = identity::load_identity_file(&identity_path)?;
         if identities.is_empty() {
@@ -41,9 +43,12 @@ pub fn cmd_init(name: &str, keys: &[String]) -> Result<(), Error> {
             .iter()
             .map(|i| i.to_public().to_string())
             .collect();
-        (age_lines, None)
+        ResolvedKeys {
+            age_lines,
+            gpg: None,
+        }
     } else {
-        collect_keys(keys)?
+        keyring::resolve(keys)?
     };
 
     // Idempotent steps first: a failure here must not leave a half-initialized `.amaga/` that a
@@ -61,44 +66,18 @@ pub fn cmd_init(name: &str, keys: &[String]) -> Result<(), Error> {
             None,
         )?;
     }
-    if let Some(asc) = &asc_content {
-        paths::atomic_write(&users_dir.join(format!("{name}.asc")), asc.as_bytes(), None)?;
+    if let Some(key) = &gpg {
+        let asc = users_dir.join(format!("{name}.asc"));
+        paths::atomic_write(&asc, key.armored.as_bytes(), None)?;
     }
 
-    audit::append(&amaga_dir.join("audit.jsonl"), name, "init", None)?;
+    let gpg_info = gpg.as_ref().map(|k| (k.fpr.as_str(), k.uid.as_str()));
+    audit::append(&amaga_dir.join("audit.jsonl"), name, "init", None, gpg_info)?;
+    if let Some(key) = &gpg {
+        println!("{}", key.summary(name));
+    }
 
     Ok(())
-}
-
-// `age1…` is an age recipient; anything else is an armored OpenPGP key file, at most one
-// per member (plan 5.1, 7).
-fn collect_keys(keys: &[String]) -> Result<(Vec<String>, Option<String>), Error> {
-    let mut age_lines = Vec::new();
-    let mut seen_age: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    let mut asc_content: Option<String> = None;
-    for key in keys {
-        if key.starts_with("age1") {
-            let recipient: age::x25519::Recipient = key
-                .parse()
-                .map_err(|_| Error::AgeRecipientParse(key.clone()))?;
-            let canonical = recipient.to_string();
-            if seen_age.insert(canonical.clone()) {
-                age_lines.push(canonical);
-            }
-        } else {
-            if asc_content.is_some() {
-                return Err(Error::MultipleGpgKeys);
-            }
-            let contents = fs::read_to_string(key).map_err(|source| Error::IoPath {
-                path: key.clone(),
-                source,
-            })?;
-            let asc = gpg::validate(&contents)?;
-            gpg::check_not_expired(&asc)?;
-            asc_content = Some(contents);
-        }
-    }
-    Ok((age_lines, asc_content))
 }
 
 /// `git-amaga add [--force] <path>…` (plan 7).

@@ -27,7 +27,8 @@ enum Command {
     Init {
         /// The new member's name.
         name: String,
-        /// `age1…` recipients and/or a path to an armored OpenPGP public key file.
+        /// `age1…` recipients, an armored OpenPGP public key file (`.asc`), or a key in the local
+        /// gpg keyring (key ID, fingerprint, email or user ID).
         keys: Vec<String>,
     },
     /// Encrypt new plaintext files as `.amaga` ciphertext.

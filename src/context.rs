@@ -116,6 +116,7 @@ impl Context {
             &self.actor,
             event,
             Some(path),
+            None,
         )
     }
 }

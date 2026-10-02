@@ -34,6 +34,21 @@ impl AscKey {
             .map(|sk| format!("{:X}", sk.key.fingerprint()))
             .collect()
     }
+
+    /// Uppercase-hex primary key fingerprint, as gpg prints it.
+    pub fn primary_fpr(&self) -> String {
+        format!("{:X}", self.key.primary_key.fingerprint())
+    }
+
+    /// The first user ID in the key, or empty if it has none.
+    pub fn first_user_id(&self) -> String {
+        self.key
+            .details
+            .users
+            .first()
+            .map(|u| String::from_utf8_lossy(u.id.id()).into_owned())
+            .unwrap_or_default()
+    }
 }
 
 /// Does not check expiry; see [`check_not_expired`].

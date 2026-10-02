@@ -44,8 +44,9 @@ Prebuilt static binaries for Linux and Windows are planned. With `git-amaga` on 
 | `git amaga rotate` | Re-encrypt everything with fresh keys; also finishes an interrupted run | in development |
 | `git amaga remove <path>…` | Stop managing a secret (deletes the `.amaga` file only) | in development |
 
-A `KEY` is an `age1…` public key, an exported `.asc` OpenPGP key file, or (in development) a GPG
-key ID, fingerprint or email that the tool exports from your local keyring.
+A `KEY` is an `age1…` public key, an exported `.asc` OpenPGP key file, or a GPG key ID,
+fingerprint or email that the tool exports from your local keyring (works for `init` now, and
+for `user add` once it lands).
 
 <!-- completed in plan step 11 -->
 

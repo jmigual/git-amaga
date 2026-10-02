@@ -48,6 +48,23 @@ pub enum Error {
     #[error("armored OpenPGP key is expired")]
     GpgKeyExpired,
 
+    #[error(
+        "'{spec}' is not in your local gpg keyring (import it with `gpg --import`, or pass an exported `.asc` file)\n{stderr}"
+    )]
+    GpgKeyNotFound { spec: String, stderr: String },
+
+    /// A `.asc`-looking or path-looking `KEY` that is neither a file nor in the keyring.
+    #[error("'{0}' is not an existing file, and it is not in your local gpg keyring either")]
+    KeyFileNotFound(String),
+
+    #[error(
+        "'{spec}' matches more than one key in your local gpg keyring (pass a fingerprint):\n{keys}"
+    )]
+    GpgKeyAmbiguous { spec: String, keys: String },
+
+    #[error("gpg not found on PATH; pass an exported `.asc` file instead")]
+    GpgNotFound,
+
     /// A git subprocess failed, other than for an unset config key.
     #[error("git failed: {0}")]
     Git(String),

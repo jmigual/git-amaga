@@ -10,9 +10,9 @@ keyring to look keys up in.
 ## Decision
 - `KEY` (for `init` and `user add`) is classified: starts with `age1` → age recipient; an
   existing file ending in `.asc` → key file; anything else → a gpg key spec (plan.md §7).
-- Lookup (plan.md §7.4): `gpg --list-keys --with-colons <spec>` must yield exactly one primary
-  key. A bare email is wrapped as `<email>` for an exact match (gpg otherwise matches
-  substrings). Then `gpg --export --armor --export-options export-minimal <FPR>` and the
+- Lookup (plan.md §7.4): `gpg --list-keys --with-colons <spec>` must yield exactly one
+  usable (not revoked, expired or disabled) primary key. A bare email is wrapped as `<email>`
+  for an exact match (gpg otherwise matches substrings). Then `gpg --export --armor --export-options export-minimal <FPR>` and the
   normal validation. Output and audit record the primary fingerprint and user ID.
 - More than one match → error listing fingerprints and user IDs; none → "not in your local
   keyring"; gpg missing → clear error suggesting an `.asc` file.

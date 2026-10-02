@@ -17,21 +17,28 @@ struct Event<'a> {
     event: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     path: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    gpg_fpr: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    gpg_uid: Option<&'a str>,
 }
 
 /// Appends one JSONL event (plan 5.3); `secret_path` is the repo-relative plaintext path, `None`
-/// for `init`.
+/// for `init`. `gpg` is the member's (primary fingerprint, first user ID), if it has an `.asc`.
 pub fn append(
     path: &Path,
     actor: &str,
     event: &str,
     secret_path: Option<&str>,
+    gpg: Option<(&str, &str)>,
 ) -> Result<(), Error> {
     let line = serde_json::to_string(&Event {
         time: format_rfc3339(SystemTime::now()),
         actor,
         event,
         path: secret_path,
+        gpg_fpr: gpg.map(|(fpr, _)| fpr),
+        gpg_uid: gpg.map(|(_, uid)| uid),
     })
     // Serializing a struct of plain strings cannot fail: no maps, no non-UTF8 keys.
     .expect("audit event serialization is infallible");
@@ -115,8 +122,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("audit.jsonl");
 
-        append(&path, "alice", "init", None).unwrap();
-        append(&path, "alice", "rotated", Some("secrets/prod.env")).unwrap();
+        append(&path, "alice", "init", None, None).unwrap();
+        append(&path, "alice", "rotated", Some("secrets/prod.env"), None).unwrap();
 
         let contents = fs::read_to_string(&path).unwrap();
         let lines: Vec<&str> = contents.lines().collect();
@@ -126,5 +133,17 @@ mod tests {
         assert!(!lines[0].contains("\"path\""));
         assert!(lines[1].contains("\"event\":\"rotated\""));
         assert!(lines[1].contains("\"path\":\"secrets/prod.env\""));
+    }
+
+    #[test]
+    fn append_records_gpg_fingerprint_and_user_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("audit.jsonl");
+
+        append(&path, "alice", "init", None, Some(("ABCD", "Alice <a@x>"))).unwrap();
+
+        let contents = fs::read_to_string(&path).unwrap();
+        assert!(contents.contains("\"gpg_fpr\":\"ABCD\""));
+        assert!(contents.contains("\"gpg_uid\":\"Alice <a@x>\""));
     }
 }

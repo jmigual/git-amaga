@@ -5,6 +5,7 @@ pub mod error;
 pub mod git;
 pub mod gpg;
 pub mod identity;
+mod keyring;
 pub mod paths;
 pub mod secret;
 pub mod users;

@@ -309,10 +309,11 @@ Usage errors exit 2 (clap's default).
 
 ### 7.4 Looking up a GPG key (`KEY` rule 3)
 
-1. Spec: the argument as given. If it contains `@` and no `<`, `>` or whitespace, wrap it as `<spec>`: gpg matches a bare email as a substring (`alice@x` also finds `malice@x`), and `<…>` as an exact address.
+1. Spec: the argument as given. If it contains `@`, has no `>` or whitespace and does not start with one of gpg's own prefix characters (`= @ * + # & <`), wrap it as `<spec>`: gpg matches a bare email as a substring (`alice@x` also finds `malice@x`), and `<…>` as an exact address.
 2. `gpg --list-keys --with-colons -- <spec>`. Each `pub` record starts a key; the **first** `fpr` record after it holds the primary fingerprint (field 10), and later `fpr` records belong to subkeys. `uid` records give user IDs (field 10, shown as gpg escapes them). Parse this in a pure function, unit-tested on canned output.
-   - Non-zero exit or no `pub` record: `GpgKeyNotFound`: "'<spec>' is not in your local gpg keyring (import it with `gpg --import`, or pass an exported `.asc` file)", plus gpg's stderr.
-   - More than one `pub`: `GpgKeyAmbiguous`, listing `<FPR> <first user ID>` for each key, with the hint to pass a fingerprint.
+   - `pub` records that can never be added are ignored before counting: validity (field 2) `r` (revoked) or `e` (expired), or `D` (disabled) in the capabilities (field 12). So an old revoked key and a new key under one email resolve to the new key.
+   - Non-zero exit or no usable `pub` record: `GpgKeyNotFound`: "'<spec>' is not in your local gpg keyring (import it with `gpg --import`, or pass an exported `.asc` file)", plus gpg's stderr. If every match was ignored, the message says "only revoked, expired or disabled keys match". If the spec ends in `.asc` or contains a path separator, the error is `KeyFileNotFound` instead: it is not an existing file and not in the keyring.
+   - More than one usable `pub`: `GpgKeyAmbiguous`, listing `<FPR> <first user ID>` for each key, with the hint to pass a fingerprint.
 3. `gpg --export --armor --export-options export-minimal -- <FPR>`. Empty output is `GpgKeyNotFound`. The output then goes through 5.1 and the add-time check like a file would.
 4. Spawning gpg fails with `NotFound`: `GpgNotFound`: "gpg not found on PATH; pass an exported `.asc` file instead".
 

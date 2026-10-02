@@ -157,6 +157,65 @@ impl GpgHome {
         assert!(status.success(), "gpg --import failed");
     }
 
+    /// Generates a passphrase-less ed25519/cv25519 key for `uid`; returns its primary
+    /// fingerprint.
+    pub fn generate_key(&self, uid: &str) -> String {
+        let output = Command::new("gpg")
+            .env("GNUPGHOME", self.path())
+            .args(["--batch", "--passphrase", "", "--status-fd", "1"])
+            .args(["--quick-gen-key", uid, "default", "default", "never"])
+            .output()
+            .expect("spawn gpg --quick-gen-key");
+        output.assert_success();
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .find_map(|l| l.strip_prefix("[GNUPG:] KEY_CREATED B "))
+            .and_then(|rest| rest.split(' ').next())
+            .expect("KEY_CREATED status line")
+            .to_string()
+    }
+
+    /// Revokes a key from `generate_key` using the certificate gpg stored at creation time.
+    pub fn revoke_key(&self, fpr: &str) {
+        let cert_path = self.dir.path().join(format!("openpgp-revocs.d/{fpr}.rev"));
+        let cert = std::fs::read_to_string(cert_path).expect("read revocation certificate");
+        // The stored certificate is commented out with a leading ':' to prevent accidents.
+        let import_path = self.dir.path().join("revoke.asc");
+        std::fs::write(&import_path, cert.replace(":-----BEGIN", "-----BEGIN"))
+            .expect("write revocation certificate");
+        let status = Command::new("gpg")
+            .env("GNUPGHOME", self.path())
+            .args(["--batch", "--import"])
+            .arg(&import_path)
+            .status()
+            .expect("spawn gpg --import");
+        assert!(status.success(), "gpg --import of the revocation failed");
+    }
+
+    /// The armored export-minimal public key for `fpr`, as stored in `.amaga/users/<name>.asc`.
+    pub fn export_minimal(&self, fpr: &str) -> String {
+        let output = Command::new("gpg")
+            .env("GNUPGHOME", self.path())
+            .args(["--armor", "--export", "--export-options", "export-minimal"])
+            .arg(fpr)
+            .output()
+            .expect("spawn gpg --export");
+        output.assert_success();
+        String::from_utf8(output.stdout).expect("utf-8 armor")
+    }
+
+    /// Certifies `signee` with `signer` (a third-party certification on the signee's user IDs).
+    pub fn certify(&self, signer: &str, signee: &str) {
+        let status = Command::new("gpg")
+            .env("GNUPGHOME", self.path())
+            .args(["--batch", "--yes", "--pinentry-mode", "loopback"])
+            .args(["--passphrase", "", "--local-user", signer])
+            .args(["--quick-sign-key", signee])
+            .status()
+            .expect("spawn gpg --quick-sign-key");
+        assert!(status.success(), "gpg --quick-sign-key failed");
+    }
+
     /// Deletes one key's secret material (`<fpr>!`), keeping the rest of the key.
     pub fn delete_secret_key(&self, fpr: &str) {
         let status = Command::new("gpg")

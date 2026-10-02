@@ -9,7 +9,8 @@ plaintext. Members hold age keys or GPG keys (a custom `pgp` age stanza).
 - Modules: `main.rs` clap CLI → `lib.rs` module list and re-exports · `commands.rs` one `cmd_*` per
   subcommand · `context.rs` per-command `Context` and file helpers · `secret.rs` header,
   age encrypt/decrypt, `next_header`, `plaintext_state`, base file · `gpg.rs` `.asc` validation,
-  `pgp` stanza, gpg subprocess · `users.rs` `.amaga/users/` loading · `identity.rs` keygen,
+  `pgp` stanza, gpg subprocess · `users.rs` `.amaga/users/` loading · `keyring.rs` `KEY`
+  resolution and gpg keyring lookup · `identity.rs` keygen,
   identity, actor · `paths.rs` path mapping, `.gitignore` block, atomic write · `git.rs` git
   subprocess helpers · `audit.rs` JSONL events · `error.rs` the `Error` enum.
 - Tests: unit tests beside the code; integration tests in `tests/cli.rs` (helpers in
