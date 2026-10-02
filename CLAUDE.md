@@ -6,7 +6,8 @@ plaintext. Members hold age keys or GPG keys (a custom `pgp` age stanza).
 ## Where to look
 - `plan.md`: the v1 spec (formats, commands, tests, implementation steps). Read the section you need.
 - `docs/adrs/README.md`: decision index. Read it first; open only the relevant ADRs.
-- Modules: `main.rs` clap CLI → `lib.rs` one `cmd_*` per subcommand · `secret.rs` header,
+- Modules: `main.rs` clap CLI → `lib.rs` module list and re-exports · `commands.rs` one `cmd_*` per
+  subcommand · `context.rs` per-command `Context` and file helpers · `secret.rs` header,
   age encrypt/decrypt, `next_header`, `plaintext_state`, base file · `gpg.rs` `.asc` validation,
   `pgp` stanza, gpg subprocess · `users.rs` `.amaga/users/` loading · `identity.rs` keygen,
   identity, actor · `paths.rs` path mapping, `.gitignore` block, atomic write · `git.rs` git
