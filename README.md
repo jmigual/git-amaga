@@ -34,10 +34,10 @@ Prebuilt static binaries for Linux and Windows are planned. With `git-amaga` on 
 |---------|--------------|-------|
 | `git amaga keygen [PATH]` | Create an age identity and print its public key | implemented |
 | `git amaga init <name> [KEY…]` | Set up the repository with you as the first member | implemented |
-| `git amaga add <path>…` | Encrypt a new secret and make sure its plaintext is ignored | in development |
-| `git amaga seal [<path>…]` | Re-encrypt local edits | in development |
-| `git amaga open [<path>…]` | Decrypt secrets to local plaintext | in development |
-| `git amaga close [<path>…]` | Delete local plaintext that is already sealed | in development |
+| `git amaga add <path>…` | Encrypt a new secret and make sure its plaintext is ignored | implemented |
+| `git amaga seal [<path>…]` | Re-encrypt local edits | implemented |
+| `git amaga open [<path>…]` | Decrypt secrets to local plaintext | implemented |
+| `git amaga close [<path>…]` | Delete local plaintext that is already sealed | implemented |
 | `git amaga status` | Members, per-secret state, problems and secrets that need rotation | in development |
 | `git amaga user add <name> <KEY>…` | Add a member and re-encrypt every secret | in development |
 | `git amaga user remove <name>` | Remove a member, re-encrypt, flag exposed secrets | in development |
