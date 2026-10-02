@@ -15,12 +15,10 @@ use thiserror::Error;
 
 use crate::error::Error as CrateError;
 
-/// The age stanza tag for OpenPGP-wrapped file keys (plan 5.2.1).
 const TAG: &str = "pgp";
 
-/// An armored OpenPGP public key that has passed structural validation (plan 5.1), together
-/// with its chosen encryption subkey and that subkey's fingerprint as uppercase hex (the `<FPR>`
-/// used in key strings and `pgp` stanzas, plan 5.1/5.2.1).
+/// A validated armored OpenPGP key with its chosen encryption subkey; `fpr` is that subkey's
+/// uppercase-hex fingerprint (plan 5.1).
 pub struct AscKey {
     pub key: SignedPublicKey,
     pub fpr: String,
@@ -28,8 +26,7 @@ pub struct AscKey {
 }
 
 impl AscKey {
-    /// Fingerprints of every subkey, so secrets written before a subkey change still match
-    /// (plan 5.2.1).
+    /// Every subkey fingerprint, so secrets written before a subkey change still match.
     pub fn subkey_fprs(&self) -> Vec<String> {
         self.key
             .public_subkeys
@@ -39,8 +36,7 @@ impl AscKey {
     }
 }
 
-/// Parses and validates an armored OpenPGP public key (plan 5.1). Does not check expiry; see
-/// [`check_not_expired`] for the separate add-time check (plan change 18).
+/// Does not check expiry; see [`check_not_expired`].
 pub fn validate(armored: &str) -> Result<AscKey, CrateError> {
     reject_concatenated_armor(armored)?;
 
@@ -72,11 +68,8 @@ pub fn validate(armored: &str) -> Result<AscKey, CrateError> {
     Ok(AscKey { key, fpr, subkey })
 }
 
-/// Rejects armored input with non-whitespace content after the first `-----END PGP...-----`
-/// line (plan 5.1: "exactly one armored transferable public key"). rPGP's dearmorer only reads
-/// up to that line, so a second concatenated key block, or plain trailing garbage, would
-/// otherwise be silently ignored instead of rejected. Not specifically "multiple keys": trailing
-/// content might not even be a second key, so [`CrateError::GpgKeyParse`] fits both cases.
+// rPGP's dearmorer stops at the first END line, so trailing content (a second key block or garbage)
+// would be silently ignored; reject it (plan 5.1).
 fn reject_concatenated_armor(armored: &str) -> Result<(), CrateError> {
     if let Some(end_offset) = armored.find("-----END PGP") {
         let after_end_marker = &armored[end_offset..];
@@ -93,8 +86,7 @@ fn reject_concatenated_armor(armored: &str) -> Result<(), CrateError> {
     Ok(())
 }
 
-/// Picks the newest, non-revoked subkey flagged for encryption with an encryption-capable
-/// algorithm (plan 5.1). Expiry is not considered here.
+// Newest non-revoked encryption-capable subkey (plan 5.1); expiry is not considered.
 fn select_encryption_subkey(key: &SignedPublicKey) -> Option<SignedPublicSubKey> {
     key.public_subkeys
         .iter()
@@ -123,9 +115,7 @@ fn newest_binding(signatures: &[Signature]) -> Option<&Signature> {
         .max_by_key(|s| s.created().map(|t| t.as_secs()).unwrap_or(0))
 }
 
-/// The add-time expiry check (plan section 7): neither the primary key nor the selected
-/// encryption subkey may be expired, judged from the `key_expiration_time()` of the newest
-/// self-signature plus the key's `created_at()`.
+/// Add-time check (plan 7): neither the primary key nor the selected subkey may be expired.
 pub fn check_not_expired(asc: &AscKey) -> Result<(), CrateError> {
     let now = Timestamp::now().as_secs();
 
@@ -158,8 +148,7 @@ fn is_expired(created: Timestamp, sig: &Signature, now: u32) -> bool {
     }
 }
 
-/// An `age::Recipient` that wraps a file key to an OpenPGP encryption subkey as a `pgp` stanza
-/// (plan 5.2.1).
+/// Wraps a file key to an OpenPGP encryption subkey as a `pgp` stanza (plan 5.2.1).
 pub struct PgpRecipient {
     fpr: String,
     subkey: SignedPublicSubKey,
@@ -199,8 +188,7 @@ impl age::Recipient for PgpRecipient {
     }
 }
 
-/// gpg's stderr and the member fingerprint it was decrypting for (plan 7.3). Reported per
-/// secret, with the fixed hint to check the card/PIN prompt.
+/// gpg failed for `fpr`; carries gpg's stderr and a card/PIN hint (plan 7.3).
 #[derive(Debug, Error)]
 #[error(
     "gpg decryption failed for {fpr}: {stderr}\nis the card inserted, and can gpg-agent show a PIN prompt (`export GPG_TTY=$(tty)`)?"
@@ -210,13 +198,11 @@ pub struct GpgError {
     pub stderr: String,
 }
 
-/// An `age::Identity` that unwraps `pgp` stanzas addressed to any of `fprs` by running
-/// `gpg --decrypt` (plan 5.2.1, 7.3). Ignores every other stanza tag, and unknown fingerprints,
-/// so it can be mixed with age identities and age's own grease stanzas.
+/// Unwraps `pgp` stanzas for any of `fprs` via `gpg --decrypt` (plan 5.2.1, 7.3); ignores other
+/// stanzas.
 pub struct GpgIdentity {
     fprs: Vec<String>,
-    /// Test-only `GNUPGHOME` override, passed to the gpg child process via `Command::env` so
-    /// tests never mutate this process's own environment (plan section 11).
+    // Test-only GNUPGHOME override, set on the child only, never via `set_var` (plan 11).
     gnupghome: Option<std::path::PathBuf>,
 }
 
@@ -252,13 +238,7 @@ impl age::Identity for GpgIdentity {
         )
     }
 
-    /// Tries every `pgp` stanza addressed to a held fingerprint, not just the first one.
-    ///
-    /// The default `unwrap_stanzas` (`stanzas.iter().find_map(unwrap_stanza)`) stops at the
-    /// first stanza for which `unwrap_stanza` returns `Some`, including `Some(Err(_))`. With
-    /// two held GPG keys where only one card is inserted, that would let one key's gpg failure
-    /// mask another key's success. Instead: return the first `Ok`, or else the first `Err` if
-    /// every matching stanza failed, or else `None` if none matched at all.
+    // Tries every matching stanza, not just the first: first `Ok`, else first `Err` (ADR-0004).
     fn unwrap_stanzas(&self, stanzas: &[Stanza]) -> Option<Result<FileKey, age::DecryptError>> {
         let mut first_err = None;
         for stanza in stanzas {
@@ -274,11 +254,7 @@ impl age::Identity for GpgIdentity {
     }
 }
 
-/// Largest `pgp` stanza body accepted before spawning gpg. A real body (PKESK v3 + SEIPD v1
-/// wrapping a 16-byte age file key) is a few hundred bytes; this is a generous margin, not a
-/// protocol limit. Rejecting an oversized body up front avoids a subprocess pipe deadlock: gpg
-/// can block writing its own stdout/stderr while this process is still blocked writing a large
-/// stdin, and neither side is reading the other.
+// Oversized stanza bodies are rejected before spawning gpg, to avoid a pipe deadlock (ADR-0004).
 const MAX_STANZA_BODY_LEN: usize = 8 * 1024;
 
 fn decrypt_with_gpg(
@@ -334,9 +310,8 @@ fn decrypt_with_gpg(
     Ok(FileKey::new(Box::new(key)))
 }
 
-/// Returns whether gpg reports a secret key for `primary_fpr` as held (plan 5.5): `Ok(true)` on
-/// exit 0, `Ok(false)` on any other exit. An `Err` means gpg could not be spawned; the caller
-/// treats [`io::ErrorKind::NotFound`] as "gpg is absent" and skips every GPG member silently.
+/// `Ok(true)` when gpg reports a secret key for `primary_fpr` (plan 5.5). `Err` means gpg could
+/// not be spawned; callers treat `NotFound` as "gpg absent".
 pub fn is_held(primary_fpr: &str) -> io::Result<bool> {
     let status = Command::new("gpg")
         .args(["--list-secret-keys", "--with-colons", primary_fpr])
@@ -346,56 +321,7 @@ pub fn is_held(primary_fpr: &str) -> io::Result<bool> {
     Ok(status.success())
 }
 
-// Fixture generation commands (plan section 11), run with a short-lived `GNUPGHOME` (never
-// `~/.gnupg`), e.g. `GNUPGHOME=$(mktemp -d /tmp/g.XXXX)`:
-//
-//   valid_cv25519.asc / valid_cv25519.secret.asc:
-//     gpg --batch --passphrase '' --quick-gen-key 'Valid <valid@example.invalid>' \
-//       default default never
-//     gpg --armor --export-options export-minimal --export <fpr> > valid_cv25519.asc
-//     gpg --batch --passphrase '' --armor --export-secret-keys <fpr> \
-//       > valid_cv25519.secret.asc
-//   valid_cv25519_crlf.asc: `sed 's/$/\r/' valid_cv25519.asc`
-//   valid_rsa.asc:
-//     gpg --batch --passphrase '' --quick-gen-key 'Rsa <rsa@example.invalid>' rsa2048 default \
-//       never
-//     gpg --batch --pinentry-mode loopback --passphrase '' --quick-add-key <fpr> rsa2048 encr \
-//       never
-//     gpg --armor --export-options export-minimal --export <fpr> > valid_rsa.asc
-//   sign_only.asc: like valid_cv25519.asc but
-//     gpg --batch --passphrase '' --quick-gen-key 'SignOnly <signonly@example.invalid>' \
-//       default sign never   (no subkey is created)
-//   revoked.asc: like valid_cv25519.asc, then
-//     gpg --no-tty --yes --pinentry-mode loopback --command-fd 0 --gen-revoke <fpr> \
-//       > revoke.asc   (feed "y\n0\n\ny\n" on stdin)
-//     gpg --batch --yes --import revoke.asc
-//     gpg --armor --export-options export-minimal --export <fpr> > revoked.asc
-//   third_party.asc: two keys (Signee, Signer), then
-//     gpg --batch --yes --pinentry-mode loopback --passphrase '' --local-user <signer-fpr> \
-//       --quick-sign-key <signee-fpr>
-//     gpg --armor --export <signee-fpr> > third_party.asc   (no export-minimal, so the
-//       third-party certification survives)
-//   two_keys.asc: two keys imported into one keyring, then
-//     gpg --armor --export-options export-minimal --export <fpr1> <fpr2> > two_keys.asc
-//     (one armor block containing both keys' packets; see also the
-//     `rejects_two_separately_armored_keys_concatenated` test below for the *separately*
-//     armored case, built in-test by string concatenation)
-//   garbage.asc: `printf 'this is not an openpgp key\n' > garbage.asc`
-//   expired.asc: like valid_cv25519.asc, generated under
-//     `--faked-system-time 20240101T000000` with a `1d` expiry, then exported with a plain
-//     `gpg --armor --export <fpr>` (**not** `--export-options export-minimal`, which drops an
-//     already-expired subkey at export time)
-//   subkey_expired.asc: primary + first encryption subkey generated under
-//     `--faked-system-time 20240101T000000` with `never` expiry, then a second, newer
-//     encryption subkey added under `--faked-system-time 20240102T000000` with a `1d` expiry
-//     (`gpg --batch --pinentry-mode loopback --passphrase '' --quick-add-key <fpr> default encr
-//     1d`), exported with a plain `gpg --armor --export <fpr>` (same export-minimal caveat)
-//   two_subkeys.asc: primary + first encryption subkey (kept, expected to be selected), then
-//     a second, newer encryption subkey added under a future `--faked-system-time` and revoked
-//     specifically (`gpg --command-fd 0 --edit-key <fpr>`, feed "key 2\nrevkey\ny\n0\n\ny\nsave\n"
-//     on stdin), then a third, even newer sign-only RSA subkey added
-//     (`gpg --quick-add-key <fpr> rsa2048 sign never`, under a later faked time), exported with
-//     `--export-options export-minimal`
+// Fixture recipes: tests/fixtures/README.md (plan 11).
 #[cfg(test)]
 mod tests {
     use std::io::Read;
@@ -599,9 +525,7 @@ mod tests {
 
     #[test]
     fn gpg_identity_ignores_other_tags_and_unknown_fingerprints() {
-        // A nonexistent GNUPGHOME means that if any of these checks regressed and gpg actually
-        // got spawned, it would fail loudly instead of silently reaching this process's real
-        // `~/.gnupg`.
+        // A nonexistent GNUPGHOME makes any regressed gpg spawn fail loudly, not reach ~/.gnupg.
         let identity = GpgIdentity::with_gnupghome(vec!["AAAA".to_string()], "/nonexistent".into());
         let other_tag = Stanza {
             tag: "x25519".to_string(),
@@ -634,11 +558,8 @@ mod tests {
 
     #[test]
     fn gpg_identity_rejects_oversized_stanza_body_without_spawning_gpg() {
-        // A crafted stanza body far larger than any real PKESK+SEIPD wrapping a 16-byte file
-        // key must be rejected before gpg is even spawned (a nonexistent GNUPGHOME, rather than
-        // this process's real `~/.gnupg`, proves gpg never ran if the cap regresses: an
-        // oversized body that reached a real `gpg --decrypt` risked a stdin/stdout pipe
-        // deadlock instead of a clean, prompt error).
+        // An oversized stanza body must be rejected before gpg is spawned; the nonexistent
+        // GNUPGHOME proves gpg never ran if the cap regresses.
         let identity = GpgIdentity::with_gnupghome(vec!["AAAA".to_string()], "/nonexistent".into());
         let oversized = Stanza {
             tag: TAG.to_string(),

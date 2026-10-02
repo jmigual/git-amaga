@@ -8,13 +8,9 @@ use std::path::{Path, PathBuf};
 
 use crate::error::Error;
 
-/// Writes `contents` to `path` via a temp file + `sync_all` + rename (plan section 7): `path`
-/// never observes a partially written file. `mode` sets Unix permissions on the temp file (for
-/// example `0600` for secret-bearing files); ignored on other platforms. Removes any stale temp
-/// file first, since `OpenOptions::mode` only applies when *creating* a file (a leftover temp
-/// file would otherwise keep its old permissions, or — if it were a symlink — be followed
-/// instead of replaced), and cleans up the temp file again if writing *or* the final rename
-/// fails.
+/// Temp file + `sync_all` + rename (plan 7), so `path` never holds a partial write. `mode` sets
+/// Unix permissions. A stale temp file is removed first (`mode` applies only on create; a symlink
+/// would be followed) and the temp file is cleaned up on failure.
 pub fn atomic_write(path: &Path, contents: &[u8], mode: Option<u32>) -> io::Result<()> {
     let mut tmp_name = path.as_os_str().to_owned();
     tmp_name.push(".amaga-tmp");
@@ -57,15 +53,13 @@ fn create_tmp_file(path: &Path, _mode: Option<u32>) -> io::Result<fs::File> {
         .open(path)
 }
 
-/// A path argument resolved to repository-relative plaintext and ciphertext paths (plan
-/// section 7).
+/// Repository-relative plaintext and ciphertext paths for a `<path>` argument (plan 7).
 pub struct SecretPath {
     pub plaintext: String,
     pub ciphertext: String,
 }
 
-/// `\` is a path separator only on Windows; on Unix it is a legal filename character (plan
-/// section 7: "On Windows, convert `\` to `/`").
+// `\` is a separator only on Windows (plan 7).
 #[cfg(windows)]
 fn normalize_separators(arg: &str) -> String {
     arg.replace('\\', "/")
@@ -76,12 +70,8 @@ fn normalize_separators(arg: &str) -> String {
     arg.to_string()
 }
 
-/// Whether `arg` looks like a filesystem-absolute path rather than one meant to be resolved
-/// against the repository (a leading `/` — also covers a Windows UNC path like `\\server\share`
-/// once [`normalize_separators`] has converted it to `//server/share` — or a drive letter like
-/// `C:`, checked on every platform since a repo-relative path is never meant to start that way).
-/// Callers must apply this to the *normalized* argument: a raw `\Users\x` does not start with
-/// `/` until backslashes have been converted.
+// A leading `/` (a UNC path once normalized) or a drive letter, checked on every platform. Must run
+// on the *normalized* argument.
 fn is_absolute_like(arg: &str) -> bool {
     if arg.starts_with('/') {
         return true;
@@ -90,12 +80,9 @@ fn is_absolute_like(arg: &str) -> bool {
     bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
 }
 
-/// Converts a `<path>` CLI argument to repository-relative plaintext/ciphertext paths (plan
-/// section 7): lexical normalisation against `prefix` (from `git rev-parse --show-prefix`), `\`
-/// converted to `/` on Windows, and rejection of absolute/drive-prefixed paths, paths that leave
-/// the repository, paths with control characters, paths under `.git/`/`.amaga/`, and plaintext
-/// names ending in `.amaga` or `.amaga-tmp`. `arg` may be either the plaintext or the `.amaga`
-/// path.
+/// Maps a `<path>` argument (plaintext or `.amaga` form) to repository-relative paths (plan 7):
+/// resolved against `prefix`; rejects paths outside the repo, with control characters, under
+/// `.git/`/`.amaga/`, or whose plaintext name ends in `.amaga`/`.amaga-tmp`.
 pub fn resolve_arg(prefix: &str, arg: &str) -> Result<SecretPath, Error> {
     let normalized_arg = normalize_separators(arg);
     if is_absolute_like(&normalized_arg) {
@@ -147,10 +134,7 @@ pub fn resolve_arg(prefix: &str, arg: &str) -> Result<SecretPath, Error> {
 const GITIGNORE_BEGIN: &[u8] = b"# BEGIN git-amaga";
 const GITIGNORE_END: &[u8] = b"# END git-amaga";
 
-/// Reads `path` as bytes, treating a missing file as empty (plan 5.4: `.gitignore`/
-/// `.gitattributes` may not exist yet). Propagates every other I/O error instead of discarding
-/// the file's real content (for example on a permission error, or non-UTF-8 content if the
-/// caller were to mistakenly use `read_to_string`).
+// A missing file is empty (plan 5.4); every other I/O error propagates.
 fn read_or_empty(path: &Path) -> io::Result<Vec<u8>> {
     match fs::read(path) {
         Ok(bytes) => Ok(bytes),
@@ -159,10 +143,7 @@ fn read_or_empty(path: &Path) -> io::Result<Vec<u8>> {
     }
 }
 
-/// Splits `bytes` into lines on `\n`, byte-for-byte (no UTF-8 assumption, so non-UTF-8 content
-/// round-trips unchanged). A single trailing empty "line" from a final `\n` is dropped, so
-/// `join_lines` round-trips a file with or without a trailing newline... (see `join_lines`,
-/// which always adds one back per line).
+// Byte-wise, so non-UTF-8 content round-trips; the empty "line" after a final `\n` is dropped.
 fn split_lines(bytes: &[u8]) -> Vec<&[u8]> {
     if bytes.is_empty() {
         return Vec::new();
@@ -174,9 +155,7 @@ fn split_lines(bytes: &[u8]) -> Vec<&[u8]> {
     lines
 }
 
-/// Strips a single trailing `\r` for comparison (CRLF line endings, for example from
-/// `core.autocrlf`), without touching the stored bytes: a matched line is still written back
-/// with whatever line ending it already had.
+// Strips one trailing `\r` for comparison only; matched lines keep their own line ending.
 fn strip_cr(line: &[u8]) -> &[u8] {
     match line.last() {
         Some(b'\r') => &line[..line.len() - 1],
@@ -193,12 +172,9 @@ fn join_lines(lines: &[&[u8]]) -> Vec<u8> {
     out
 }
 
-/// Ensures `line` is present in the managed `.gitignore` block (plan 5.4), creating the block if
-/// none exists (or if `# END git-amaga` precedes `# BEGIN git-amaga`, which can't happen from
-/// this tool but is possible after a hand-edited merge). Idempotent: a `line` already present
-/// anywhere in the file is left alone. Marker lines are matched as whole lines, so a line like
-/// `foo # END git-amaga` is not mistaken for the marker. Operates on bytes, so content outside
-/// the block — including non-UTF-8 content — round-trips unchanged.
+/// Adds `line` to the managed `.gitignore` block (plan 5.4), creating the block if it is missing or
+/// inverted (`END` before `BEGIN`, possible after a hand-edited merge). Idempotent; markers match
+/// whole lines; byte-wise, so other content round-trips.
 pub fn ensure_gitignore_line(gitignore_path: &Path, line: &str) -> Result<(), Error> {
     let existing = read_or_empty(gitignore_path).map_err(|source| Error::IoPath {
         path: gitignore_path.display().to_string(),
@@ -226,8 +202,7 @@ pub fn ensure_gitignore_line(gitignore_path: &Path, line: &str) -> Result<(), Er
     Ok(())
 }
 
-/// Formats `repo_relative_path` as a root-anchored `.gitignore` entry (plan 5.4), backslash-
-/// escaping `\ * ? [ ! #` and trailing spaces.
+/// Root-anchored `.gitignore` entry (plan 5.4), escaping `\ * ? [ ! #` and trailing spaces.
 pub fn gitignore_escape(repo_relative_path: &str) -> String {
     let literal_len = repo_relative_path.trim_end_matches(' ').len();
     let mut out = String::from("/");
@@ -240,9 +215,8 @@ pub fn gitignore_escape(repo_relative_path: &str) -> String {
     out
 }
 
-/// Appends each line in `lines` that is not already present verbatim (plan 5.4:
-/// `.gitattributes`, which has no managed block, unlike `.gitignore`). Operates on bytes, like
-/// [`ensure_gitignore_line`].
+/// Appends each line not already present verbatim (plan 5.4: `.gitattributes` has no managed
+/// block).
 pub fn ensure_lines_present(path: &Path, lines: &[&str]) -> Result<(), Error> {
     let existing = read_or_empty(path).map_err(|source| Error::IoPath {
         path: path.display().to_string(),
@@ -331,10 +305,8 @@ mod tests {
         assert!(!is_absolute_like("secrets/prod.env"));
     }
 
-    // Regression: `is_absolute_like` must run on the *normalized* argument. Raw backslash
-    // forms are only meaningfully exercised on an actual Windows target (`normalize_separators`
-    // is `#[cfg(windows)]`); `is_absolute_like_covers_unix_and_normalized_windows_forms` above
-    // covers the same classification logic on every platform.
+    // Regression: `is_absolute_like` must run on the *normalized* argument; raw backslash forms
+    // only matter on Windows, the test above covers the classification everywhere.
     #[cfg(windows)]
     #[test]
     fn resolve_arg_rejects_raw_windows_absolute_and_unc_paths() {
@@ -447,10 +419,8 @@ mod tests {
     fn ensure_gitignore_line_does_not_match_markers_mid_line() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(".gitignore");
-        // A real block, plus a decoy line *after* it that merely contains the end marker's
-        // text. Substring search (`str::rfind`) would match the decoy instead of the real `#
-        // END git-amaga` line, since it is the rightmost byte occurrence; exact whole-line
-        // matching must still find the real marker.
+        // A real block plus a decoy after it containing the end marker's text: whole-line matching
+        // must pick the real marker, not the rightmost substring match.
         fs::write(
             &path,
             "# BEGIN git-amaga\n*.amaga-tmp\n# END git-amaga\nfoo # END git-amaga\n",

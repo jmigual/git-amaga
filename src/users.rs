@@ -20,10 +20,8 @@ pub struct Member {
     pub asc: Option<AscKey>,
 }
 
-/// Member name -> keys.
 pub type Members = BTreeMap<String, Member>;
 
-/// Loads and validates every file in `users_dir` (plan 5.1).
 pub fn load(users_dir: &Path) -> Result<Members, Error> {
     let mut members: Members = BTreeMap::new();
 
@@ -108,8 +106,7 @@ fn parse_age_keys(path: &Path) -> Result<Vec<x25519::Recipient>, Error> {
         .collect()
 }
 
-/// The current recipient set (plan 5.1/5.2): member name -> key strings, for
-/// [`crate::secret::next_header`].
+/// Member name -> key strings, for [`crate::secret::next_header`] (plan 5.2).
 pub fn recipients(members: &Members) -> Recipients {
     members
         .iter()
@@ -124,18 +121,7 @@ pub fn recipients(members: &Members) -> Recipients {
         .collect()
 }
 
-// Fixture generation commands (plan section 11), run with a short-lived `GNUPGHOME` (never
-// `~/.gnupg`):
-//
-//   rotated_subkey_old.asc / rotated_subkey_new.asc: same primary key, two exports taken before
-//   and after a second encryption subkey is added, so each selects a different encryption
-//   subkey (plan 5.1's "newest non-revoked" rule) while sharing one primary fingerprint.
-//     gpg --batch --passphrase '' --quick-gen-key 'Rotate <rotate@example.invalid>' \
-//       default default never
-//     gpg --armor --export-options export-minimal --export <fpr> > rotated_subkey_old.asc
-//     gpg --batch --pinentry-mode loopback --passphrase '' --quick-add-key <fpr> default encr \
-//       never
-//     gpg --armor --export-options export-minimal --export <fpr> > rotated_subkey_new.asc
+// Fixture recipes: tests/fixtures/README.md (plan 11).
 #[cfg(test)]
 mod tests {
     use super::*;

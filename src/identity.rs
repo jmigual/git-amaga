@@ -12,31 +12,23 @@ use crate::git;
 use crate::paths;
 use crate::users;
 
-/// The default identity path when `amaga.identity` is unset (plan 5.5):
-/// `~/.config/git-amaga/identity.txt`.
+/// `~/.config/git-amaga/identity.txt` (plan 5.5).
 pub fn default_identity_path() -> Result<PathBuf, Error> {
     let home = std::env::home_dir().ok_or(Error::NoHomeDir)?;
     Ok(default_identity_path_under(&home))
 }
 
-/// The default identity path given a home directory, split out from [`default_identity_path`]
-/// so the join logic is unit-testable without reading the real environment.
 fn default_identity_path_under(home: &Path) -> PathBuf {
     home.join(".config").join("git-amaga").join("identity.txt")
 }
 
-/// Resolves the configured age identity file path (plan 5.5): `git config --type=path
-/// amaga.identity` in any scope, falling back to [`default_identity_path`] only if that file
-/// exists. `None` if neither is configured/present.
+/// `amaga.identity` from git config (any scope), else the default path if that file exists.
 pub fn configured_identity_path() -> Result<Option<PathBuf>, Error> {
     let configured = git::config_get_path("amaga.identity")?;
     let default = default_identity_path()?;
     Ok(resolve_configured_identity_path(configured, &default))
 }
 
-/// The default-path-fallback half of [`configured_identity_path`], split out so it is
-/// unit-testable without reading real Git config: `configured` wins if present, otherwise
-/// `default_path` is used only if it exists.
 fn resolve_configured_identity_path(
     configured: Option<String>,
     default_path: &Path,
@@ -47,8 +39,7 @@ fn resolve_configured_identity_path(
     default_path.is_file().then(|| default_path.to_path_buf())
 }
 
-/// Parses every `AGE-SECRET-KEY-1…` line in `path` (plan 5.5). `\r` is stripped (autocrlf).
-/// Blank lines and `#` comments are skipped.
+/// Parses every `AGE-SECRET-KEY-1…` line; strips `\r` (autocrlf), skips blanks and `#` comments.
 pub fn load_identity_file(path: &Path) -> Result<Vec<x25519::Identity>, Error> {
     let contents = fs::read_to_string(path).map_err(|source| Error::IoPath {
         path: path.display().to_string(),
@@ -69,9 +60,8 @@ pub fn load_identity_file(path: &Path) -> Result<Vec<x25519::Identity>, Error> {
         .collect()
 }
 
-/// Generates a new age identity and writes it to `path`, or [`default_identity_path`] if `None`
-/// (plan: `keygen`). Refuses to overwrite an existing file. Sets `amaga.identity` in the global
-/// config if it is unset there. Returns the path written and the public key.
+/// Writes a new identity to `path` (default path if `None`), refusing to overwrite, and sets the
+/// global `amaga.identity` if unset.
 pub fn keygen(path: Option<&Path>) -> Result<(PathBuf, x25519::Recipient), Error> {
     let (path, public) = write_identity(path)?;
 
@@ -82,9 +72,7 @@ pub fn keygen(path: Option<&Path>) -> Result<(PathBuf, x25519::Recipient), Error
     Ok((path, public))
 }
 
-/// The file-writing half of [`keygen`], kept separate so unit tests can exercise it without
-/// touching any Git config (real or isolated): generates the identity and writes it to `path`,
-/// or [`default_identity_path`] if `None`, refusing to overwrite an existing file.
+// Split from `keygen` so tests run without touching git config.
 fn write_identity(path: Option<&Path>) -> Result<(PathBuf, x25519::Recipient), Error> {
     let path = match path {
         Some(p) => p.to_path_buf(),
@@ -114,10 +102,10 @@ fn write_identity(path: Option<&Path>) -> Result<(PathBuf, x25519::Recipient), E
     Ok((path, public))
 }
 
-/// Finds the actor (plan 5.5): the member whose age key matches an identity, else the first
-/// member holding a GPG key. Also returns the subkey fingerprints of every held GPG member, the
-/// `GpgIdentity` input; empty without probing gpg when an age identity matches. `is_held` is
-/// injected (production passes [`crate::gpg::is_held`]) so tests do not need a real `gpg`.
+/// The member whose age key matches an identity, else the first member holding a GPG key
+/// (plan 5.5).
+/// Also returns the held GPG subkey fingerprints (empty, without probing gpg, on an age match).
+/// `is_held` is injected so tests need no real gpg.
 pub fn find_actor(
     members: &users::Members,
     age_identities: &[x25519::Identity],
@@ -173,8 +161,7 @@ fn member_summary(members: &users::Members, gpg_absent: bool) -> String {
             }
             format!("{name} ({})", kinds.join(", "))
         })
-        // `members` is a `BTreeMap`, so iteration (and this collected `Vec`) is already sorted
-        // by name.
+        // `BTreeMap`: already sorted by name.
         .collect();
     let mut summary = descriptions.join(", ");
     if gpg_absent {

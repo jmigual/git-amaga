@@ -3,8 +3,7 @@ use std::path::{Path, PathBuf};
 
 use crate::{Error, audit, git, gpg, identity, paths, secret, users};
 
-/// Per-command state: repository, membership, the actor's identities (plan 5.5) and the
-/// per-worktree base hashes.
+// Per-command state: repo, membership, actor identities and base hashes (plan 5.5).
 pub(crate) struct Context {
     pub(crate) root: PathBuf,
     pub(crate) prefix: String,
@@ -17,7 +16,7 @@ pub(crate) struct Context {
 }
 
 impl Context {
-    /// Refuses while any `*.amaga` is unmerged (plan section 7), then loads everything.
+    // Refuses while any `*.amaga` is unmerged (plan 7).
     pub(crate) fn load() -> Result<Self, Error> {
         let root = git::toplevel()?;
         let unmerged = git::unmerged_secrets(&root)?;
@@ -43,8 +42,7 @@ impl Context {
         })
     }
 
-    /// Decrypts with the age identities first, then one `GpgIdentity` (plan 5.5). Errors name
-    /// `path`.
+    // Age identities first, then gpg (plan 5.5).
     pub(crate) fn decrypt(
         &self,
         path: &str,
@@ -64,7 +62,6 @@ impl Context {
         })
     }
 
-    /// The member whose gpg key a gpg decryption failure was about.
     pub(crate) fn failing_member(&self, err: &Error) -> Option<String> {
         let Error::Decrypt(age::DecryptError::Io(io)) = err else {
             return None;
@@ -80,7 +77,6 @@ impl Context {
             .map(|(name, _)| name.clone())
     }
 
-    /// Encrypts to every member key, age and OpenPGP.
     pub(crate) fn encrypt(&self, header: &secret::Header, body: &[u8]) -> Result<Vec<u8>, Error> {
         let pgp: Vec<gpg::PgpRecipient> = self
             .members
@@ -98,7 +94,7 @@ impl Context {
         secret::encrypt(header, body, &recipients)
     }
 
-    /// Records `body` as the base of `path`; the file is rewritten only when that changes it.
+    // Rewrites the base file only when the hash changes.
     pub(crate) fn set_base(&mut self, path: &str, body: &[u8]) -> Result<(), Error> {
         let hash = secret::hash(body);
         if self.base.insert(path.to_string(), hash) != Some(hash) {
@@ -124,9 +120,7 @@ impl Context {
     }
 }
 
-/// Existing managed secrets for the given arguments, or all of them when `args` is empty
-/// (only those with local plaintext when `existing_plaintext_only`). Listed paths get the same
-/// validation as arguments; invalid ones are skipped with a warning.
+// No args: every existing managed secret. Invalid listed paths are skipped with a warning.
 pub(crate) fn secret_paths_for(
     ctx: &Context,
     args: &[String],
@@ -161,7 +155,7 @@ pub(crate) fn read_repo_file(root: &Path, path: &str) -> Result<Vec<u8>, Error> 
     })
 }
 
-/// `None` only when the plaintext does not exist; other read errors must not look like `Closed`.
+// `None` only when the plaintext does not exist; other read errors must not look like `Closed`.
 pub(crate) fn read_plaintext(root: &Path, path: &str) -> Result<Option<Vec<u8>>, Error> {
     match read_repo_file(root, path) {
         Err(Error::IoPath { source, .. }) if source.kind() == std::io::ErrorKind::NotFound => {
@@ -183,7 +177,6 @@ pub(crate) fn write_repo_file(
     })
 }
 
-/// The ensure-ignored step (plan 5.4).
 pub(crate) fn ensure_ignored(root: &Path, path: &str) -> Result<(), Error> {
     if git::is_ignored(root, path)? {
         return Ok(());

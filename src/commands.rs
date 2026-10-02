@@ -6,23 +6,20 @@ use crate::context::{
 };
 use crate::{Error, audit, git, gpg, identity, paths, secret, users};
 
-/// `.gitattributes` lines `init` ensures are present (plan 5).
 const GITATTRIBUTES_LINES: [&str; 3] = [
     "*.amaga binary",
     ".amaga/audit.jsonl merge=union",
     ".gitignore merge=union",
 ];
 
-/// `git-amaga keygen [PATH]` (plan: `keygen`): generates an age identity and prints its public
-/// key.
+/// `git-amaga keygen [PATH]` (plan 7).
 pub fn cmd_keygen(path: Option<&Path>) -> Result<(), Error> {
     let (_path, public) = identity::keygen(path)?;
     println!("{public}");
     Ok(())
 }
 
-/// `git-amaga init <name> [KEY…]` (plan: `init`): creates `.amaga/`, the first member, the
-/// `.gitattributes`/`.gitignore` lines, and the `init` audit event.
+/// `git-amaga init <name> [KEY…]` (plan 7).
 pub fn cmd_init(name: &str, keys: &[String]) -> Result<(), Error> {
     if !users::valid_name(name) {
         return Err(Error::InvalidMemberName(name.to_string()));
@@ -49,10 +46,8 @@ pub fn cmd_init(name: &str, keys: &[String]) -> Result<(), Error> {
         collect_keys(keys)?
     };
 
-    // .gitattributes/.gitignore first, and .amaga/ only once they have succeeded: both are
-    // idempotent, so a retry after a failure here (for example an unreadable .gitignore) can
-    // simply run `init` again, instead of leaving a half-initialized `.amaga/` that a retry
-    // would then refuse with AlreadyInitialized.
+    // Idempotent steps first: a failure here must not leave a half-initialized `.amaga/` that a
+    // retry would refuse with AlreadyInitialized.
     paths::ensure_lines_present(&root.join(".gitattributes"), &GITATTRIBUTES_LINES)?;
     paths::ensure_gitignore_line(&root.join(".gitignore"), "*.amaga-tmp")?;
 
@@ -75,9 +70,8 @@ pub fn cmd_init(name: &str, keys: &[String]) -> Result<(), Error> {
     Ok(())
 }
 
-/// Classifies each `KEY` argument (plan section 7): `age1…` is an age recipient, anything else
-/// is a path to an armored OpenPGP public key file (at most one per member), validated and
-/// checked for add-time expiry (plan 5.1, section 7).
+// `age1…` is an age recipient; anything else is an armored OpenPGP key file, at most one
+// per member (plan 5.1, 7).
 fn collect_keys(keys: &[String]) -> Result<(Vec<String>, Option<String>), Error> {
     let mut age_lines = Vec::new();
     let mut seen_age: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();

@@ -19,9 +19,8 @@ struct Event<'a> {
     path: Option<&'a str>,
 }
 
-/// Appends one audit event (plan 5.3). Events that carry no extra field, like `init`, pass
-/// `secret_path: None`; `secret.added`/`secret.updated`/`secret.removed` pass the secret's
-/// repo-relative plaintext path.
+/// Appends one JSONL event (plan 5.3); `secret_path` is the repo-relative plaintext path, `None`
+/// for `init`.
 pub fn append(
     path: &Path,
     actor: &str,
@@ -45,7 +44,7 @@ pub fn append(
     Ok(())
 }
 
-/// Formats `time` as RFC 3339 UTC (plan 5.3), e.g. `2026-10-02T12:34:56Z`.
+// RFC 3339 UTC (plan 5.3), e.g. `2026-10-02T12:34:56Z`.
 fn format_rfc3339(time: SystemTime) -> String {
     let secs = time
         .duration_since(UNIX_EPOCH)
@@ -62,10 +61,8 @@ fn format_rfc3339(time: SystemTime) -> String {
     format!("{year:04}-{month:02}-{day:02}T{h:02}:{m:02}:{s:02}Z")
 }
 
-/// Days since the Unix epoch (1970-01-01) to a proleptic Gregorian (year, month, day). Howard
-/// Hinnant's `civil_from_days` algorithm
-/// (<http://howardhinnant.github.io/date_algorithms.html>), avoiding a dependency for one
-/// formatter.
+// Hinnant's `civil_from_days` (howardhinnant.github.io/date_algorithms.html); avoids a date
+// dependency.
 fn civil_from_days(z: i64) -> (i64, u32, u32) {
     let z = z + 719468;
     let era = if z >= 0 { z } else { z - 146096 } / 146097;

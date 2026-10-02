@@ -400,7 +400,7 @@ strip = true
   - Stanza round trip without gpg: wrap a file key, then decrypt the body with rPGP (`Message::from_bytes(..)?.decrypt(&"".into(), &secret_key_fixture)`) and get the same 16 bytes.
   - A file encrypted to X25519 + `pgp` decrypts with the x25519 identity alone. `GpgIdentity` returns `None` for other tags and for unknown fingerprints.
   - With gpg: a `GpgIdentity` in a temp GNUPGHOME (below) unwraps an rPGP-written stanza.
-  - Fixture generation commands are listed in a comment at the top of the test module (`--faked-system-time 20240101T000000` with a `1d` expiry for the expired key; `gpg --gen-revoke` + import for the revoked key; `--quick-sign-key` from a second key for the third-party one).
+  - Fixture generation commands are listed in `tests/fixtures/README.md` (`--faked-system-time 20240101T000000` with a `1d` expiry for the expired key; `gpg --gen-revoke` + import for the revoked key; `--quick-sign-key` from a second key for the third-party one).
 
 **Integration tests** (`tests/`):
 - Run the built binary via `env!("CARGO_BIN_EXE_git-amaga")` against `tempfile` repositories.

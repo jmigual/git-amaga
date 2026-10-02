@@ -14,6 +14,13 @@ option. Supporting both should not create two file formats or two exposure state
 - Decryption runs `gpg --decrypt` per stanza without `--batch`, so pinentry and card prompts
   work (plan.md §7.3). gpg runs only when no age identity matches.
 - SEIPD v1 because GnuPG does not implement RFC 9580 SEIPD v2.
+- `GpgIdentity` overrides age's `unwrap_stanzas`, which stops at the first stanza returning
+  `Some`, even `Some(Err(_))`. With two held GPG keys and one card inserted, one key's gpg
+  failure would mask another's success. It returns the first `Ok`, else the first `Err`, else
+  `None`.
+- Stanza bodies over 8 KiB are rejected before spawning gpg. A real body (PKESK v3 + SEIPD v1
+  around a 16-byte file key) is a few hundred bytes; an oversized one could deadlock the
+  stdin/stdout pipes (gpg blocked writing output while this process blocks writing input).
 
 ## Consequences
 - age-only members never need gpg; `age -d` keeps working for them.

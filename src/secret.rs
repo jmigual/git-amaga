@@ -16,7 +16,6 @@ pub type Recipients = BTreeMap<String, BTreeSet<String>>;
 /// SHA-256 digest, used for base-hash comparisons (plan 6.2).
 pub type Hash = [u8; 32];
 
-/// Returns the SHA-256 digest of `data`.
 pub fn hash(data: &[u8]) -> Hash {
     Sha256::digest(data).into()
 }
@@ -39,10 +38,8 @@ pub fn encode_payload(header: &Header, body: &[u8]) -> Result<Vec<u8>, Error> {
     Ok(payload)
 }
 
-/// Only the version, for the lenient pre-check in [`decode_payload`]: an unrecognized `v`
-/// must report `UnsupportedVersion`, even if a future header version adds fields this binary
-/// does not know (which the strict, `deny_unknown_fields` [`Header`] parse would otherwise
-/// reject first).
+// Lenient version-only pre-check: an unknown `v` must report `UnsupportedVersion` even when a
+// future header has fields the strict [`Header`] parse rejects.
 #[derive(Deserialize)]
 struct VersionProbe {
     v: u8,
@@ -63,7 +60,6 @@ pub fn decode_payload(payload: &[u8]) -> Result<(Header, Vec<u8>), Error> {
     Ok((header, payload[newline + 1..].to_vec()))
 }
 
-/// Encrypts `header` and `body` as a standard age file to every given recipient.
 pub fn encrypt(
     header: &Header,
     body: &[u8],
@@ -78,7 +74,6 @@ pub fn encrypt(
     Ok(ciphertext)
 }
 
-/// Decrypts an age file written by [`encrypt`] with any of the given identities.
 pub fn decrypt(
     ciphertext: &[u8],
     identities: &[&dyn age::Identity],
@@ -129,8 +124,7 @@ pub enum PlaintextState {
     Conflict,
 }
 
-/// Classifies the local plaintext `p` against the decrypted ciphertext body `c` and the base
-/// hash `b` recorded at the last sync (plan 6.2).
+/// `p` is the local plaintext, `c` the decrypted ciphertext body, `b` the base hash (plan 6.2).
 pub fn plaintext_state(p: Option<&[u8]>, c: &[u8], b: Option<Hash>) -> PlaintextState {
     let Some(p) = p else {
         return PlaintextState::Closed;
@@ -147,8 +141,7 @@ pub fn plaintext_state(p: Option<&[u8]>, c: &[u8], b: Option<Hash>) -> Plaintext
     PlaintextState::Conflict
 }
 
-/// Per-worktree base hashes (plan 5.5): repo-relative plaintext path -> SHA-256 of the body it
-/// was last synchronised with.
+/// Per-worktree base hashes (plan 5.5): plaintext path -> SHA-256 of the body last synced.
 pub type BaseMap = BTreeMap<String, Hash>;
 
 fn hash_to_hex(h: &Hash) -> String {
@@ -252,9 +245,7 @@ mod tests {
 
     #[test]
     fn decode_payload_reports_unsupported_version_before_unknown_fields() {
-        // A future v2 header may add fields this binary does not know. The version check must
-        // win over `deny_unknown_fields`, or every v2 header looks like a parse error instead
-        // of the actionable "unsupported version" error.
+        // The version check must win over `deny_unknown_fields` (see `VersionProbe`).
         let payload = b"{\"v\":2,\"recipients\":{},\"x\":1}\nbody";
         assert!(matches!(
             decode_payload(payload),
