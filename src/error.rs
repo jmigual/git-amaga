@@ -27,4 +27,34 @@ pub enum Error {
     /// The header's `v` field is not `1`.
     #[error("unsupported secret format version {0}")]
     UnsupportedVersion(u8),
+
+    /// An armored OpenPGP key could not be parsed.
+    #[error("armored OpenPGP key is not valid: {0}")]
+    GpgKeyParse(String),
+
+    /// An armored OpenPGP key file contains more than one key.
+    #[error("armored OpenPGP key file must contain exactly one key")]
+    GpgKeyMultiple,
+
+    /// An armored OpenPGP key failed signature binding verification (for example, a
+    /// third-party certification).
+    #[error(
+        "armored OpenPGP key failed binding verification: {0} (hint: re-export with `gpg --export --armor --export-options export-minimal <fpr>`)"
+    )]
+    GpgKeyBindings(String),
+
+    /// The primary key carries a `KeyRevocation` signature.
+    #[error("armored OpenPGP key has been revoked")]
+    GpgKeyRevoked,
+
+    /// No subkey is suitable for encryption (not revoked, flagged for encryption, capable
+    /// algorithm).
+    #[error(
+        "armored OpenPGP key has no usable encryption subkey (hint: `gpg --quick-add-key <fpr> default encr`)"
+    )]
+    GpgKeyNoEncryptionSubkey,
+
+    /// The primary key or the selected encryption subkey is expired (add-time check only).
+    #[error("armored OpenPGP key is expired")]
+    GpgKeyExpired,
 }
