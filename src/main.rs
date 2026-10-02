@@ -61,10 +61,33 @@ enum Command {
         /// Plaintext or `.amaga` paths to close (default: every secret whose plaintext exists).
         paths: Vec<String>,
     },
+    /// Add or remove a member and re-encrypt every secret.
+    User {
+        #[command(subcommand)]
+        command: UserCommand,
+    },
     /// Re-encrypt every secret with fresh keys; also finishes an interrupted removal.
     Rotate,
     /// Show the members and the state and problems of every secret.
     Status,
+}
+
+#[derive(Subcommand)]
+enum UserCommand {
+    /// Add a member and re-encrypt every secret to them.
+    Add {
+        /// The new member's name.
+        name: String,
+        /// `age1…` recipients, an armored OpenPGP public key file (`.asc`), or a key in the local
+        /// gpg keyring (key ID, fingerprint, email or user ID).
+        #[arg(required = true)]
+        keys: Vec<String>,
+    },
+    /// Remove a member, re-encrypt every secret and flag the ones they could read.
+    Remove {
+        /// The member to remove.
+        name: String,
+    },
 }
 
 fn main() -> ExitCode {
@@ -76,6 +99,12 @@ fn main() -> ExitCode {
         Command::Seal { force, paths } => git_amaga::cmd_seal(force, &paths),
         Command::Open { force, paths } => git_amaga::cmd_open(force, &paths),
         Command::Close { paths } => git_amaga::cmd_close(&paths),
+        Command::User {
+            command: UserCommand::Add { name, keys },
+        } => git_amaga::cmd_user_add(&name, &keys),
+        Command::User {
+            command: UserCommand::Remove { name },
+        } => git_amaga::cmd_user_remove(&name),
         Command::Rotate => git_amaga::cmd_rotate(),
         Command::Status => git_amaga::cmd_status(),
     };

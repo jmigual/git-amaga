@@ -19,6 +19,7 @@ const TAG: &str = "pgp";
 
 /// A validated armored OpenPGP key with its chosen encryption subkey; `fpr` is that subkey's
 /// uppercase-hex fingerprint (plan 5.1).
+#[derive(Clone)]
 pub struct AscKey {
     pub key: SignedPublicKey,
     pub fpr: String,

@@ -4,6 +4,7 @@
 mod common;
 
 use std::path::Path;
+use std::process::Output;
 
 use age::x25519;
 use common::{OutputExt, Repo, repo_with_alice};
@@ -186,13 +187,8 @@ fn rotate_with_undecryptable_secret_changes_nothing() {
     for name in ["a.env", "b.env", "c.env"] {
         add_secret(&repo, name, b"v1");
     }
-    for name in ["a.env.amaga", "b.env.amaga"] {
-        let path = repo.path().join(name);
-        let mut bytes = std::fs::read(&path).unwrap();
-        let last = bytes.len() - 1;
-        bytes[last] ^= 0xFF;
-        std::fs::write(&path, bytes).unwrap();
-    }
+    corrupt(&repo, "a.env.amaga");
+    corrupt(&repo, "b.env.amaga");
     write_member(&repo, "bob");
     let before_c = std::fs::read(repo.path().join("c.env.amaga")).unwrap();
     let before_audit = audit_events(&repo);
@@ -207,4 +203,404 @@ fn rotate_with_undecryptable_secret_changes_nothing() {
         before_c
     );
     assert_eq!(audit_events(&repo), before_audit);
+}
+
+fn user_files(repo: &Repo) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(repo.path().join(".amaga/users"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    names
+}
+
+fn corrupt(repo: &Repo, name: &str) {
+    let path = repo.path().join(name);
+    let mut bytes = std::fs::read(&path).unwrap();
+    let last = bytes.len() - 1;
+    bytes[last] ^= 0xFF;
+    std::fs::write(&path, bytes).unwrap();
+}
+
+fn user_add(repo: &Repo, name: &str, key: &str) -> Output {
+    repo.run(&["user", "add", name, key])
+}
+
+/// Test 12: a new member decrypts the re-encrypted secret but not the committed history.
+#[test]
+fn user_add_new_member_decrypts_current_not_history() {
+    let (repo, identity_path) = repo_with_alice();
+    add_secret(&repo, "secret.env", b"v1");
+    repo.commit_all("add secret");
+    let bob = x25519::Identity::generate();
+
+    user_add(&repo, "bob", &bob.to_public().to_string()).assert_success();
+
+    let current = std::fs::read(repo.path().join("secret.env.amaga")).unwrap();
+    assert_eq!(decrypt_with(&current, &bob).unwrap().1, b"v1");
+    let history = repo.git(&["show", "HEAD:secret.env.amaga"]).stdout;
+    assert!(decrypt_with(&history, &bob).is_err());
+    let header = header_of(&repo, &identity_path, "secret.env.amaga");
+    assert_eq!(
+        header.recipients.keys().collect::<Vec<_>>(),
+        ["alice", "bob"]
+    );
+    assert!(header.exposed_to.is_empty());
+    let audit = audit_events(&repo);
+    let last = audit.last().unwrap();
+    assert!(last.contains("\"event\":\"user.added\""), "got {last:?}");
+    assert!(last.contains("\"user\":\"bob\""), "got {last:?}");
+    assert_eq!(user_files(&repo), ["alice.txt", "bob.txt"]);
+}
+
+/// `user add` refuses an existing name and changes nothing.
+#[test]
+fn user_add_refuses_existing_name() {
+    let (repo, _identity_path) = repo_with_alice();
+    add_secret(&repo, "secret.env", b"v1");
+    let before = std::fs::read(repo.path().join("secret.env.amaga")).unwrap();
+    let before_audit = audit_events(&repo);
+    let other = x25519::Identity::generate().to_public().to_string();
+
+    user_add(&repo, "alice", &other).assert_failure();
+
+    assert_eq!(
+        std::fs::read(repo.path().join("secret.env.amaga")).unwrap(),
+        before
+    );
+    assert_eq!(audit_events(&repo), before_audit);
+    assert_eq!(user_files(&repo), ["alice.txt"]);
+}
+
+/// A key already used by another member is refused before anything is written.
+#[test]
+fn user_add_refuses_duplicate_key_and_writes_nothing() {
+    let (repo, _identity_path) = repo_with_alice();
+    add_secret(&repo, "secret.env", b"v1");
+    let before = std::fs::read(repo.path().join("secret.env.amaga")).unwrap();
+    let before_audit = audit_events(&repo);
+    let alice_key = std::fs::read_to_string(repo.path().join(".amaga/users/alice.txt")).unwrap();
+
+    user_add(&repo, "bob", alice_key.trim()).assert_failure();
+    user_add(&repo, "Bob", "age1xyz").assert_failure();
+
+    assert_eq!(
+        std::fs::read(repo.path().join("secret.env.amaga")).unwrap(),
+        before
+    );
+    assert_eq!(audit_events(&repo), before_audit);
+    assert_eq!(user_files(&repo), ["alice.txt"]);
+}
+
+/// Test 30: expired, revoked, sign-only and third-party-certified keys are each refused and
+/// `.amaga/users` is unchanged. Needs no gpg.
+#[test]
+fn user_add_rejects_unusable_gpg_keys() {
+    let (repo, _identity_path) = repo_with_alice();
+    add_secret(&repo, "secret.env", b"v1");
+    let before_audit = audit_events(&repo);
+    let fixtures = [
+        ("expired", include_str!("fixtures/expired.asc")),
+        ("revoked", include_str!("fixtures/revoked.asc")),
+        ("sign_only", include_str!("fixtures/sign_only.asc")),
+        ("third_party", include_str!("fixtures/third_party.asc")),
+    ];
+    for (name, armored) in fixtures {
+        let key_path = repo.path().join(format!("{name}.asc"));
+        std::fs::write(&key_path, armored).unwrap();
+        let output = user_add(&repo, "bob", key_path.to_str().unwrap());
+        output.assert_failure();
+        assert_eq!(user_files(&repo), ["alice.txt"], "after {name}");
+    }
+    assert_eq!(audit_events(&repo), before_audit);
+}
+
+/// A GPG member added from a key file: stored byte for byte, audited with its fingerprint, and
+/// removing it flags secrets as exposed to its `pgp:` key.
+#[test]
+fn gpg_member_add_then_remove_flags_its_pgp_key() {
+    let (repo, identity_path) = repo_with_alice();
+    add_secret(&repo, "secret.env", b"v1");
+    let armored = include_str!("fixtures/valid_cv25519.asc");
+    let key_path = repo.path().join("bob-key.asc");
+    std::fs::write(&key_path, armored).unwrap();
+    let asc = git_amaga::gpg::validate(armored).unwrap();
+
+    let add = user_add(&repo, "bob", key_path.to_str().unwrap());
+    add.assert_success();
+    assert!(String::from_utf8_lossy(&add.stdout).contains(&asc.primary_fpr()));
+    assert_eq!(
+        std::fs::read_to_string(repo.path().join(".amaga/users/bob.asc")).unwrap(),
+        armored
+    );
+    let header = header_of(&repo, &identity_path, "secret.env.amaga");
+    assert!(header.recipients["bob"].contains(&format!("pgp:{}", asc.fpr)));
+    let audit = audit_events(&repo);
+    let added = audit.last().unwrap();
+    assert!(
+        added.contains(&format!("\"gpg_fpr\":\"{}\"", asc.primary_fpr())),
+        "{added}"
+    );
+
+    repo.run(&["user", "remove", "bob"]).assert_success();
+    assert_eq!(user_files(&repo), ["alice.txt"]);
+    let header = header_of(&repo, &identity_path, "secret.env.amaga");
+    assert!(header.exposed_to["bob"].contains(&format!("pgp:{}", asc.fpr)));
+}
+
+/// `user add` takes a gpg key spec (here an email) and exports it from the local keyring.
+#[test]
+fn user_add_resolves_an_email_from_the_gpg_keyring() {
+    let (repo, _identity_path) = repo_with_alice();
+    let Some(gpg_home) = common::GpgHome::new("user_add_resolves_an_email_from_the_gpg_keyring")
+    else {
+        return;
+    };
+    let bob = gpg_home.generate_key("Bob <bob@example.invalid>");
+    add_secret(&repo, "secret.env", b"v1");
+
+    let add = repo.run_with_env(
+        &["user", "add", "bob", "bob@example.invalid"],
+        &[("GNUPGHOME", gpg_home.path().as_os_str())],
+    );
+    add.assert_success();
+
+    assert_eq!(
+        std::fs::read_to_string(repo.path().join(".amaga/users/bob.asc")).unwrap(),
+        gpg_home.export_minimal(&bob)
+    );
+    let audit = audit_events(&repo);
+    assert!(audit.last().unwrap().contains(&bob));
+}
+
+/// Test 31: replacing a member's encryption subkey is a key change: secrets go stale and `rotate`
+/// flags exposure to the old `pgp:` key.
+#[test]
+fn gpg_subkey_replacement_flags_exposure() {
+    let (repo, identity_path) = repo_with_alice();
+    let old = include_str!("fixtures/rotated_subkey_old.asc");
+    let new = include_str!("fixtures/rotated_subkey_new.asc");
+    let old_fpr = git_amaga::gpg::validate(old).unwrap().fpr;
+    let new_fpr = git_amaga::gpg::validate(new).unwrap().fpr;
+    let key_path = repo.path().join("bob-key.asc");
+    std::fs::write(&key_path, old).unwrap();
+    user_add(&repo, "bob", key_path.to_str().unwrap()).assert_success();
+    add_secret(&repo, "secret.env", b"v1");
+
+    std::fs::write(repo.path().join(".amaga/users/bob.asc"), new).unwrap();
+    let status = repo.run(&["status"]);
+    assert_eq!(status.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&status.stdout).contains("run git-amaga rotate"));
+
+    repo.run(&["rotate"]).assert_success();
+    let header = header_of(&repo, &identity_path, "secret.env.amaga");
+    assert_eq!(
+        header.exposed_to["bob"].iter().collect::<Vec<_>>(),
+        [&format!("pgp:{old_fpr}")]
+    );
+    assert!(header.recipients["bob"].contains(&format!("pgp:{new_fpr}")));
+}
+
+/// A repository with members alice and bob and secrets `a.env` and `b.env`.
+fn repo_with_two_members() -> (Repo, std::path::PathBuf, x25519::Identity) {
+    let (repo, identity_path) = repo_with_alice();
+    let bob = x25519::Identity::generate();
+    user_add(&repo, "bob", &bob.to_public().to_string()).assert_success();
+    add_secret(&repo, "a.env", b"a1");
+    add_secret(&repo, "b.env", b"b1");
+    (repo, identity_path, bob)
+}
+
+/// Test 13: after `user remove` the member cannot decrypt, every secret is flagged, and the user
+/// file is gone.
+#[test]
+fn user_remove_locks_out_and_flags_all() {
+    let (repo, identity_path, bob) = repo_with_two_members();
+
+    repo.run(&["user", "remove", "bob"]).assert_success();
+
+    assert_eq!(user_files(&repo), ["alice.txt"]);
+    for name in ["a.env.amaga", "b.env.amaga"] {
+        let ciphertext = std::fs::read(repo.path().join(name)).unwrap();
+        assert!(decrypt_with(&ciphertext, &bob).is_err());
+        let header = header_of(&repo, &identity_path, name);
+        assert_eq!(
+            header.exposed_to["bob"].iter().collect::<Vec<_>>(),
+            [&bob.to_public().to_string()]
+        );
+    }
+    let status = repo.run(&["status"]);
+    status.assert_success();
+    let stdout = String::from_utf8_lossy(&status.stdout);
+    assert_eq!(stdout.matches("NEEDS ROTATION: exposed to bob").count(), 2);
+    let audit = audit_events(&repo);
+    let last = audit.last().unwrap();
+    assert!(last.contains("\"event\":\"user.removed\""), "got {last:?}");
+    assert!(last.contains("\"user\":\"bob\""), "got {last:?}");
+}
+
+/// Test 14: sealing an edit clears the flag only on that file, and re-encryption never clears it.
+#[test]
+fn seal_change_clears_only_that_file() {
+    let (repo, identity_path, _bob) = repo_with_two_members();
+    repo.run(&["user", "remove", "bob"]).assert_success();
+    repo.run(&["rotate"]).assert_success();
+    assert!(
+        !header_of(&repo, &identity_path, "a.env.amaga")
+            .exposed_to
+            .is_empty()
+    );
+
+    std::fs::write(repo.path().join("a.env"), b"a2-rotated").unwrap();
+    repo.run(&["seal", "a.env"]).assert_success();
+
+    assert!(
+        header_of(&repo, &identity_path, "a.env.amaga")
+            .exposed_to
+            .is_empty()
+    );
+    assert!(
+        !header_of(&repo, &identity_path, "b.env.amaga")
+            .exposed_to
+            .is_empty()
+    );
+}
+
+/// Test 15: a secret added after a removal is not flagged.
+#[test]
+fn secret_added_after_removal_not_flagged() {
+    let (repo, identity_path, _bob) = repo_with_two_members();
+    repo.run(&["user", "remove", "bob"]).assert_success();
+
+    add_secret(&repo, "c.env", b"c1");
+    repo.run(&["rotate"]).assert_success();
+
+    assert!(
+        header_of(&repo, &identity_path, "c.env.amaga")
+            .exposed_to
+            .is_empty()
+    );
+}
+
+/// `user remove` refuses the last member, an unknown member and an invalid name.
+#[test]
+fn user_remove_refuses_last_unknown_and_invalid() {
+    let (repo, _identity_path) = repo_with_alice();
+    add_secret(&repo, "secret.env", b"v1");
+    let before = std::fs::read(repo.path().join("secret.env.amaga")).unwrap();
+
+    // `../alice` would resolve to this file if the name were not validated.
+    std::fs::write(repo.path().join(".amaga/alice.txt"), "not a member").unwrap();
+
+    repo.run(&["user", "remove", "alice"]).assert_failure();
+    repo.run(&["user", "remove", "nobody"]).assert_failure();
+    repo.run(&["user", "remove", "../alice"]).assert_failure();
+
+    assert!(repo.path().join(".amaga/alice.txt").exists());
+
+    assert_eq!(user_files(&repo), ["alice.txt"]);
+    assert_eq!(
+        std::fs::read(repo.path().join("secret.env.amaga")).unwrap(),
+        before
+    );
+}
+
+/// Test 20: with an undecryptable secret `user remove` (and `user add`) change nothing: the user
+/// files, the audit log and the other secrets stay as they were.
+#[test]
+fn user_remove_with_undecryptable_secret_changes_nothing() {
+    let (repo, _identity_path, _bob) = repo_with_two_members();
+    corrupt(&repo, "b.env.amaga");
+    let before_a = std::fs::read(repo.path().join("a.env.amaga")).unwrap();
+    let before_audit = audit_events(&repo);
+
+    let remove = repo.run(&["user", "remove", "bob"]);
+    remove.assert_failure();
+    assert!(stderr(&remove).contains("b.env.amaga"));
+    let carol = x25519::Identity::generate().to_public().to_string();
+    user_add(&repo, "carol", &carol).assert_failure();
+
+    assert_eq!(user_files(&repo), ["alice.txt", "bob.txt"]);
+    assert_eq!(audit_events(&repo), before_audit);
+    assert_eq!(
+        std::fs::read(repo.path().join("a.env.amaga")).unwrap(),
+        before_a
+    );
+}
+
+/// The files being removed are not validated: a broken member file can still be removed.
+#[test]
+fn user_remove_accepts_a_broken_member_file() {
+    let (repo, _identity_path) = repo_with_alice();
+    add_secret(&repo, "secret.env", b"v1");
+    std::fs::write(repo.path().join(".amaga/users/bob.asc"), "not a key").unwrap();
+    repo.run(&["status"]).assert_failure();
+
+    repo.run(&["user", "remove", "bob"]).assert_success();
+
+    assert_eq!(user_files(&repo), ["alice.txt"]);
+    repo.run(&["status"]).assert_success();
+}
+
+/// Removing yourself works; you are then no longer a member, so another member must `rotate`.
+#[test]
+fn user_can_remove_themselves() {
+    let (repo, _identity_path) = repo_with_alice();
+    let bob = write_member(&repo, "bob");
+    add_secret(&repo, "secret.env", b"v1");
+
+    repo.run(&["user", "remove", "alice"]).assert_success();
+
+    let ciphertext = std::fs::read(repo.path().join("secret.env.amaga")).unwrap();
+    let (header, body) = decrypt_with(&ciphertext, &bob).unwrap();
+    assert_eq!(body, b"v1");
+    assert!(header.exposed_to.contains_key("alice"));
+    repo.run(&["rotate"]).assert_failure();
+}
+
+/// `user add` validates the name: `../evil` must not write outside `.amaga/users`.
+#[test]
+fn user_add_refuses_a_path_traversal_name() {
+    let (repo, _identity_path) = repo_with_alice();
+    let key = x25519::Identity::generate().to_public().to_string();
+
+    user_add(&repo, "../evil", &key).assert_failure();
+
+    assert!(!repo.path().join(".amaga/evil.txt").exists());
+    assert_eq!(user_files(&repo), ["alice.txt"]);
+}
+
+/// The member being removed is not validated: a comment-only file and a key that duplicates
+/// another member's key do not block `user remove`.
+#[test]
+fn user_remove_ignores_the_removed_members_empty_file_and_duplicate_key() {
+    let (repo, _identity_path) = repo_with_alice();
+    add_secret(&repo, "secret.env", b"v1");
+    let bob_txt = repo.path().join(".amaga/users/bob.txt");
+
+    std::fs::write(&bob_txt, "# no keys\n").unwrap();
+    repo.run(&["user", "remove", "bob"]).assert_success();
+    assert_eq!(user_files(&repo), ["alice.txt"]);
+
+    let alice_key = std::fs::read_to_string(repo.path().join(".amaga/users/alice.txt")).unwrap();
+    std::fs::write(&bob_txt, alice_key).unwrap();
+    repo.run(&["user", "remove", "bob"]).assert_success();
+    assert_eq!(user_files(&repo), ["alice.txt"]);
+    repo.run(&["status"]).assert_success();
+}
+
+/// A broken `.asc` next to a valid `.txt`: both files go, and the valid `.txt` keys count as
+/// bob's (so secrets get flagged for them).
+#[test]
+fn user_remove_with_a_broken_asc_and_a_valid_txt() {
+    let (repo, identity_path) = repo_with_alice();
+    let bob = write_member(&repo, "bob");
+    add_secret(&repo, "secret.env", b"v1");
+    std::fs::write(repo.path().join(".amaga/users/bob.asc"), "not a key").unwrap();
+
+    repo.run(&["user", "remove", "bob"]).assert_success();
+
+    assert_eq!(user_files(&repo), ["alice.txt"]);
+    let header = header_of(&repo, &identity_path, "secret.env.amaga");
+    assert!(header.exposed_to["bob"].contains(&bob.to_public().to_string()));
 }

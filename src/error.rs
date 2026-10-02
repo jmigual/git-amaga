@@ -197,6 +197,17 @@ pub enum Error {
     )]
     CloseRefused(String, PlaintextState),
 
+    #[error(
+        "member '{0}' already exists (to change its keys, edit its file in .amaga/users, then run `rotate`)"
+    )]
+    UserExists(String),
+
+    #[error("no member named '{0}' in .amaga/users")]
+    UserNotFound(String),
+
+    #[error("'{0}' is the last member; removing them would leave nobody who can decrypt")]
+    LastMember(String),
+
     /// Nothing was written; every failing secret is listed.
     #[error("cannot re-encrypt, these secrets do not decrypt (nothing was changed):\n{0}")]
     ReencryptAborted(String),

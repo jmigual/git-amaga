@@ -31,6 +31,7 @@ pub fn classify(key: &str) -> KeyKind {
 /// A validated OpenPGP key ready to be stored as `<name>.asc`.
 pub struct GpgKey {
     pub armored: String,
+    pub asc: gpg::AscKey,
     pub fpr: String,
     pub uid: String,
 }
@@ -43,14 +44,14 @@ impl GpgKey {
 }
 
 pub struct ResolvedKeys {
-    pub age_lines: Vec<String>,
+    pub age_keys: Vec<age::x25519::Recipient>,
     pub gpg: Option<GpgKey>,
 }
 
 /// Resolves every `KEY`; at most one OpenPGP key (file or lookup) is allowed (plan 5.1, 7).
 /// OpenPGP keys are validated and checked for expiry before anything is written.
 pub fn resolve(keys: &[String]) -> Result<ResolvedKeys, Error> {
-    let mut age_lines = Vec::new();
+    let mut age_keys = Vec::new();
     let mut seen_age = BTreeSet::new();
     let mut gpg_key = None;
     for key in keys {
@@ -59,9 +60,8 @@ pub fn resolve(keys: &[String]) -> Result<ResolvedKeys, Error> {
             let recipient: age::x25519::Recipient = key
                 .parse()
                 .map_err(|_| Error::AgeRecipientParse(key.clone()))?;
-            let canonical = recipient.to_string();
-            if seen_age.insert(canonical.clone()) {
-                age_lines.push(canonical);
+            if seen_age.insert(recipient.to_string()) {
+                age_keys.push(recipient);
             }
             continue;
         }
@@ -87,10 +87,11 @@ pub fn resolve(keys: &[String]) -> Result<ResolvedKeys, Error> {
             fpr: asc.primary_fpr(),
             uid: asc.first_user_id(),
             armored,
+            asc,
         });
     }
     Ok(ResolvedKeys {
-        age_lines,
+        age_keys,
         gpg: gpg_key,
     })
 }
@@ -384,7 +385,8 @@ fpr:::::::::4444444444444444444444444444444444444444:\n";
         let resolved =
             resolve(&[age.clone(), asc.to_str().unwrap().to_string(), age.clone()]).unwrap();
 
-        assert_eq!(resolved.age_lines, [age]);
+        let age_keys: Vec<String> = resolved.age_keys.iter().map(|k| k.to_string()).collect();
+        assert_eq!(age_keys, [age]);
         let gpg = resolved.gpg.unwrap();
         assert_eq!(gpg.armored, armored);
         assert_eq!(gpg.fpr.len(), 40);

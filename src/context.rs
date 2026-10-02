@@ -18,21 +18,30 @@ pub(crate) struct Context {
 impl Context {
     // Refuses while any `*.amaga` is unmerged (plan 7).
     pub(crate) fn load() -> Result<Self, Error> {
+        Self::load_refusing_unmerged(None)
+    }
+
+    // Like `load`, but member `name`'s own files may be invalid (`user remove`, plan 7).
+    pub(crate) fn load_for_removal(name: &str) -> Result<Self, Error> {
+        Self::load_refusing_unmerged(Some(name))
+    }
+
+    fn load_refusing_unmerged(tolerated: Option<&str>) -> Result<Self, Error> {
         let root = git::toplevel()?;
         let unmerged = git::unmerged_secrets(&root)?;
         if !unmerged.is_empty() {
             return Err(Error::UnmergedAmagaFiles(unmerged.join(", ")));
         }
-        Self::load_in(root)
+        Self::load_in(root, tolerated)
     }
 
     // For `status`, which lists the unmerged files instead of refusing.
     pub(crate) fn load_allowing_unmerged() -> Result<Self, Error> {
-        Self::load_in(git::toplevel()?)
+        Self::load_in(git::toplevel()?, None)
     }
 
-    fn load_in(root: PathBuf) -> Result<Self, Error> {
-        let members = users::load(&root.join(".amaga/users"))?;
+    fn load_in(root: PathBuf, tolerated: Option<&str>) -> Result<Self, Error> {
+        let members = users::load_tolerating(&root.join(".amaga/users"), tolerated)?;
         let age_identities = match identity::configured_identity_path()? {
             Some(path) => identity::load_identity_file(&path)?,
             None => Vec::new(),

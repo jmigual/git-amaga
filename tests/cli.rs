@@ -826,7 +826,7 @@ fn age_member_seals_for_gpg_member_without_gpg() {
     };
     gpg_home.import_secret_key(include_str!("fixtures/valid_cv25519.secret.asc"));
 
-    // bob: a GPG member, added by writing the file directly (`user add` is a later step).
+    // bob: a GPG member, added by writing the file directly.
     std::fs::write(
         repo.path().join(".amaga/users/bob.asc"),
         include_str!("fixtures/valid_cv25519.asc"),

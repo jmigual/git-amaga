@@ -34,18 +34,14 @@ pub fn cmd_init(name: &str, keys: &[String]) -> Result<(), Error> {
         return Err(Error::AlreadyInitialized);
     }
 
-    let ResolvedKeys { age_lines, gpg } = if keys.is_empty() {
+    let resolved = if keys.is_empty() {
         let identity_path = identity::configured_identity_path()?.ok_or(Error::NoIdentity)?;
         let identities = identity::load_identity_file(&identity_path)?;
         if identities.is_empty() {
             return Err(Error::NoIdentity);
         }
-        let age_lines = identities
-            .iter()
-            .map(|i| i.to_public().to_string())
-            .collect();
         ResolvedKeys {
-            age_lines,
+            age_keys: identities.iter().map(|i| i.to_public()).collect(),
             gpg: None,
         }
     } else {
@@ -59,20 +55,12 @@ pub fn cmd_init(name: &str, keys: &[String]) -> Result<(), Error> {
 
     let users_dir = amaga_dir.join("users");
     fs::create_dir_all(&users_dir)?;
-    if !age_lines.is_empty() {
-        let contents = format!("{}\n", age_lines.join("\n"));
-        paths::atomic_write(
-            &users_dir.join(format!("{name}.txt")),
-            contents.as_bytes(),
-            None,
-        )?;
-    }
-    if let Some(key) = &gpg {
-        let asc = users_dir.join(format!("{name}.asc"));
-        paths::atomic_write(&asc, key.armored.as_bytes(), None)?;
-    }
+    users::write_member(&users_dir, name, &resolved)?;
 
-    let gpg_info = gpg.as_ref().map(|k| (k.fpr.as_str(), k.uid.as_str()));
+    let gpg_info = resolved
+        .gpg
+        .as_ref()
+        .map(|k| (k.fpr.as_str(), k.uid.as_str()));
     audit::append(
         &amaga_dir.join("audit.jsonl"),
         name,
@@ -81,7 +69,7 @@ pub fn cmd_init(name: &str, keys: &[String]) -> Result<(), Error> {
         None,
         gpg_info,
     )?;
-    if let Some(key) = &gpg {
+    if let Some(key) = &resolved.gpg {
         println!("{}", key.summary(name));
     }
 
