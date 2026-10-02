@@ -57,4 +57,14 @@ pub enum Error {
     /// The primary key or the selected encryption subkey is expired (add-time check only).
     #[error("armored OpenPGP key is expired")]
     GpgKeyExpired,
+
+    /// A `git` subprocess exited with a non-zero status for a reason other than "unset config
+    /// key" (plan 10.2: git.rs runs git as a subprocess, never through a shell).
+    #[error("git failed: {0}")]
+    Git(String),
+
+    /// `git rev-parse --show-toplevel` failed: the current directory is not inside a Git
+    /// repository (plan: `init` "requires a Git repo").
+    #[error("not inside a Git repository")]
+    NotAGitRepo,
 }
