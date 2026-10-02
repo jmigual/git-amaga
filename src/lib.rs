@@ -3,6 +3,7 @@ pub mod git;
 pub mod gpg;
 pub mod identity;
 pub mod secret;
+pub mod users;
 
 pub use error::Error;
 

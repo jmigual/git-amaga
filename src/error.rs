@@ -95,4 +95,33 @@ pub enum Error {
         #[source]
         source: std::io::Error,
     },
+
+    /// A file in `.amaga/users/` is not `<name>.txt` or `<name>.asc` with a valid lowercase
+    /// name (plan 5.1).
+    #[error(
+        "'{0}' in .amaga/users is not a valid member file (expected '<name>.txt' or '<name>.asc' with a lowercase name)"
+    )]
+    UsersInvalidFile(String),
+
+    /// `.amaga/users` has no member files at all (plan 5.1).
+    #[error("no user files found in .amaga/users (repository has no members)")]
+    NoUsers,
+
+    /// A member file stem has zero usable keys (plan 5.1).
+    #[error("member '{0}' has no usable keys")]
+    UsersEmptyMember(String),
+
+    /// The same key string, or the same OpenPGP primary fingerprint, appears twice across all
+    /// members (plan 5.1).
+    #[error("key '{0}' is used by more than one member")]
+    UsersDuplicateKey(String),
+
+    /// A member file's content failed to validate (plan 5.1): names which file, wrapping the
+    /// underlying cause.
+    #[error("{file}: {source}")]
+    UsersFileError {
+        file: String,
+        #[source]
+        source: Box<Error>,
+    },
 }
