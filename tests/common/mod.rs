@@ -36,6 +36,13 @@ impl Repo {
     }
 
     fn isolate(command: &mut Command, cwd: &Path, global_config: &Path, home: &Path) {
+        // A hook or `rebase -x` exports GIT_DIR, GIT_INDEX_FILE, ...; children must not inherit
+        // them.
+        for (key, _) in std::env::vars_os() {
+            if key.to_string_lossy().starts_with("GIT_") {
+                command.env_remove(key);
+            }
+        }
         command
             .current_dir(cwd)
             .env("GIT_CONFIG_GLOBAL", global_config)
