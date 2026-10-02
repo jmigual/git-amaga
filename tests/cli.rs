@@ -1428,7 +1428,15 @@ fn status_names_undecryptable_secret() {
     bytes[last] ^= 0xFF;
     std::fs::write(&cipher_path, &bytes).unwrap();
 
-    assert_status_error(&repo, "secret.env.amaga: cannot decrypt");
+    assert_status_error(&repo, "secret.env.amaga");
+    let stdout = String::from_utf8_lossy(&repo.run(&["status"]).stdout).into_owned();
+    assert!(!stdout.contains("cannot decrypt"), "got {stdout:?}");
+    assert_eq!(
+        stdout.matches("secret.env.amaga").count(),
+        1,
+        "got {stdout:?}"
+    );
+    assert!(stdout.contains("decryption error"), "got {stdout:?}");
 }
 
 /// A secret whose header key set differs from the members is stale until `rotate`.

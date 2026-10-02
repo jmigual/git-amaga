@@ -314,7 +314,7 @@ fn secret_status(
         let decrypted = read_repo_file(&ctx.root, &sp.ciphertext)
             .and_then(|ciphertext| ctx.decrypt(&sp.ciphertext, &ciphertext));
         match decrypted {
-            Err(e) => errors.push(format!("cannot decrypt: {e}")),
+            Err(e) => errors.push(without_path(e)),
             Ok((header, body)) => {
                 if key_set(&header.recipients) != key_set(current) {
                     errors.push("stale recipients; run git-amaga rotate".into());
@@ -348,6 +348,20 @@ fn secret_status(
         errors.push(ok.into());
     }
     Ok((level, format!("{}: {}", sp.ciphertext, errors.join("; "))))
+}
+
+// The status line already starts with the secret's path; drop the copy inside the error.
+fn without_path(e: Error) -> String {
+    match e {
+        Error::SecretUndecryptable {
+            member: Some(member),
+            source,
+            ..
+        } => format!("member {member}: {source}"),
+        Error::SecretUndecryptable { source, .. } => source.to_string(),
+        Error::IoPath { source, .. } => source.to_string(),
+        e => e.to_string(),
+    }
 }
 
 fn state_problem(plaintext: &str, state: secret::PlaintextState) -> Option<String> {
