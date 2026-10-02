@@ -120,7 +120,8 @@ impl Context {
     }
 }
 
-// No args: every existing managed secret. Invalid listed paths are skipped with a warning.
+// Explicit args must have a `.amaga`. No args: every existing managed secret, skipping invalid
+// listed paths with a warning.
 pub(crate) fn secret_paths_for(
     ctx: &Context,
     args: &[String],
@@ -129,7 +130,13 @@ pub(crate) fn secret_paths_for(
     if !args.is_empty() {
         return args
             .iter()
-            .map(|a| paths::resolve_arg(&ctx.prefix, a))
+            .map(|a| {
+                let sp = paths::resolve_arg(&ctx.prefix, a)?;
+                if !ctx.root.join(&sp.ciphertext).exists() {
+                    return Err(Error::NotManagedSecret(sp.plaintext));
+                }
+                Ok(sp)
+            })
             .collect();
     }
     let mut found = Vec::new();

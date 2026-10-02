@@ -142,6 +142,9 @@ pub enum Error {
     #[error("'{0}' already exists; run `seal` to update it instead of `add`")]
     CiphertextExists(String),
 
+    #[error("'{0}' is not a managed secret; use `add`")]
+    NotManagedSecret(String),
+
     #[error(
         "'{0}' already exists in git history; run `git checkout <rev> -- {0}` then `seal` to keep its exposure history, or rerun `add` with --force to drop it"
     )]

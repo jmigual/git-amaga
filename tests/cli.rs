@@ -952,6 +952,24 @@ fn add_warns_when_plaintext_is_in_history() {
     assert!(repo.path().join("secret.env.amaga").exists());
 }
 
+/// `seal`, `open` and `close` of `<path>` without a `<path>.amaga` point at `add`, not a raw I/O
+/// error.
+#[test]
+fn explicit_path_without_ciphertext_says_use_add() {
+    let (repo, _identity_path) = repo_with_alice();
+
+    std::fs::write(repo.path().join("README.md"), b"hi").unwrap();
+    for command in ["seal", "open", "close"] {
+        let out = repo.run(&[command, "README.md"]);
+        out.assert_failure();
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("not a managed secret"),
+            "{command}: got {stderr:?}"
+        );
+    }
+}
+
 /// `seal` of a file that is not a secret fails before touching `.gitignore`.
 #[test]
 fn seal_unmanaged_file_does_not_touch_gitignore() {

@@ -235,6 +235,7 @@ Path handling:
 - On Windows, convert `\` to `/`.
 - Reject paths that leave the repository, contain control characters, lie under `.git/` or `.amaga/`, or whose plaintext name ends in `.amaga` or `.amaga-tmp`.
 - The managed secret list is `git ls-files -z --cached --others --exclude-standard -- '*.amaga'`, deduplicated (an unmerged path appears once per stage) and filtered to files that exist. In no-argument mode, listed paths that fail the validation above are skipped with a warning on stderr.
+- For `seal`, `open` and `close`, an explicit path whose `<path>.amaga` does not exist is refused (not a managed secret; use `add`).
 - Every command except `status` refuses while `git ls-files -u -- '*.amaga'` is non-empty. `status` lists the unmerged files.
 
 Every ciphertext, plaintext and base-file write goes through one helper:
