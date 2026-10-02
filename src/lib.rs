@@ -213,6 +213,13 @@ impl Context {
         Ok(())
     }
 
+    fn drop_base(&mut self, path: &str) -> Result<(), Error> {
+        if self.base.remove(path).is_some() {
+            secret::save_base(&self.base_path, &self.base)?;
+        }
+        Ok(())
+    }
+
     fn audit(&self, event: &str, path: &str) -> Result<(), Error> {
         audit::append(
             &self.root.join(".amaga/audit.jsonl"),
@@ -384,6 +391,68 @@ pub fn cmd_seal(force: bool, args: &[String]) -> Result<(), Error> {
         ctx.set_base(&sp.plaintext, &local)?;
         ctx.audit("secret.updated", &sp.plaintext)?;
         println!("sealed {}", sp.ciphertext);
+    }
+    Ok(())
+}
+
+/// `git-amaga open [--force] [<path>…]` (plan 7).
+pub fn cmd_open(force: bool, args: &[String]) -> Result<(), Error> {
+    let mut ctx = Context::load()?;
+
+    for sp in secret_paths_for(&ctx, args, false)? {
+        let ciphertext = read_repo_file(&ctx.root, &sp.ciphertext)?;
+        let (_header, body) = ctx.decrypt(&sp.ciphertext, &ciphertext)?;
+        if git::is_tracked(&ctx.root, &sp.plaintext)? {
+            return Err(Error::PlaintextTracked(sp.plaintext));
+        }
+        ensure_ignored(&ctx.root, &sp.plaintext)?;
+
+        let local = read_plaintext(&ctx.root, &sp.plaintext)?;
+        let state = secret::plaintext_state(
+            local.as_deref(),
+            &body,
+            ctx.base.get(&sp.plaintext).copied(),
+        );
+        match state {
+            secret::PlaintextState::InSync => {
+                ctx.set_base(&sp.plaintext, &body)?;
+                continue;
+            }
+            secret::PlaintextState::Modified | secret::PlaintextState::Conflict if !force => {
+                return Err(Error::OpenRefused(sp.plaintext, state));
+            }
+            _ => {}
+        }
+
+        write_repo_file(&ctx.root, &sp.plaintext, &body, Some(0o600))?;
+        ctx.set_base(&sp.plaintext, &body)?;
+        println!("opened {}", sp.plaintext);
+    }
+    Ok(())
+}
+
+/// `git-amaga close [<path>…]` (plan 7).
+pub fn cmd_close(args: &[String]) -> Result<(), Error> {
+    let mut ctx = Context::load()?;
+
+    for sp in secret_paths_for(&ctx, args, true)? {
+        let Some(local) = read_plaintext(&ctx.root, &sp.plaintext)? else {
+            continue;
+        };
+        let ciphertext = read_repo_file(&ctx.root, &sp.ciphertext)?;
+        let (_header, body) = ctx.decrypt(&sp.ciphertext, &ciphertext)?;
+
+        let state =
+            secret::plaintext_state(Some(&local), &body, ctx.base.get(&sp.plaintext).copied());
+        if state != secret::PlaintextState::InSync {
+            return Err(Error::CloseRefused(sp.plaintext, state));
+        }
+        fs::remove_file(ctx.root.join(&sp.plaintext)).map_err(|source| Error::IoPath {
+            path: sp.plaintext.clone(),
+            source,
+        })?;
+        ctx.drop_base(&sp.plaintext)?;
+        println!("closed {}", sp.plaintext);
     }
     Ok(())
 }

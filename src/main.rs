@@ -47,6 +47,19 @@ enum Command {
         /// Plaintext or `.amaga` paths to seal (default: every secret whose plaintext exists).
         paths: Vec<String>,
     },
+    /// Decrypt secrets to local plaintext.
+    Open {
+        /// Discard local edits and take the repository version.
+        #[arg(long)]
+        force: bool,
+        /// Plaintext or `.amaga` paths to open (default: every secret).
+        paths: Vec<String>,
+    },
+    /// Delete local plaintext once it is sealed.
+    Close {
+        /// Plaintext or `.amaga` paths to close (default: every secret whose plaintext exists).
+        paths: Vec<String>,
+    },
 }
 
 fn main() -> ExitCode {
@@ -56,6 +69,8 @@ fn main() -> ExitCode {
         Command::Init { name, keys } => git_amaga::cmd_init(&name, &keys),
         Command::Add { force, paths } => git_amaga::cmd_add(force, &paths),
         Command::Seal { force, paths } => git_amaga::cmd_seal(force, &paths),
+        Command::Open { force, paths } => git_amaga::cmd_open(force, &paths),
+        Command::Close { paths } => git_amaga::cmd_close(&paths),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,

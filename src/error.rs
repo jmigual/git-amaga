@@ -211,4 +211,16 @@ pub enum Error {
         "'{0}' is not in sync with the repository (state: {1:?}); `seal --force` overwrites the repository version with your local copy, `open --force` replaces your copy"
     )]
     SealRefused(String, PlaintextState),
+
+    /// `open` refused to replace a `Modified` or `Conflict` plaintext without `--force`.
+    #[error(
+        "'{0}' has local changes that --force would discard (state: {1:?}); rerun with --force, or `seal` first"
+    )]
+    OpenRefused(String, PlaintextState),
+
+    /// `close` refused to delete a plaintext that is not `InSync`.
+    #[error(
+        "'{0}' has not been sealed (state: {1:?}); run `seal` first, or `open --force` to discard local changes"
+    )]
+    CloseRefused(String, PlaintextState),
 }
