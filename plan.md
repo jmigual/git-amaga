@@ -9,6 +9,8 @@ credentials rotated after someone lost access. Members hold either an age key or
 **Runtime dependencies:** the `git` executable. Members who decrypt with a GPG key also need `gpg`
 (2.1+, with gpg-agent). Nobody needs the `age` CLI, and age-only members never need `gpg`.
 
+**Decision records:** the decisions below are summarised as ADRs in [`docs/adrs/README.md`](docs/adrs/README.md).
+
 ## 1. Changes from the original plan
 
 | # | Change | Reason |
@@ -31,6 +33,7 @@ credentials rotated after someone lost access. Members hold either an age key or
 | 16 | GPG members: each secret stays one age file, and a GPG member gets an extra `pgp` stanza holding the age file key encrypted to their OpenPGP key (5.2.1). Encryption is in-process with rPGP; decryption runs `gpg --decrypt`. | Requested: the user's own keys are GPG (smartcards via gpg-agent), with age as an option. One file format and one set of rules; `age -d` keeps working for age members; age-only members never need gpg. Considered: a separate `.gpg` file per secret (two formats, two exposure states) and OpenPGP as the outer format (loses the age escape hatch). |
 | 17 | A GPG key is identified by its **encryption subkey** fingerprint (`pgp:<FPR>`), not the primary. | Replacing a lost card's subkey is then a key change: secrets go stale and `rotate` flags exposure, exactly as for a removed age key. Extending expiry keeps the fingerprint, so it changes nothing. |
 | 18 | GPG key expiry is checked only at `init`/`user add`. Structure, signatures and revocation are checked on every load. | Loading stays deterministic (no clock), and an expired key still decrypts in gpg. See decision 9. |
+| 19 | A `KEY` can be a GPG key ID, fingerprint or email: the tool looks it up in the local keyring and exports it export-minimal (7.4). `keygen` prints the `user add` line for the new age key. | Requested: users should not type `gpg`/`age` commands, and the tool then always stores the right export format. ADR-0013. |
 
 ## 2. Open decisions for the user
 
@@ -45,6 +48,8 @@ Defaults are already chosen in this plan. Each item below can be flipped.
 7. **Dropping `audit verify` and the hash chain.** Both were in the original scope. The chain cannot survive two branches that both append (change 4), and a writer who can rewrite history can recompute it anyway. Restoring it means either forbidding parallel security changes or adding a merge-repair command.
 8. **`open` vs `unlock`.** You called the decrypt-all command `unlock`. The plan keeps `open` because it pairs with `seal`/`close`. Renaming it, or adding a clap alias, is one line.
 9. **Expired GPG keys (change 18).** By default, a key that expires after `user add` is still encrypted to. The alternative is to refuse, as `gpg -e` does. That blocks every `seal` and `rotate` for the whole team until the member re-exports an extended key. It also makes loading depend on the clock.
+10. **Confirming a looked-up GPG key (change 19).** By default the tool prints the fingerprint and user ID it used and does not prompt. The alternative is a yes/no prompt before writing, which blocks scripting. The printed line, the audit event and the committed `.asc` diff are the review points.
+11. **Fetching GPG keys from the network.** By default the lookup reads only the local keyring. Fetching from a keyserver or WKD (`gpg --locate-keys`) is deferred (section 13): the key would still need out-of-band verification, which the user does by importing it first.
 
 ## 3. Principles and scope
 
@@ -73,7 +78,7 @@ Out of scope for v1: per-file ACLs, rotating external credentials, a key server/
 - age has no sender authentication. Anyone with write access can replace user files or forge ciphertext. Use branch protection, review and signed commits. The original design had the same exposure via `users/` and `key.age`.
 - A compromised member identity exposes everything that member can read.
 - The audit log is informational. Its integrity is whatever Git history gives you.
-- GPG keys come only from the committed `.asc` files. The tool never reads a keyserver or the public keyring. A revocation or a new subkey takes effect when the member commits a re-exported `.asc` and someone runs `rotate`.
+- GPG keys come only from the committed `.asc` files. `init`/`user add` may export a key from the local public keyring (7.4), but loading never reads the keyring, and the tool never contacts a keyserver. A revocation or a new subkey takes effect when the member commits a re-exported `.asc` and someone runs `rotate`.
 - A GPG key that expires after `user add` is still encrypted to (decision 9).
 - GPG decryption trusts the `gpg` on PATH and its agent. It costs one `gpg` call per secret: `open`, `status` and `rotate` on N secrets mean N calls. The agent caches the PIN, but a card set to touch-always needs one touch per file.
 - Manual escape hatch: age members can use `age -d`. GPG members cannot decrypt without the tool, because the age CLI cannot take a file key that gpg has unwrapped.
@@ -161,6 +166,7 @@ One JSON object per line, written by the tool and never parsed by it:
   - `user.added` / `user.removed` (with `user`)
   - `rotated`
   - `secret.added` / `secret.updated` / `secret.removed` (with `path`)
+- `init` and `user.added` also carry `gpg_fpr` (primary fingerprint) and `gpg_uid` (first user ID) when the member has an `.asc`, read from the validated key whether it came from a file or from the keyring (7.4).
 - `secret.updated` means the plaintext changed. It is never written for a re-encryption.
 - Time is UTC RFC 3339, from `SystemTime`, using a ~15-line days-to-civil conversion with a unit test. This avoids a dependency for one formatter.
 
@@ -238,18 +244,23 @@ Every ciphertext, plaintext and base-file write goes through one helper:
 
 Commands that need an identity load it once (5.5), and the actor comes from it. Encryption never needs gpg or any identity beyond that.
 
-`KEY` arguments (`init`, `user add`): an argument starting with `age1` is an age recipient. Anything else is a path to an armored OpenPGP public key file, and at most one is allowed per member. It must pass 5.1 and the add-time check: neither the primary key nor the selected subkey may be expired, judged from the `key_expiration_time()` of the newest self-signature plus the key's `created_at()`. The `.asc` is stored byte-for-byte.
+`KEY` arguments (`init`, `user add`) are classified in this order (ADR-0013):
+1. Starts with `age1`: an age recipient.
+2. An existing file whose name ends in `.asc`: an armored OpenPGP public key file.
+3. Anything else: a GPG key spec (key ID, fingerprint, email or user ID) looked up in the local keyring (7.4).
+
+At most one OpenPGP key (file or lookup) is allowed per member. It must pass 5.1 and the add-time check: neither the primary key nor the selected subkey may be expired, judged from the `key_expiration_time()` of the newest self-signature plus the key's `created_at()`. The `.asc` (file contents or gpg's export) is stored byte-for-byte. For each OpenPGP key, print `<name>: GPG key <PRIMARY-FPR> "<first user ID>"`.
 
 | Command | Behaviour |
 |---------|-----------|
-| `keygen [PATH]` | Generate `x25519::Identity`. Default path is `home_dir()/.config/git-amaga/identity.txt`. Refuse to overwrite. Write `# public key: age1…` followed by the secret key (0600 on Unix). If `amaga.identity` is unset in global config, set it. Print the public key. |
-| `init <name> [KEY…]` | Requires a Git repo and no `.amaga/`. With no `KEY`, use the configured age identity's public keys (error if there is none). Writes `users/<name>.txt` and/or `users/<name>.asc`, `.gitattributes` lines, the `.gitignore` block, and the audit `init` event. |
+| `keygen [PATH]` | Generate `x25519::Identity`. Default path is `home_dir()/.config/git-amaga/identity.txt`. Refuse to overwrite. Write `# public key: age1…` followed by the secret key (0600 on Unix). If `amaga.identity` is unset in global config, set it. Print the public key on stdout (kept alone so scripts can capture it), then on stderr: `to join a repository, send this to a member: git-amaga user add <name> age1…` with the real key. |
+| `init <name> [KEY…]` | Requires a Git repo and no `.amaga/`. With no `KEY`, use the configured age identity's public keys (error if there is none). `KEY`s follow the rules above, so `init alice alice@example.org` works with a key in the local keyring. Writes `users/<name>.txt` and/or `users/<name>.asc`, `.gitattributes` lines, the `.gitignore` block, and the audit `init` event. |
 | `add [--force] <path>…` | Path must be a regular file (not a symlink), inside the repo, and not tracked (`git ls-files --error-unmatch`). If tracked, print the `git rm --cached -- <path>` remediation and stop; never run it. Refuse if `<path>.amaga` already exists. Warn if the plaintext path appears in history (`git rev-list -n1 --all -- <path>`). If `<path>.amaga` appears in history, refuse unless `--force`, and point to `git checkout <rev> -- <path>.amaga` followed by `seal` to keep its exposure state; `--force` says that exposure history is dropped. Run the ensure-ignored step. Encrypt with `next_header(None, …)`. Record the base. Audit `secret.added`. |
 | `seal [--force] [<path>…]` | No paths means every secret whose plaintext exists. Run the ensure-ignored step. Decide by plaintext state: `InSync` → no-op (ciphertext bytes untouched). `Modified` → encrypt with `plaintext_changed = true`, record base, audit `secret.updated`. `Outdated` / `Conflict` → refuse unless `--force`. When `--force` clears a non-empty `exposed_to`, warn that the needs-rotation flag is being cleared and that the local copy may hold the old value. |
 | `open [--force] [<path>…]` | No paths means all. Decrypt and authenticate fully, then run the ensure-ignored step, before writing anything. `Closed` / `Outdated` → write the plaintext. `InSync` → no-op. `Modified` / `Conflict` → refuse unless `--force`. Record base. |
 | `close [<path>…]` | Delete the plaintext only when `InSync`. Drop the base entry. |
 | `remove <path>…` | Delete the `.amaga` file and the base entry. Leave the plaintext and its ignore entry alone. Audit `secret.removed`. |
-| `user add <name> <KEY>…` | Refuse if `users/<name>.txt` or `.asc` exists (key changes: decision 5). Validate (5.1 + add-time expiry). Re-encrypt all (7.1). |
+| `user add <name> <KEY>…` | Refuse if `users/<name>.txt` or `.asc` exists (key changes: decision 5). Resolve `KEY`s with the same code as `init` (age key, `.asc` file, or keyring lookup). Validate (5.1 + add-time expiry) before re-encrypting. Re-encrypt all (7.1). |
 | `user remove <name>` | Must exist and must not be the last user. The files being removed are not validated, so a revoked or broken key can still be removed. Re-encrypt all (7.1). |
 | `rotate` | Re-encrypt all with fresh age file keys. Audit `rotated`. This is also the recovery command. |
 | `status` | See 7.2. |
@@ -294,6 +305,17 @@ Usage errors exit 2 (clap's default).
 - Do **not** pass `--batch` or `--pinentry-mode`. gpg-agent must be able to run pinentry for the PIN or for an "insert card" prompt. Piping gpg's stdin and stderr does not affect pinentry.
 - On non-zero exit, or output that is not 16 bytes: `GpgError { fpr, stderr }`, reported per secret with the member's name. Pass gpg's stderr through verbatim (for example `decryption failed: No secret key`, or `Operation cancelled` when the card prompt is dismissed), followed by the fixed hint "is the card inserted, and can gpg-agent show a PIN prompt (`export GPG_TTY=$(tty)`)?". Do not parse gpg's messages.
 - `gpg` is resolved on PATH; the program name is not configurable (section 13).
+
+### 7.4 Looking up a GPG key (`KEY` rule 3)
+
+1. Spec: the argument as given. If it contains `@` and no `<`, `>` or whitespace, wrap it as `<spec>`: gpg matches a bare email as a substring (`alice@x` also finds `malice@x`), and `<…>` as an exact address.
+2. `gpg --list-keys --with-colons -- <spec>`. Each `pub` record starts a key; the **first** `fpr` record after it holds the primary fingerprint (field 10), and later `fpr` records belong to subkeys. `uid` records give user IDs (field 10, shown as gpg escapes them). Parse this in a pure function, unit-tested on canned output.
+   - Non-zero exit or no `pub` record: `GpgKeyNotFound`: "'<spec>' is not in your local gpg keyring (import it with `gpg --import`, or pass an exported `.asc` file)", plus gpg's stderr.
+   - More than one `pub`: `GpgKeyAmbiguous`, listing `<FPR> <first user ID>` for each key, with the hint to pass a fingerprint.
+3. `gpg --export --armor --export-options export-minimal -- <FPR>`. Empty output is `GpgKeyNotFound`. The output then goes through 5.1 and the add-time check like a file would.
+4. Spawning gpg fails with `NotFound`: `GpgNotFound`: "gpg not found on PATH; pass an exported `.asc` file instead".
+
+No `--batch`/pinentry concerns: neither call touches secret keys. Nothing is fetched from the network (decision 11).
 
 ## 8. Branches and merges
 
@@ -340,7 +362,7 @@ src/lib.rs       command functions (one per subcommand)
 src/git.rs       run git with args (never through a shell; `--` before paths; -z output), toplevel/prefix/git-path helpers
 src/paths.rs     arg → repo-relative path, .amaga mapping, .gitignore block edit + escaping, atomic write
 src/users.rs     load/validate users dir (.txt + .asc), Recipients map, member keys as age recipients
-src/gpg.rs       .asc parse/validate/subkey selection, pgp Recipient, GpgIdentity (gpg --decrypt), held check
+src/gpg.rs       .asc parse/validate/subkey selection, pgp Recipient, GpgIdentity (gpg --decrypt), held check, keyring lookup (7.4)
 src/identity.rs  keygen, load age identity, GPG probe, actor lookup
 src/secret.rs    Header, encode/decode payload, age encrypt/decrypt, next_header, plaintext_state, base file
 src/audit.rs     append event, RFC 3339 formatting
@@ -371,6 +393,7 @@ strip = true
 - `.gitignore` entry insertion (existing block, no block) and escaping.
 - Path normalisation and rejection (`\`, `.git/`, `.amaga/`, `.amaga`/`.amaga-tmp` names).
 - RFC 3339 formatting against known timestamps.
+- `KEY` classification (7, rules 1–3), email wrapping, and `--with-colons` parsing (7.4): one key, two keys, a key whose subkey `fpr` lines must not be taken as primaries.
 - `gpg.rs`, from committed fixtures in `tests/fixtures/` (test-only keys, loaded with `include_str!`):
   - `.asc` validation: a valid cv25519 key, the same key with CRLF line endings (autocrlf), and a valid RSA key load; a sign-only key, a revoked key, a key with a third-party certification, two keys in one file, and garbage are each rejected with their own error variant. An expired key loads but fails the add-time check.
   - Subkey selection: with two encryption subkeys, the newest non-revoked one is chosen.
@@ -425,6 +448,15 @@ Each test below must fail against an implementation lacking the behaviour:
 31. `gpg_subkey_replacement_flags_exposure` (gpg): add a new encryption subkey, revoke the old one, and commit the re-exported `.asc`. `status` then reports stale, and `rotate` puts `pgp:<old FPR>` in `exposed_to`.
 32. `gpg_decrypt_failure_writes_nothing` (gpg): after `add`, delete only the encryption subkey's secret (`gpg --batch --yes --delete-secret-keys '<SUBFPR>!'`). The member is still detected as held, `open` exits 1, and no plaintext is written.
 
+Keyring lookup (7.4). The gpg ones generate keys in the short temp `GNUPGHOME` above and pass it only to the child process:
+
+33. `init_gpg_key_by_unique_email` (gpg): keys for `alice@example.invalid` and `malice@example.invalid` exist; `init alice alice@example.invalid` stores alice's key (subkey fingerprint matches), and stdout and the `init` audit line carry her primary fingerprint and user ID. Fails without the `<…>` wrapping.
+34. `gpg_lookup_refuses_ambiguous_email` (gpg): two keys share one email; exit 1, stderr lists both primary fingerprints, and `.amaga/` is not created.
+35. `gpg_lookup_unknown_key_errors` (gpg): exit 1 with the not-in-keyring error; nothing written.
+36. `gpg_lookup_exports_minimal` (gpg): certify alice's key with a second key (`--quick-sign-key`); `init alice <FPR>` succeeds, and the stored `.asc` loads (it would fail `verify_bindings()` with the certification included).
+37. `keygen_prints_user_add_line`: stdout is the public key alone; stderr contains `git-amaga user add <name> <that key>`.
+38. `gpg_lookup_without_gpg_errors` (Unix only): PATH holding only a `git` symlink (as in 29); `init alice alice@example.invalid` exits 1 with the gpg-not-found error.
+
 ## 12. Implementation steps
 
 Each step is one coder worktree. It contains one to three commits, and each commit builds, passes
@@ -441,14 +473,15 @@ order. Almost every step touches `src/lib.rs`, `src/error.rs` and often `Cargo.t
 | 5 Users, audit, paths, init | 5a: `users.rs` (`.txt` + `.asc`, 5.1). 5b: `audit.rs`, `paths.rs`, actor lookup, `init [KEY…]` | `src/users.rs`, `src/audit.rs`, `src/paths.rs`, `src/identity.rs`, `src/lib.rs`, `src/main.rs`, `src/error.rs`, `tests/cli.rs` | 4 | Test 1. Users, `.gitignore`, path and RFC 3339 unit tests. |
 | 6 add + seal | 1–2 | `src/lib.rs`, `src/main.rs`, `src/secret.rs` (base file), `src/error.rs`, `tests/cli.rs` | 5 | Tests 3, 4, 5, 27. |
 | 7 open + close | 1–2 | same as 6 | 6 | Tests 2, 6–9, 11, 21, 23, 24, 28, 29, 32. |
-| 8 status | 1 | `src/lib.rs`, `src/main.rs`, `tests/cli.rs` | 7 | Tests 10, 25, 26, plus the status assertions in 6–9. |
+| 7b GPG key lookup (ADR-0013) | 1: `KEY` classification + keyring lookup and export (7.4), audit `gpg_fpr`/`gpg_uid`, keygen `user add` hint. `user add` (step 9) reuses the same `KEY` resolution. | `src/gpg.rs` (or a new `src/keyring.rs` if `gpg.rs` passes ~400 non-test lines, per `CLAUDE.md`), `src/lib.rs`, `src/audit.rs`, `src/error.rs`, `tests/common/mod.rs` (key generation in `GpgHome`), `tests/cli.rs` | 7 | Tests 33–38; classification and colon-parsing unit tests. Existing test 28 (`.asc` path) still passes. |
+| 8 status | 1 | `src/lib.rs`, `src/main.rs`, `tests/cli.rs` | 7b | Tests 10, 25, 26, plus the status assertions in 6–9. |
 | 9 Membership | 9a: re-encrypt all + `rotate`. 9b: `user add` / `user remove` | `src/lib.rs`, `src/main.rs`, `src/users.rs`, `src/error.rs`, `tests/cli.rs` | 8 | Tests 12–20, 30, 31. |
 | 10 remove | 1 | `src/lib.rs`, `src/main.rs`, `tests/cli.rs` | 9 | Test 22. |
-| 11 Release | 1: README (section 4 threat model incl. GPG limitations, sections 8–9 workflows, `age -d` escape hatch, GPG setup: export-minimal, `GPG_TTY`) + `[profile.release]` | `README.md`, `Cargo.toml` | 10, 3 | `file` reports the musl binary as statically linked; `dumpbin /dependents` shows no `vcruntime*.dll`; CI green. |
+| 11 Release | 1: complete `README.md` (its parts marked `<!-- completed in plan step 11 -->`: section 4 threat model incl. GPG limitations, sections 8–9 workflows, `age -d` escape hatch, GPG setup: key lookup or export-minimal, `GPG_TTY`; command table marked implemented) + `[profile.release]` | `README.md`, `Cargo.toml` | 10, 3 | `file` reports the musl binary as statically linked; `dumpbin /dependents` shows no `vcruntime*.dll`; CI green. |
 
 `tests/cli.rs` may be split into one file per command group if it grows. Doing so does not change
 the ordering above.
 
 ## 13. Deferred
 
-SSH recipients · `user key` subcommands · backup copy of a plaintext before `open` overwrites it · pre-commit hook that blocks tracked plaintext · `git diff` textconv for decrypted diffs · `--stage` · signed audit/commits integration · per-secret ACLs · passphrase-protected age identities / age plugins (`age-plugin-yubikey`; YubiKeys already work as GPG cards) · honouring `gpg.program` · warning before a GPG key expires · encrypting to an OpenPGP primary key that has no encryption subkey · one gpg call for many files · macOS/aarch64 release targets.
+SSH recipients · `user key` subcommands · backup copy of a plaintext before `open` overwrites it · pre-commit hook that blocks tracked plaintext · `git diff` textconv for decrypted diffs · `--stage` · signed audit/commits integration · per-secret ACLs · passphrase-protected age identities / age plugins (`age-plugin-yubikey`; YubiKeys already work as GPG cards) · honouring `gpg.program` · warning before a GPG key expires · encrypting to an OpenPGP primary key that has no encryption subkey · one gpg call for many files · fetching GPG keys from a keyserver/WKD (`gpg --locate-keys`) at `init`/`user add` · macOS/aarch64 release targets.
