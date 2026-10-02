@@ -67,4 +67,32 @@ pub enum Error {
     /// repository (plan: `init` "requires a Git repo").
     #[error("not inside a Git repository")]
     NotAGitRepo,
+
+    /// `std::env::home_dir()` returned `None` while resolving the default identity path
+    /// (plan 5.5 / `keygen`).
+    #[error("could not determine the home directory")]
+    NoHomeDir,
+
+    /// `keygen` refuses to overwrite an existing identity file (plan: `keygen`).
+    #[error("identity file '{0}' already exists (refusing to overwrite)")]
+    IdentityExists(String),
+
+    /// An `age1…` string failed to parse: a `.txt` recipients line, or an `init`/`user add`
+    /// `KEY` argument. Both are public keys, so it is safe to echo the offending text.
+    #[error("invalid age key: '{0}'")]
+    AgeRecipientParse(String),
+
+    /// An `AGE-SECRET-KEY-1…` line in an identity file failed to parse (plan 5.5). Never echoes
+    /// the line itself, since it may be secret key material.
+    #[error("invalid age identity at {path}:{line}")]
+    IdentityParse { path: String, line: usize },
+
+    /// An I/O operation failed on a specific, named file (a `KEY` argument, an identity file):
+    /// carries the path, unlike a bare [`Error::Io`].
+    #[error("{path}: {source}")]
+    IoPath {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
 }

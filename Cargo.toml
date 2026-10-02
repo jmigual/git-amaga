@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 age = "0.12.1"
 age-core = "0.12.0"
+clap = { version = "4.6.7", features = ["derive"] }
 pgp = { version = "0.20.0", default-features = false }
 rand = "0.8"
 serde = { version = "1.0.229", features = ["derive"] }
