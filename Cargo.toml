@@ -5,8 +5,13 @@ edition = "2024"
 
 [dependencies]
 age = "0.12.1"
+age-core = "0.12.0"
 pgp = { version = "0.20.0", default-features = false }
+rand = "0.8"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 sha2 = "0.10"
 thiserror = "2.0.21"
+
+[dev-dependencies]
+tempfile = "3.27.0"
