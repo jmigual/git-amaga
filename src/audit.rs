@@ -15,15 +15,24 @@ struct Event<'a> {
     time: String,
     actor: &'a str,
     event: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    path: Option<&'a str>,
 }
 
-/// Appends one audit event (plan 5.3). Events that carry no extra field, like `init`, are
-/// represented fully by `actor` and `event`.
-pub fn append(path: &Path, actor: &str, event: &str) -> Result<(), Error> {
+/// Appends one audit event (plan 5.3). Events that carry no extra field, like `init`, pass
+/// `secret_path: None`; `secret.added`/`secret.updated`/`secret.removed` pass the secret's
+/// repo-relative plaintext path.
+pub fn append(
+    path: &Path,
+    actor: &str,
+    event: &str,
+    secret_path: Option<&str>,
+) -> Result<(), Error> {
     let line = serde_json::to_string(&Event {
         time: format_rfc3339(SystemTime::now()),
         actor,
         event,
+        path: secret_path,
     })
     // Serializing a struct of plain strings cannot fail: no maps, no non-UTF8 keys.
     .expect("audit event serialization is infallible");
@@ -109,14 +118,16 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("audit.jsonl");
 
-        append(&path, "alice", "init").unwrap();
-        append(&path, "alice", "rotated").unwrap();
+        append(&path, "alice", "init", None).unwrap();
+        append(&path, "alice", "rotated", Some("secrets/prod.env")).unwrap();
 
         let contents = fs::read_to_string(&path).unwrap();
         let lines: Vec<&str> = contents.lines().collect();
         assert_eq!(lines.len(), 2);
         assert!(lines[0].contains("\"actor\":\"alice\""));
         assert!(lines[0].contains("\"event\":\"init\""));
+        assert!(!lines[0].contains("\"path\""));
         assert!(lines[1].contains("\"event\":\"rotated\""));
+        assert!(lines[1].contains("\"path\":\"secrets/prod.env\""));
     }
 }

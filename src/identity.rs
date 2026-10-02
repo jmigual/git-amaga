@@ -114,15 +114,15 @@ fn write_identity(path: Option<&Path>) -> Result<(PathBuf, x25519::Recipient), E
     Ok((path, public))
 }
 
-/// Matches the actor to a member (plan 5.5): the member whose age public key matches an
-/// identity in `age_identities`, else the first held GPG member by name. `is_held` is injected
-/// (production passes [`crate::gpg::is_held`]) so tests do not need a real `gpg`. GPG is probed
-/// only once no age identity has matched, so age-only users never start gpg.
+/// Finds the actor (plan 5.5): the member whose age key matches an identity, else the first
+/// member holding a GPG key. Also returns the subkey fingerprints of every held GPG member, the
+/// `GpgIdentity` input; empty without probing gpg when an age identity matches. `is_held` is
+/// injected (production passes [`crate::gpg::is_held`]) so tests do not need a real `gpg`.
 pub fn find_actor(
     members: &users::Members,
     age_identities: &[x25519::Identity],
     is_held: impl Fn(&str) -> std::io::Result<bool>,
-) -> Result<String, Error> {
+) -> Result<(String, Vec<String>), Error> {
     let age_publics: Vec<String> = age_identities
         .iter()
         .map(|id| id.to_public().to_string())
@@ -133,23 +133,31 @@ pub fn find_actor(
             .iter()
             .any(|k| age_publics.contains(&k.to_string()))
         {
-            return Ok(name.clone());
+            return Ok((name.clone(), Vec::new()));
         }
     }
 
     let mut gpg_absent = false;
+    let mut first_held = None;
+    let mut gpg_fprs = Vec::new();
     for (name, member) in members {
         let Some(asc) = &member.asc else { continue };
         let primary_fpr = format!("{:X}", asc.key.primary_key.fingerprint());
         match is_held(&primary_fpr) {
-            Ok(true) => return Ok(name.clone()),
+            Ok(true) => {
+                first_held.get_or_insert(name);
+                gpg_fprs.extend(asc.subkey_fprs());
+            }
             Ok(false) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => gpg_absent = true,
             Err(_) => {}
         }
     }
 
-    Err(Error::NotAMember(member_summary(members, gpg_absent)))
+    match first_held {
+        Some(name) => Ok((name.clone(), gpg_fprs)),
+        None => Err(Error::NotAMember(member_summary(members, gpg_absent))),
+    }
 }
 
 fn member_summary(members: &users::Members, gpg_absent: bool) -> String {
@@ -193,11 +201,12 @@ mod tests {
             },
         );
 
-        let actor = find_actor(&members, std::slice::from_ref(&identity), |_| {
+        let (actor, gpg_fprs) = find_actor(&members, std::slice::from_ref(&identity), |_| {
             panic!("gpg should not be probed when an age identity matches")
         })
         .unwrap();
         assert_eq!(actor, "alice");
+        assert!(gpg_fprs.is_empty());
     }
 
     #[test]
@@ -213,8 +222,39 @@ mod tests {
             },
         );
 
-        let actor = find_actor(&members, &[], |_| Ok(true)).unwrap();
+        let (actor, _) = find_actor(&members, &[], |_| Ok(true)).unwrap();
         assert_eq!(actor, "bob");
+    }
+
+    #[test]
+    fn find_actor_returns_every_subkey_fpr_of_held_gpg_members_only() {
+        let held = crate::gpg::validate(include_str!("../tests/fixtures/two_subkeys.asc")).unwrap();
+        let held_primary = format!("{:X}", held.key.primary_key.fingerprint());
+        let all_subkeys = held.subkey_fprs();
+        assert!(all_subkeys.len() > 1);
+        let other = crate::gpg::validate(include_str!("../tests/fixtures/valid_rsa.asc")).unwrap();
+        let mut members = users::Members::new();
+        members.insert(
+            "alice".to_string(),
+            users::Member {
+                age_keys: Vec::new(),
+                asc: Some(held),
+            },
+        );
+        members.insert(
+            "bob".to_string(),
+            users::Member {
+                age_keys: Vec::new(),
+                asc: Some(other),
+            },
+        );
+
+        let (actor, mut fprs) = find_actor(&members, &[], |fpr| Ok(fpr == held_primary)).unwrap();
+        fprs.sort();
+        let mut expected = all_subkeys;
+        expected.sort();
+        assert_eq!(actor, "alice");
+        assert_eq!(fprs, expected);
     }
 
     #[test]

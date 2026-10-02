@@ -3,6 +3,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read, Write};
+use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -144,6 +145,67 @@ pub fn plaintext_state(p: Option<&[u8]>, c: &[u8], b: Option<Hash>) -> Plaintext
         return PlaintextState::Outdated;
     }
     PlaintextState::Conflict
+}
+
+/// Per-worktree base hashes (plan 5.5): repo-relative plaintext path -> SHA-256 of the body it
+/// was last synchronised with.
+pub type BaseMap = BTreeMap<String, Hash>;
+
+fn hash_to_hex(h: &Hash) -> String {
+    h.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn hash_from_hex(s: &str) -> Option<Hash> {
+    if s.len() != 64 {
+        return None;
+    }
+    let mut out = [0u8; 32];
+    for (i, byte) in out.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).ok()?;
+    }
+    Some(out)
+}
+
+/// Loads the base file (plan 5.5). A missing file is empty, and an unparseable line is skipped:
+/// a lost entry only degrades that path to the safe `Conflict` state.
+pub fn load_base(path: &Path) -> Result<BaseMap, Error> {
+    let contents = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(BaseMap::new()),
+        Err(source) => {
+            return Err(Error::IoPath {
+                path: path.display().to_string(),
+                source,
+            });
+        }
+    };
+    let mut base = BaseMap::new();
+    for line in contents.lines() {
+        if let Some((hex, repo_path)) = line.split_once(' ')
+            && let Some(hash) = hash_from_hex(hex)
+        {
+            base.insert(repo_path.to_string(), hash);
+        }
+    }
+    Ok(base)
+}
+
+/// Rewrites the base file atomically, mode 0600: unsalted plaintext hashes must not be readable
+/// by other local users.
+pub fn save_base(path: &Path, base: &BaseMap) -> Result<(), Error> {
+    let mut contents = String::new();
+    for (repo_path, hash) in base {
+        contents.push_str(&hash_to_hex(hash));
+        contents.push(' ');
+        contents.push_str(repo_path);
+        contents.push('\n');
+    }
+    crate::paths::atomic_write(path, contents.as_bytes(), Some(0o600)).map_err(|source| {
+        Error::IoPath {
+            path: path.display().to_string(),
+            source,
+        }
+    })
 }
 
 #[cfg(test)]
@@ -371,5 +433,57 @@ mod tests {
             err,
             Error::Decrypt(age::DecryptError::NoMatchingKeys)
         ));
+    }
+
+    // --- base file (plan 5.5) ---
+
+    #[test]
+    fn load_base_treats_missing_file_as_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = load_base(&dir.path().join("amaga-base")).unwrap();
+        assert!(base.is_empty());
+    }
+
+    #[test]
+    fn base_round_trips_through_save_and_load() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("amaga-base");
+        let mut base = BaseMap::new();
+        base.insert("secrets/prod.env".to_string(), hash(b"prod"));
+        base.insert("secrets/dev.env".to_string(), hash(b"dev"));
+
+        save_base(&path, &base).unwrap();
+        let loaded = load_base(&path).unwrap();
+        assert_eq!(loaded, base);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_base_is_not_readable_by_others() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("amaga-base");
+
+        save_base(&path, &BaseMap::new()).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+
+    #[test]
+    fn load_base_skips_unparseable_lines() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("amaga-base");
+        std::fs::write(
+            &path,
+            format!(
+                "not-hex secrets/a.env\n{} secrets/b.env\n",
+                hash_to_hex(&hash(b"b"))
+            ),
+        )
+        .unwrap();
+
+        let loaded = load_base(&path).unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded["secrets/b.env"], hash(b"b"));
     }
 }

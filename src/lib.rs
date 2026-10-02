@@ -76,7 +76,7 @@ pub fn cmd_init(name: &str, keys: &[String]) -> Result<(), Error> {
         paths::atomic_write(&users_dir.join(format!("{name}.asc")), asc.as_bytes(), None)?;
     }
 
-    audit::append(&amaga_dir.join("audit.jsonl"), name, "init")?;
+    audit::append(&amaga_dir.join("audit.jsonl"), name, "init", None)?;
 
     Ok(())
 }

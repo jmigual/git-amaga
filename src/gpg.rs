@@ -27,6 +27,18 @@ pub struct AscKey {
     pub subkey: SignedPublicSubKey,
 }
 
+impl AscKey {
+    /// Fingerprints of every subkey, so secrets written before a subkey change still match
+    /// (plan 5.2.1).
+    pub fn subkey_fprs(&self) -> Vec<String> {
+        self.key
+            .public_subkeys
+            .iter()
+            .map(|sk| format!("{:X}", sk.key.fingerprint()))
+            .collect()
+    }
+}
+
 /// Parses and validates an armored OpenPGP public key (plan 5.1). Does not check expiry; see
 /// [`check_not_expired`] for the separate add-time check (plan change 18).
 pub fn validate(armored: &str) -> Result<AscKey, CrateError> {
