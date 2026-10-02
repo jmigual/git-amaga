@@ -209,11 +209,21 @@ pub enum Error {
     LastMember(String),
 
     /// Nothing was written; every failing secret is listed.
-    #[error("cannot re-encrypt, these secrets do not decrypt (nothing was changed):\n{0}")]
+    #[error(
+        "cannot re-encrypt, these secrets cannot be read or decrypted (nothing was changed):\n{0}"
+    )]
     ReencryptAborted(String),
 
     #[error("no paths given")]
     NoPaths,
+
+    /// `remove` cannot prove the user keeps a copy of a secret it cannot read.
+    #[error("{source}\nto drop it without a copy anyway, run `git rm {path}`")]
+    RemoveUnreadable {
+        path: String,
+        #[source]
+        source: Box<Error>,
+    },
 
     #[error(
         "'{0}' must be open and in sync before its `.amaga` is removed (state: {1:?}); run `open` (or `seal`) first so you keep a copy"

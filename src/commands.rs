@@ -355,6 +355,7 @@ fn without_path(e: Error) -> String {
         } => format!("member {member}: {source}"),
         Error::SecretUndecryptable { source, .. } => source.to_string(),
         Error::IoPath { source, .. } => source.to_string(),
+        Error::NotARegularFile(_) => "not a regular file".into(),
         e => e.to_string(),
     }
 }

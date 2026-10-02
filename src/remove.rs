@@ -21,8 +21,12 @@ pub fn cmd_remove(args: &[String]) -> Result<(), Error> {
     let mut targets = secret_paths_for(&ctx, args, false)?;
     targets.retain(|sp| seen.insert(sp.ciphertext.clone()));
     for sp in &targets {
-        let ciphertext = read_repo_file(&ctx.root, &sp.ciphertext)?;
-        let (_header, body) = ctx.decrypt(&sp.ciphertext, &ciphertext)?;
+        let (_header, body) = read_repo_file(&ctx.root, &sp.ciphertext)
+            .and_then(|ciphertext| ctx.decrypt(&sp.ciphertext, &ciphertext))
+            .map_err(|source| Error::RemoveUnreadable {
+                path: sp.ciphertext.clone(),
+                source: Box::new(source),
+            })?;
         let local = read_plaintext(&ctx.root, &sp.plaintext)?;
         let base = ctx.base.get(&sp.plaintext).copied();
         let state = secret::plaintext_state(local.as_deref(), &body, base);

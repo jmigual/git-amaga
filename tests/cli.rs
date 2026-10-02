@@ -1725,6 +1725,21 @@ fn remove_refuses_closed_and_modified_plaintext() {
     assert_eq!(std::fs::read(repo.path().join("a.env")).unwrap(), b"edited");
 }
 
+/// A `.amaga` that `remove` cannot decrypt is refused with the way out.
+#[test]
+fn remove_unreadable_secret_points_to_git_rm() {
+    let (repo, _identity_path) = repo_with_alice();
+    std::fs::write(repo.path().join("a.env"), b"a").unwrap();
+    repo.run(&["add", "a.env"]).assert_success();
+    std::fs::write(repo.path().join("a.env.amaga"), b"garbage").unwrap();
+
+    let remove = repo.run(&["remove", "a.env"]);
+    remove.assert_failure();
+    let stderr = String::from_utf8_lossy(&remove.stderr);
+    assert!(stderr.contains("git rm a.env.amaga"), "got {stderr:?}");
+    assert!(repo.path().join("a.env.amaga").exists());
+}
+
 /// Naming a secret twice (plaintext and `.amaga` form) removes and audits it once.
 #[test]
 fn remove_dedupes_paths() {

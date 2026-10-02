@@ -69,6 +69,7 @@ fn symlinked_secret_is_rejected() {
     let rotate = repo.run(&["rotate"]);
     rotate.assert_failure();
     assert!(stderr(&rotate).contains("leak.amaga"));
+    assert!(!stderr(&rotate).contains("do not decrypt"));
     assert!(link.symlink_metadata().unwrap().file_type().is_symlink());
     assert_eq!(audit_events(&repo), before_audit);
 
@@ -79,8 +80,7 @@ fn symlinked_secret_is_rejected() {
     assert_eq!(status.status.code(), Some(1));
     let stdout = String::from_utf8_lossy(&status.stdout);
     assert!(
-        stdout.contains("ERROR leak.amaga:")
-            && stdout.contains("'leak.amaga' is not a regular file"),
+        stdout.contains("ERROR leak.amaga:") && stdout.contains("; not a regular file"),
         "got {stdout:?}"
     );
 }
