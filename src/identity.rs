@@ -148,7 +148,7 @@ pub fn find_actor(
     }
 }
 
-fn member_summary(members: &users::Members, gpg_absent: bool) -> String {
+pub(crate) fn member_summary(members: &users::Members, gpg_absent: bool) -> String {
     let descriptions: Vec<String> = members
         .iter()
         .map(|(name, member)| {

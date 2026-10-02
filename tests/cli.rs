@@ -291,6 +291,7 @@ fn seal_refuses_outdated_plaintext_after_pull() {
 
     let pulled = rotate_ciphertext(&repo, b"v2-from-teammate");
     let cipher_path = repo.path().join("secret.env.amaga");
+    assert_status_error(&repo, "outdated");
 
     let seal = repo.run(&["seal", "secret.env"]);
     seal.assert_failure();
@@ -324,6 +325,7 @@ fn open_updates_outdated_unmodified_plaintext() {
         std::fs::read(repo.path().join("secret.env")).unwrap(),
         b"v2"
     );
+    assert!(status_stdout(&repo).contains("ok secret.env.amaga: in sync"));
 }
 
 /// Test 8: `open` refuses to discard local edits without `--force`.
@@ -335,6 +337,7 @@ fn open_refuses_local_edits() {
     repo.run(&["add", "secret.env"]).assert_success();
 
     std::fs::write(repo.path().join("secret.env"), b"locally edited").unwrap();
+    assert_status_error(&repo, "local edits");
 
     repo.run(&["open", "secret.env"]).assert_failure();
     assert_eq!(
@@ -359,6 +362,7 @@ fn close_refuses_unsealed() {
     repo.run(&["add", "secret.env"]).assert_success();
 
     std::fs::write(repo.path().join("secret.env"), b"edited, not sealed").unwrap();
+    assert_status_error(&repo, "local edits");
 
     repo.run(&["close", "secret.env"]).assert_failure();
     assert!(repo.path().join("secret.env").exists());
@@ -366,6 +370,7 @@ fn close_refuses_unsealed() {
     repo.run(&["seal", "secret.env"]).assert_success();
     repo.run(&["close", "secret.env"]).assert_success();
     assert!(!repo.path().join("secret.env").exists());
+    assert!(status_stdout(&repo).contains("ok secret.env.amaga: closed"));
 }
 
 /// Test 11: a corrupted ciphertext fails, names the file and writes no plaintext.
@@ -607,9 +612,9 @@ fn open_does_not_overwrite_unreadable_plaintext() {
     assert_eq!(std::fs::read(&plaintext).unwrap(), b"locally edited");
 }
 
-/// `add`, `seal`, `open` and `close` refuse while a `*.amaga` is unmerged.
-#[test]
-fn commands_refuse_during_amaga_merge_conflict() {
+/// A repository where `<name>.amaga` is unmerged: both branches added it, and `name` (its
+/// plaintext) exists.
+fn repo_with_unmerged_secret(name: &str) -> Repo {
     let (repo, _identity_path) = repo_with_alice();
     repo.git(&["add", ".gitattributes", ".gitignore", ".amaga"])
         .assert_success();
@@ -618,22 +623,23 @@ fn commands_refuse_during_amaga_merge_conflict() {
         .unwrap()
         .trim()
         .to_string();
+    let ciphertext = format!("{name}.amaga");
 
     repo.git(&["checkout", "-b", "other"]).assert_success();
-    std::fs::write(repo.path().join("a.env"), b"from other").unwrap();
-    repo.run(&["add", "a.env"]).assert_success();
-    repo.git(&["add", ".gitignore", "a.env.amaga"])
+    std::fs::write(repo.path().join(name), b"from other").unwrap();
+    repo.run(&["add", name]).assert_success();
+    repo.git(&["add", ".gitignore", &ciphertext])
         .assert_success();
-    repo.git(&["commit", "-m", "other adds a.env"])
+    repo.git(&["commit", "-m", "other adds the secret"])
         .assert_success();
 
     repo.git(&["checkout", &base_branch]).assert_success();
-    std::fs::write(repo.path().join("a.env"), b"from main").unwrap();
-    // `other` already holds a.env.amaga in history, so a plain `add` would refuse.
-    repo.run(&["add", "--force", "a.env"]).assert_success();
-    repo.git(&["add", ".gitignore", "a.env.amaga"])
+    std::fs::write(repo.path().join(name), b"from main").unwrap();
+    // `other` already holds the ciphertext in history, so a plain `add` would refuse.
+    repo.run(&["add", "--force", name]).assert_success();
+    repo.git(&["add", ".gitignore", &ciphertext])
         .assert_success();
-    repo.git(&["commit", "-m", "main adds a.env"])
+    repo.git(&["commit", "-m", "main adds the secret"])
         .assert_success();
     repo.git(&["merge", "other"]).assert_failure();
     assert!(
@@ -641,8 +647,15 @@ fn commands_refuse_during_amaga_merge_conflict() {
             .git(&["ls-files", "-u", "--", "*.amaga"])
             .stdout
             .is_empty(),
-        "merge should leave a.env.amaga unmerged"
+        "merge should leave {ciphertext} unmerged"
     );
+    repo
+}
+
+/// `add`, `seal`, `open` and `close` refuse while a `*.amaga` is unmerged.
+#[test]
+fn commands_refuse_during_amaga_merge_conflict() {
+    let repo = repo_with_unmerged_secret("a.env");
 
     std::fs::write(repo.path().join("b.env"), b"b").unwrap();
     repo.run(&["add", "b.env"]).assert_failure();
@@ -651,6 +664,15 @@ fn commands_refuse_during_amaga_merge_conflict() {
     repo.run(&["open"]).assert_failure();
     repo.run(&["close"]).assert_failure();
     assert!(repo.path().join("a.env").exists());
+
+    // `status` still runs and lists the unmerged file instead of refusing.
+    let status = repo.run(&["status"]);
+    assert_eq!(status.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&status.stdout);
+    assert!(
+        stdout.contains("ERROR a.env.amaga: unmerged"),
+        "got {stdout:?}"
+    );
 }
 
 /// `add` and a sealed edit append `secret.added` / `secret.updated`; a no-op seal does not.
@@ -1306,4 +1328,275 @@ fn open_refuses_tracked_plaintext() {
 
     repo.run(&["open", "secret.env"]).assert_failure();
     assert!(!repo.path().join("secret.env").exists());
+}
+
+fn status_stdout(repo: &Repo) -> String {
+    let status = repo.run(&["status"]);
+    status.assert_success();
+    String::from_utf8_lossy(&status.stdout).into_owned()
+}
+
+/// `status` exits 1 and prints an `ERROR` line containing `token`.
+fn assert_status_error(repo: &Repo, token: &str) {
+    let status = repo.run(&["status"]);
+    assert_eq!(status.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&status.stdout);
+    let error_line = stdout.lines().find(|l| l.starts_with("ERROR "));
+    assert!(
+        error_line.is_some_and(|l| l.contains(token)),
+        "expected an ERROR line with {token:?}, got {stdout:?}"
+    );
+}
+
+/// `status` prints the members and one `ok` line per healthy secret.
+#[test]
+fn status_lists_members_and_healthy_secrets() {
+    let (repo, _identity_path) = repo_with_alice();
+    std::fs::write(repo.path().join("secret.env"), b"v1").unwrap();
+    repo.run(&["add", "secret.env"]).assert_success();
+
+    let stdout = status_stdout(&repo);
+    assert!(stdout.contains("members: alice (age)"), "got {stdout:?}");
+    assert!(
+        stdout.contains("ok secret.env.amaga: in sync"),
+        "got {stdout:?}"
+    );
+}
+
+/// Test 10: a force-added (tracked) plaintext is a critical error.
+#[test]
+fn status_flags_force_added_plaintext() {
+    let (repo, _identity_path) = repo_with_alice();
+    std::fs::write(repo.path().join("secret.env"), b"v1").unwrap();
+    repo.run(&["add", "secret.env"]).assert_success();
+    status_stdout(&repo);
+    repo.git(&["add", "-f", "secret.env"]).assert_success();
+
+    assert_status_error(&repo, "CRITICAL plaintext 'secret.env' is tracked");
+}
+
+/// A managed plaintext path that is not ignored is critical even when the file does not exist.
+#[test]
+fn status_flags_unignored_plaintext_path_even_when_closed() {
+    let (repo, _identity_path) = repo_with_alice();
+    std::fs::write(repo.path().join("secret.env"), b"v1").unwrap();
+    repo.run(&["add", "secret.env"]).assert_success();
+    repo.run(&["close", "secret.env"]).assert_success();
+    std::fs::write(repo.path().join(".gitignore"), "").unwrap();
+
+    assert_status_error(&repo, "CRITICAL plaintext 'secret.env' is not ignored");
+}
+
+/// Local edits and a changed repository version together are a `Conflict`.
+#[test]
+fn status_reports_conflict() {
+    let (repo, _identity_path) = repo_with_alice();
+    std::fs::write(repo.path().join("secret.env"), b"v1").unwrap();
+    repo.run(&["add", "secret.env"]).assert_success();
+    std::fs::write(repo.path().join("secret.env"), b"local").unwrap();
+    rotate_ciphertext(&repo, b"theirs");
+
+    assert_status_error(&repo, "conflicts");
+}
+
+/// Error lines come before healthy ones, whatever the path order.
+#[test]
+fn status_lists_problems_first() {
+    let (repo, _identity_path) = repo_with_alice();
+    std::fs::write(repo.path().join("a.env"), b"a").unwrap();
+    std::fs::write(repo.path().join("z.env"), b"z").unwrap();
+    repo.run(&["add", "a.env"]).assert_success();
+    repo.run(&["add", "z.env"]).assert_success();
+    std::fs::write(repo.path().join("z.env"), b"edited").unwrap();
+
+    let status = repo.run(&["status"]);
+    let stdout = String::from_utf8_lossy(&status.stdout);
+    let error = stdout.find("ERROR z.env.amaga").expect("error line");
+    let ok = stdout.find("ok a.env.amaga").expect("ok line");
+    assert!(error < ok, "got {stdout:?}");
+}
+
+/// An undecryptable secret is an error that names the file.
+#[test]
+fn status_names_undecryptable_secret() {
+    let (repo, _identity_path) = repo_with_alice();
+    std::fs::write(repo.path().join("secret.env"), b"v1").unwrap();
+    repo.run(&["add", "secret.env"]).assert_success();
+    let cipher_path = repo.path().join("secret.env.amaga");
+    let mut bytes = std::fs::read(&cipher_path).unwrap();
+    let last = bytes.len() - 1;
+    bytes[last] ^= 0xFF;
+    std::fs::write(&cipher_path, &bytes).unwrap();
+
+    assert_status_error(&repo, "secret.env.amaga: cannot decrypt");
+}
+
+/// A secret whose header key set differs from the members is stale until `rotate`.
+#[test]
+fn status_reports_stale_recipients() {
+    let (repo, _identity_path) = repo_with_alice();
+    std::fs::write(repo.path().join("secret.env"), b"v1").unwrap();
+    repo.run(&["add", "secret.env"]).assert_success();
+    let bob = age::x25519::Identity::generate().to_public();
+    std::fs::write(repo.path().join(".amaga/users/bob.txt"), format!("{bob}\n")).unwrap();
+
+    assert_status_error(&repo, "run git-amaga rotate");
+}
+
+/// `NEEDS ROTATION` is only a warning: exit 0.
+#[test]
+fn status_warns_about_exposure_with_exit_zero() {
+    let (repo, _identity_path) = repo_with_alice();
+    std::fs::write(repo.path().join("secret.env"), b"v1").unwrap();
+    repo.run(&["add", "secret.env"]).assert_success();
+    let members = git_amaga::users::load(&repo.path().join(".amaga/users")).unwrap();
+    let mut header =
+        git_amaga::secret::next_header(None, false, &git_amaga::users::recipients(&members));
+    header
+        .exposed_to
+        .insert("charlie".into(), Default::default());
+    let alice = members["alice"].age_keys[0].clone();
+    let ciphertext =
+        git_amaga::secret::encrypt(&header, b"v1", &[&alice as &dyn age::Recipient]).unwrap();
+    std::fs::write(repo.path().join("secret.env.amaga"), ciphertext).unwrap();
+
+    let stdout = status_stdout(&repo);
+    assert!(
+        stdout.contains("WARN secret.env.amaga: NEEDS ROTATION: exposed to charlie"),
+        "got {stdout:?}"
+    );
+}
+
+/// A `*.amaga` whose `text` attribute is not unset (git could rewrite line endings) is an error.
+#[test]
+fn status_flags_text_attribute_on_amaga_files() {
+    let (repo, _identity_path) = repo_with_alice();
+    std::fs::write(repo.path().join("secret.env"), b"v1").unwrap();
+    repo.run(&["add", "secret.env"]).assert_success();
+    std::fs::write(repo.path().join(".gitattributes"), "").unwrap();
+
+    assert_status_error(&repo, "`text` attribute");
+}
+
+/// `status` needs a valid membership and an identity that matches a member.
+#[test]
+fn status_requires_valid_users_and_an_identity() {
+    let (repo, _identity_path) = repo_with_alice();
+    std::fs::write(repo.path().join(".amaga/users/junk.xyz"), "").unwrap();
+    let status = repo.run(&["status"]);
+    assert_eq!(status.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&status.stderr).contains("junk.xyz"));
+
+    std::fs::remove_file(repo.path().join(".amaga/users/junk.xyz")).unwrap();
+    repo.git(&["config", "--global", "--unset", "amaga.identity"])
+        .assert_success();
+    let status = repo.run(&["status"]);
+    assert_eq!(status.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&status.stderr).contains("not a member"));
+}
+
+/// `status` lists an unmerged secret whose path git would C-quote (non-ASCII).
+#[test]
+fn status_lists_unmerged_non_ascii_secret() {
+    let repo = repo_with_unmerged_secret("sé.env");
+
+    let status = repo.run(&["status"]);
+    assert_eq!(status.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&status.stdout);
+    assert!(
+        stdout.contains("ERROR sé.env.amaga: unmerged"),
+        "got {stdout:?}"
+    );
+}
+
+/// An unmerged `*.amaga` that was deleted from the worktree is still reported.
+#[test]
+fn status_lists_unmerged_secret_missing_from_worktree() {
+    let repo = repo_with_unmerged_secret("a.env");
+    std::fs::remove_file(repo.path().join("a.env.amaga")).unwrap();
+
+    assert_status_error(&repo, "a.env.amaga: unmerged");
+}
+
+/// An unreadable plaintext is reported for its secret without hiding other secrets' findings.
+#[test]
+fn status_reports_io_errors_per_secret() {
+    let (repo, _identity_path) = repo_with_alice();
+    std::fs::write(repo.path().join("a.env"), b"a").unwrap();
+    std::fs::write(repo.path().join("b.env"), b"b").unwrap();
+    repo.run(&["add", "a.env"]).assert_success();
+    repo.run(&["add", "b.env"]).assert_success();
+    std::fs::remove_file(repo.path().join("a.env")).unwrap();
+    std::fs::create_dir(repo.path().join("a.env")).unwrap();
+    repo.git(&["add", "-f", "b.env"]).assert_success();
+
+    let status = repo.run(&["status"]);
+    assert_eq!(status.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&status.stdout);
+    assert!(
+        stdout.contains("ERROR a.env.amaga: a.env"),
+        "got {stdout:?}"
+    );
+    assert!(
+        stdout.contains("CRITICAL plaintext 'b.env' is tracked"),
+        "got {stdout:?}"
+    );
+}
+
+/// Stale means a different key set: a removed or replaced key is stale, a renamed member is not.
+#[test]
+fn status_stale_compares_key_sets_not_names() {
+    let (repo, _identity_path) = repo_with_alice();
+    let bob = age::x25519::Identity::generate().to_public();
+    let bob_file = repo.path().join(".amaga/users/bob.txt");
+    std::fs::write(&bob_file, format!("{bob}\n")).unwrap();
+    std::fs::write(repo.path().join("secret.env"), b"v1").unwrap();
+    repo.run(&["add", "secret.env"]).assert_success();
+    assert!(status_stdout(&repo).contains("ok secret.env.amaga"));
+
+    let robert_file = repo.path().join(".amaga/users/robert.txt");
+    std::fs::rename(&bob_file, &robert_file).unwrap();
+    assert!(status_stdout(&repo).contains("ok secret.env.amaga"));
+
+    let other = age::x25519::Identity::generate().to_public();
+    std::fs::write(&robert_file, format!("{other}\n")).unwrap();
+    assert_status_error(&repo, "run git-amaga rotate");
+
+    std::fs::remove_file(&robert_file).unwrap();
+    assert_status_error(&repo, "run git-amaga rotate");
+}
+
+/// Test 25: two branches that each `add` a secret merge without a `.gitignore` conflict, and
+/// both plaintexts stay ignored.
+#[test]
+fn parallel_adds_merge_cleanly() {
+    let (repo, _identity_path) = repo_with_alice();
+    repo.git(&["add", ".gitattributes", ".gitignore", ".amaga"])
+        .assert_success();
+    repo.git(&["commit", "-m", "init"]).assert_success();
+    let base_branch = String::from_utf8(repo.git(&["rev-parse", "--abbrev-ref", "HEAD"]).stdout)
+        .unwrap()
+        .trim()
+        .to_string();
+
+    repo.git(&["checkout", "-b", "other"]).assert_success();
+    std::fs::write(repo.path().join("a.env"), b"a").unwrap();
+    repo.run(&["add", "a.env"]).assert_success();
+    repo.git(&["add", ".gitignore", "a.env.amaga"])
+        .assert_success();
+    repo.git(&["commit", "-m", "add a"]).assert_success();
+
+    repo.git(&["checkout", &base_branch]).assert_success();
+    std::fs::write(repo.path().join("b.env"), b"b").unwrap();
+    repo.run(&["add", "b.env"]).assert_success();
+    repo.git(&["add", ".gitignore", "b.env.amaga"])
+        .assert_success();
+    repo.git(&["commit", "-m", "add b"]).assert_success();
+
+    repo.git(&["merge", "--no-edit", "other"]).assert_success();
+    repo.git(&["check-ignore", "-q", "a.env"]).assert_success();
+    repo.git(&["check-ignore", "-q", "b.env"]).assert_success();
+    let stdout = status_stdout(&repo);
+    assert!(stdout.contains("ok a.env.amaga"), "got {stdout:?}");
+    assert!(stdout.contains("ok b.env.amaga"), "got {stdout:?}");
 }

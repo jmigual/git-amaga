@@ -61,6 +61,8 @@ enum Command {
         /// Plaintext or `.amaga` paths to close (default: every secret whose plaintext exists).
         paths: Vec<String>,
     },
+    /// Show the members and the state and problems of every secret.
+    Status,
 }
 
 fn main() -> ExitCode {
@@ -72,13 +74,12 @@ fn main() -> ExitCode {
         Command::Seal { force, paths } => git_amaga::cmd_seal(force, &paths),
         Command::Open { force, paths } => git_amaga::cmd_open(force, &paths),
         Command::Close { paths } => git_amaga::cmd_close(&paths),
+        Command::Status => git_amaga::cmd_status(),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("error: {e}");
-            // Every error in scope so far exits 1; `status`'s "needs rotation" special case
-            // (exit 0, plan 7.2) is added when that command is implemented.
             ExitCode::FAILURE
         }
     }

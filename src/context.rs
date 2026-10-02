@@ -23,6 +23,15 @@ impl Context {
         if !unmerged.is_empty() {
             return Err(Error::UnmergedAmagaFiles(unmerged.join(", ")));
         }
+        Self::load_in(root)
+    }
+
+    // For `status`, which lists the unmerged files instead of refusing.
+    pub(crate) fn load_allowing_unmerged() -> Result<Self, Error> {
+        Self::load_in(git::toplevel()?)
+    }
+
+    fn load_in(root: PathBuf) -> Result<Self, Error> {
         let members = users::load(&root.join(".amaga/users"))?;
         let age_identities = match identity::configured_identity_path()? {
             Some(path) => identity::load_identity_file(&path)?,

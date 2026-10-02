@@ -138,10 +138,11 @@ pub fn managed_secrets(root: &Path) -> Result<Vec<String>, Error> {
 }
 
 pub fn unmerged_secrets(root: &Path) -> Result<Vec<String>, Error> {
-    let out = run_in(root, &["ls-files", "-u", "--", "*.amaga"])?;
+    // `-z`: without it git C-quotes non-ASCII paths.
+    let out = run_in(root, &["ls-files", "-u", "-z", "--", "*.amaga"])?;
     let mut paths: Vec<String> = out
-        .lines()
-        .filter_map(|line| line.split('\t').nth(1))
+        .split('\0')
+        .filter_map(|entry| entry.split('\t').nth(1))
         .map(str::to_string)
         .collect();
     paths.sort();
@@ -178,6 +179,11 @@ pub fn is_ignored(root: &Path, path: &str) -> Result<bool, Error> {
             &format!("./{path}"),
         ],
     )
+}
+
+/// Whether `git check-attr` reports the `text` attribute of `path` as `unset`.
+pub fn text_is_unset(root: &Path, path: &str) -> Result<bool, Error> {
+    Ok(run_in(root, &["check-attr", "text", "--", path])?.ends_with(": unset"))
 }
 
 #[cfg(test)]

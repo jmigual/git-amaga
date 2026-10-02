@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
 
@@ -234,4 +235,138 @@ pub fn cmd_close(args: &[String]) -> Result<(), Error> {
         println!("closed {}", sp.plaintext);
     }
     Ok(())
+}
+
+const UNMERGED: &str = "unmerged; resolve the conflict and `git add` the file";
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Level {
+    Error,
+    Warn,
+    Ok,
+}
+
+/// `git-amaga status` (plan 7.2): problems first, exit 1 if any secret has an error.
+pub fn cmd_status() -> Result<(), Error> {
+    let ctx = Context::load_allowing_unmerged()?;
+    let unmerged = git::unmerged_secrets(&ctx.root)?;
+    let current = users::recipients(&ctx.members);
+
+    println!("members: {}", identity::member_summary(&ctx.members, false));
+    let mut lines = Vec::new();
+    let secrets = secret_paths_for(&ctx, &[], false)?;
+    for sp in &secrets {
+        lines.push(secret_status(&ctx, sp, &unmerged, &current)?);
+    }
+    // Unmerged files that are not listed above (deleted from the worktree, or invalid paths).
+    for path in unmerged
+        .iter()
+        .filter(|p| !secrets.iter().any(|s| &s.ciphertext == *p))
+    {
+        lines.push((Level::Error, format!("{path}: {UNMERGED}")));
+    }
+    lines.sort_by_key(|(level, _)| *level);
+    for (level, line) in &lines {
+        let label = match level {
+            Level::Error => "ERROR",
+            Level::Warn => "WARN",
+            Level::Ok => "ok",
+        };
+        println!("{label} {line}");
+    }
+    match lines.iter().filter(|(l, _)| *l == Level::Error).count() {
+        0 => Ok(()),
+        n => Err(Error::StatusProblems(n)),
+    }
+}
+
+// One `path: message; message` line per secret. Undecryptable secrets report no state.
+fn secret_status(
+    ctx: &Context,
+    sp: &paths::SecretPath,
+    unmerged: &[String],
+    current: &secret::Recipients,
+) -> Result<(Level, String), Error> {
+    let mut errors = Vec::new();
+    let mut warnings = Vec::new();
+    let mut ok = "in sync";
+    let plaintext = &sp.plaintext;
+
+    if !git::text_is_unset(&ctx.root, &sp.ciphertext)? {
+        errors.push("`text` attribute is not unset; add `*.amaga binary` to .gitattributes".into());
+    }
+    if git::is_tracked(&ctx.root, plaintext)? {
+        let fix = format!("run `git rm --cached -- {plaintext}`");
+        errors.push(format!(
+            "CRITICAL plaintext '{plaintext}' is tracked; {fix}"
+        ));
+    }
+    if !git::is_ignored(&ctx.root, plaintext)? {
+        let fix = "run `git-amaga seal` or `open`, or add it to .gitignore";
+        errors.push(format!(
+            "CRITICAL plaintext '{plaintext}' is not ignored; {fix}"
+        ));
+    }
+
+    if unmerged.contains(&sp.ciphertext) {
+        errors.push(UNMERGED.into());
+    } else {
+        let decrypted = read_repo_file(&ctx.root, &sp.ciphertext)
+            .and_then(|ciphertext| ctx.decrypt(&sp.ciphertext, &ciphertext));
+        match decrypted {
+            Err(e) => errors.push(format!("cannot decrypt: {e}")),
+            Ok((header, body)) => {
+                if key_set(&header.recipients) != key_set(current) {
+                    errors.push("stale recipients; run git-amaga rotate".into());
+                }
+                if !header.exposed_to.is_empty() {
+                    let names: Vec<&str> = header.exposed_to.keys().map(String::as_str).collect();
+                    warnings.push(format!("NEEDS ROTATION: exposed to {}", names.join(", ")));
+                }
+                match read_plaintext(&ctx.root, plaintext) {
+                    Err(e) => errors.push(e.to_string()),
+                    Ok(local) => {
+                        let base = ctx.base.get(plaintext).copied();
+                        let state = secret::plaintext_state(local.as_deref(), &body, base);
+                        if state == secret::PlaintextState::Closed {
+                            ok = "closed";
+                        }
+                        errors.extend(state_problem(plaintext, state));
+                    }
+                }
+            }
+        }
+    }
+
+    let level = match (errors.is_empty(), warnings.is_empty()) {
+        (false, _) => Level::Error,
+        (true, false) => Level::Warn,
+        (true, true) => Level::Ok,
+    };
+    errors.extend(warnings);
+    if errors.is_empty() {
+        errors.push(ok.into());
+    }
+    Ok((level, format!("{}: {}", sp.ciphertext, errors.join("; "))))
+}
+
+fn state_problem(plaintext: &str, state: secret::PlaintextState) -> Option<String> {
+    let (what, fix) = match state {
+        secret::PlaintextState::Closed | secret::PlaintextState::InSync => return None,
+        secret::PlaintextState::Modified => ("has local edits", "run `git-amaga seal`"),
+        secret::PlaintextState::Outdated => (
+            "is outdated",
+            "`git-amaga open` replaces it, `seal --force` keeps it",
+        ),
+        secret::PlaintextState::Conflict => (
+            "conflicts with the repository",
+            "`seal --force` keeps yours, `open --force` takes theirs",
+        ),
+    };
+    Some(format!("'{plaintext}' {what}; {fix}"))
+}
+
+// Stale means a different set of keys; member names are only labels (plan 5.2).
+fn key_set(recipients: &secret::Recipients) -> BTreeSet<&str> {
+    recipients.values().flatten().map(String::as_str).collect()
 }

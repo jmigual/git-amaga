@@ -10,5 +10,5 @@ pub mod paths;
 pub mod secret;
 pub mod users;
 
-pub use commands::{cmd_add, cmd_close, cmd_init, cmd_keygen, cmd_open, cmd_seal};
+pub use commands::{cmd_add, cmd_close, cmd_init, cmd_keygen, cmd_open, cmd_seal, cmd_status};
 pub use error::Error;

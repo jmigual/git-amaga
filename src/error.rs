@@ -196,4 +196,8 @@ pub enum Error {
         "'{0}' has not been sealed (state: {1:?}); run `seal` first, or `open --force` to discard local changes"
     )]
     CloseRefused(String, PlaintextState),
+
+    /// The details were printed by `status`.
+    #[error("status found problems with {0} secret(s)")]
+    StatusProblems(usize),
 }
