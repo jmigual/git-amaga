@@ -197,6 +197,10 @@ pub enum Error {
     )]
     CloseRefused(String, PlaintextState),
 
+    /// Nothing was written; every failing secret is listed.
+    #[error("cannot re-encrypt, these secrets do not decrypt (nothing was changed):\n{0}")]
+    ReencryptAborted(String),
+
     /// The details were printed by `status`.
     #[error("status found problems with {0} secret(s)")]
     StatusProblems(usize),

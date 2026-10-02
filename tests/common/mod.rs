@@ -1,6 +1,9 @@
 //! Shared integration-test helpers: an isolated Git repository for running the built binary
 //! (plan 11).
 
+// Each test crate uses a different subset of these helpers.
+#![allow(dead_code)]
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -91,12 +94,29 @@ impl Repo {
         command.output().expect("spawn git-amaga")
     }
 
+    /// Commits everything except the identity file `repo_with_alice` writes into the repository.
+    pub fn commit_all(&self, message: &str) {
+        self.git(&["add", "-A", "--", ".", ":(exclude)identity.txt"])
+            .assert_success();
+        self.git(&["commit", "-m", message]).assert_success();
+    }
+
     pub fn git_in(&self, cwd: &Path, args: &[&str]) -> Output {
         let mut command = Command::new("git");
         command.args(args);
         Self::isolate(&mut command, cwd, &self.global_config, self.home.path());
         command.output().expect("spawn git")
     }
+}
+
+/// A repository with one age member `alice`, plus the identity file path.
+pub fn repo_with_alice() -> (Repo, PathBuf) {
+    let repo = Repo::new();
+    let identity_path = repo.path().join("identity.txt");
+    repo.run(&["keygen", identity_path.to_str().unwrap()])
+        .assert_success();
+    repo.run(&["init", "alice"]).assert_success();
+    (repo, identity_path)
 }
 
 #[cfg(unix)]

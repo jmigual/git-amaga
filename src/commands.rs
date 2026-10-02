@@ -73,7 +73,14 @@ pub fn cmd_init(name: &str, keys: &[String]) -> Result<(), Error> {
     }
 
     let gpg_info = gpg.as_ref().map(|k| (k.fpr.as_str(), k.uid.as_str()));
-    audit::append(&amaga_dir.join("audit.jsonl"), name, "init", None, gpg_info)?;
+    audit::append(
+        &amaga_dir.join("audit.jsonl"),
+        name,
+        "init",
+        None,
+        None,
+        gpg_info,
+    )?;
     if let Some(key) = &gpg {
         println!("{}", key.summary(name));
     }

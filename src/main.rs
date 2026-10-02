@@ -61,6 +61,8 @@ enum Command {
         /// Plaintext or `.amaga` paths to close (default: every secret whose plaintext exists).
         paths: Vec<String>,
     },
+    /// Re-encrypt every secret with fresh keys; also finishes an interrupted removal.
+    Rotate,
     /// Show the members and the state and problems of every secret.
     Status,
 }
@@ -74,6 +76,7 @@ fn main() -> ExitCode {
         Command::Seal { force, paths } => git_amaga::cmd_seal(force, &paths),
         Command::Open { force, paths } => git_amaga::cmd_open(force, &paths),
         Command::Close { paths } => git_amaga::cmd_close(&paths),
+        Command::Rotate => git_amaga::cmd_rotate(),
         Command::Status => git_amaga::cmd_status(),
     };
     match result {

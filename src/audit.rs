@@ -18,18 +18,22 @@ struct Event<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     path: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    user: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     gpg_fpr: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     gpg_uid: Option<&'a str>,
 }
 
-/// Appends one JSONL event (plan 5.3); `secret_path` is the repo-relative plaintext path, `None`
-/// for `init`. `gpg` is the member's (primary fingerprint, first user ID), if it has an `.asc`.
+/// Appends one JSONL event (plan 5.3); `secret_path` is the repo-relative plaintext path and `user`
+/// the member a `user.*` event is about. `gpg` is the member's (primary fingerprint, first user
+/// ID), if it has an `.asc`.
 pub fn append(
     path: &Path,
     actor: &str,
     event: &str,
     secret_path: Option<&str>,
+    user: Option<&str>,
     gpg: Option<(&str, &str)>,
 ) -> Result<(), Error> {
     let line = serde_json::to_string(&Event {
@@ -37,6 +41,7 @@ pub fn append(
         actor,
         event,
         path: secret_path,
+        user,
         gpg_fpr: gpg.map(|(fpr, _)| fpr),
         gpg_uid: gpg.map(|(_, uid)| uid),
     })
@@ -122,8 +127,16 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("audit.jsonl");
 
-        append(&path, "alice", "init", None, None).unwrap();
-        append(&path, "alice", "rotated", Some("secrets/prod.env"), None).unwrap();
+        append(&path, "alice", "init", None, None, None).unwrap();
+        append(
+            &path,
+            "alice",
+            "rotated",
+            Some("secrets/prod.env"),
+            None,
+            None,
+        )
+        .unwrap();
 
         let contents = fs::read_to_string(&path).unwrap();
         let lines: Vec<&str> = contents.lines().collect();
@@ -140,7 +153,15 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("audit.jsonl");
 
-        append(&path, "alice", "init", None, Some(("ABCD", "Alice <a@x>"))).unwrap();
+        append(
+            &path,
+            "alice",
+            "init",
+            None,
+            None,
+            Some(("ABCD", "Alice <a@x>")),
+        )
+        .unwrap();
 
         let contents = fs::read_to_string(&path).unwrap();
         assert!(contents.contains("\"gpg_fpr\":\"ABCD\""));

@@ -1,6 +1,6 @@
 mod common;
 
-use common::{OutputExt, Repo};
+use common::{OutputExt, Repo, repo_with_alice};
 
 #[test]
 fn keygen_writes_identity_refuses_overwrite_and_sets_global_identity() {
@@ -200,16 +200,6 @@ fn init_deduplicates_a_key_given_twice() {
     let contents = std::fs::read_to_string(&user_file).unwrap();
     assert_eq!(contents.lines().count(), 1);
     assert_eq!(contents.trim(), public_key);
-}
-
-/// A repository with one age member `alice`, plus the identity file path.
-fn repo_with_alice() -> (Repo, std::path::PathBuf) {
-    let repo = Repo::new();
-    let identity_path = repo.path().join("identity.txt");
-    repo.run(&["keygen", identity_path.to_str().unwrap()])
-        .assert_success();
-    repo.run(&["init", "alice"]).assert_success();
-    (repo, identity_path)
 }
 
 /// Overwrites `secret.env.amaga` with a fresh encryption of `body` to alice, standing in for a
@@ -1542,7 +1532,7 @@ fn status_reports_io_errors_per_secret() {
     assert_eq!(status.status.code(), Some(1));
     let stdout = String::from_utf8_lossy(&status.stdout);
     assert!(
-        stdout.contains("ERROR a.env.amaga: a.env"),
+        stdout.contains("ERROR a.env.amaga: 'a.env' is not a regular file"),
         "got {stdout:?}"
     );
     assert!(

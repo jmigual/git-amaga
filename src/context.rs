@@ -126,6 +126,24 @@ impl Context {
             event,
             Some(path),
             None,
+            None,
+        )
+    }
+
+    // An event without a secret path: `rotated`, or `user.*` about `user` (plan 5.3).
+    pub(crate) fn audit_event(
+        &self,
+        event: &str,
+        user: Option<&str>,
+        gpg: Option<(&str, &str)>,
+    ) -> Result<(), Error> {
+        audit::append(
+            &self.root.join(".amaga/audit.jsonl"),
+            &self.actor,
+            event,
+            None,
+            user,
+            gpg,
         )
     }
 }
@@ -165,11 +183,22 @@ pub(crate) fn secret_paths_for(
     Ok(found)
 }
 
+// Regular files only: following a symlinked secret could decrypt, then re-encrypt, a file from
+// another repository (plan 3).
 pub(crate) fn read_repo_file(root: &Path, path: &str) -> Result<Vec<u8>, Error> {
-    fs::read(root.join(path)).map_err(|source| Error::IoPath {
+    let full = root.join(path);
+    let io_error = |source| Error::IoPath {
         path: path.to_string(),
         source,
-    })
+    };
+    if !fs::symlink_metadata(&full)
+        .map_err(io_error)?
+        .file_type()
+        .is_file()
+    {
+        return Err(Error::NotARegularFile(path.to_string()));
+    }
+    fs::read(&full).map_err(io_error)
 }
 
 // `None` only when the plaintext does not exist; other read errors must not look like `Closed`.
