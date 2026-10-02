@@ -1,0 +1,30 @@
+//! Typed errors for git-amaga. One variant per user-actionable failure (plan section 10.2).
+
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+pub enum Error {
+    /// age failed to encrypt a secret to its recipients.
+    #[error("failed to encrypt secret: {0}")]
+    Encrypt(#[from] age::EncryptError),
+
+    /// age failed to decrypt a secret (no matching identity, tampered ciphertext, ...).
+    #[error("failed to decrypt secret: {0}")]
+    Decrypt(#[from] age::DecryptError),
+
+    /// I/O failure while streaming ciphertext through age.
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+
+    /// The decrypted payload has no `\n` separating the header from the body.
+    #[error("secret header is not terminated by a newline")]
+    HeaderMissingNewline,
+
+    /// The header is not valid JSON, has unknown fields, or fails to (de)serialize.
+    #[error("secret header is not valid JSON: {0}")]
+    HeaderJson(#[from] serde_json::Error),
+
+    /// The header's `v` field is not `1`.
+    #[error("unsupported secret format version {0}")]
+    UnsupportedVersion(u8),
+}
