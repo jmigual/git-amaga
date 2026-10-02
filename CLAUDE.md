@@ -23,7 +23,8 @@ plaintext. Members hold age keys or GPG keys (a custom `pgp` age stanza).
 - No comments that restate the code. No multi-paragraph rationale in code: write an ADR and
   reference it as `ADR-NNNN` (or a plan section as `plan 5.1`).
 - Keep files focused: split a module once it passes ~400 lines excluding tests.
-- One `Error` variant per user-actionable failure; assert on variants, not message text.
+- One `Error` variant per user-actionable failure; unit tests assert on variants, not message text.
+  Integration tests may assert on stable stderr tokens (the binary exits 1 for every error).
 
 ## Test isolation
 - Never touch the real git config, `HOME` or `~/.gnupg`. Integration tests set
