@@ -4,7 +4,6 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::str::FromStr;
 
 use crate::epoch::{self, Epoch};
 use crate::outcome::Warning;
@@ -58,8 +57,7 @@ impl Context {
             return Err(Error::UnmergedEpoch(unmerged_epoch.join(", ")));
         }
         let members = users::load_tolerating(&root.join(".amaga/users"), tolerated)?;
-        let current = age::x25519::Recipient::from_str(&epoch::read_pointer(&root)?)
-            .expect("read_pointer returns a valid public key");
+        let current = epoch::read_pointer(&root)?;
         let age_identities = match identity::configured_identity_path(dir)? {
             Some(path) => identity::load_identity_file(&path)?,
             None => Vec::new(),
@@ -138,7 +136,7 @@ impl Context {
         Ok(key_set(&epoch.members) == key_set(&users::recipients(&self.members)))
     }
 
-    /// The guard of `add`, `seal` and `user add`: [`Error::EpochStale`] unless up to date (plan 7).
+    /// The guard of `add`, `seal`, `user add` and `dismiss`: [`Error::EpochStale`] unless up to date (plan 7).
     pub(crate) fn require_up_to_date(&self) -> Result<(), Error> {
         match self.epoch_up_to_date()? {
             true => Ok(()),

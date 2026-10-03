@@ -41,11 +41,9 @@ impl Epoch {
 
     /// The same key, to be wrapped to another member set (`user add`, plan 7).
     pub fn with_members(&self, members: Recipients) -> Self {
-        let key = self.identity.to_string();
         Self {
             members,
-            identity: x25519::Identity::from_str(key.expose_secret())
-                .expect("a key that was just serialized parses"),
+            identity: self.identity.clone(),
         }
     }
 
@@ -116,8 +114,8 @@ pub fn unwrap(
     })
 }
 
-/// The current epoch's id from `.amaga/current-epoch`; the epoch file must exist.
-pub fn read_pointer(root: &Path) -> Result<String, Error> {
+/// The current epoch's public key from `.amaga/current-epoch`; the epoch file must exist.
+pub fn read_pointer(root: &Path) -> Result<x25519::Recipient, Error> {
     let contents = match fs::read_to_string(root.join(POINTER)) {
         Ok(contents) => contents,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(Error::NoEpoch),
@@ -128,16 +126,15 @@ pub fn read_pointer(root: &Path) -> Result<String, Error> {
             });
         }
     };
-    let id = x25519::Recipient::from_str(contents.trim())
-        .map_err(|_| Error::EpochInvalid(format!("{POINTER}: not an age public key")))?
-        .to_string();
-    if !root.join(file_path(&id)).is_file() {
+    let recipient = x25519::Recipient::from_str(contents.trim())
+        .map_err(|_| Error::EpochInvalid(format!("{POINTER}: not an age public key")))?;
+    let path = file_path(&recipient.to_string());
+    if !root.join(&path).is_file() {
         return Err(Error::EpochInvalid(format!(
-            "{POINTER}: {} does not exist",
-            file_path(&id)
+            "{POINTER}: {path} does not exist"
         )));
     }
-    Ok(id)
+    Ok(recipient)
 }
 
 /// Points `.amaga/current-epoch` at `id`, atomically.
@@ -269,7 +266,7 @@ mod tests {
         ));
 
         write(root.path(), &epoch, &[&alice]).unwrap();
-        assert_eq!(read_pointer(root.path()).unwrap(), id);
+        assert_eq!(read_pointer(root.path()).unwrap().to_string(), id);
 
         fs::write(root.path().join(POINTER), "garbage\n").unwrap();
         assert!(matches!(
@@ -285,7 +282,7 @@ mod tests {
         let epoch = Epoch::generate(Recipients::new());
         write(root.path(), &epoch, &[&alice]).unwrap();
         write_pointer(root.path(), &epoch.id()).unwrap();
-        assert_eq!(read_pointer(root.path()).unwrap(), epoch.id());
+        assert_eq!(read_pointer(root.path()).unwrap().to_string(), epoch.id());
     }
 
     #[test]

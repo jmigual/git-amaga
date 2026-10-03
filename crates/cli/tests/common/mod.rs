@@ -176,7 +176,9 @@ pub fn repo_with_alice() -> (Repo, PathBuf) {
 
 /// The id of the current epoch (`.amaga/current-epoch`).
 pub fn current_epoch_id(repo: &Repo) -> String {
-    epoch::read_pointer(repo.path()).expect("read current-epoch")
+    epoch::read_pointer(repo.path())
+        .expect("read current-epoch")
+        .to_string()
 }
 
 /// Unwraps the current epoch with `identity`.
