@@ -87,11 +87,13 @@ Out of scope for v1: per-file ACLs, rotating external credentials, a key server/
 - GPG keys come only from the committed `.asc` files. `init`/`user add` may export a key from the local public keyring (7.4), but loading never reads the keyring, and the tool never contacts a keyserver. A revocation or a new subkey takes effect when the member commits a re-exported `.asc` and someone runs `rotate`.
 - A GPG key that expires after `user add` is still encrypted to (decision 9).
 - GPG decryption trusts the `gpg` on PATH and its agent. It costs one `gpg` call per command (the current epoch), plus one per older epoch while a secret is still under it. A card set to touch-always needs one touch per command.
-- Manual escape hatch for age members, two `age -d` commands (the epoch key only ever touches that file; delete it afterwards):
+- Manual escape hatch for age members, two `age -d` commands (the epoch key goes to a private temporary file outside the repository, so it cannot be committed; delete it afterwards):
 
   ```sh
-  age -d -i ~/.config/git-amaga/identity.txt ".amaga/epochs/$(cat .amaga/current-epoch).age" | tail -n +2 > epoch.key
-  age -d -i epoch.key secrets/prod.env.amaga | tail -n +2 > secrets/prod.env
+  k=$(mktemp)
+  age -d -i ~/.config/git-amaga/identity.txt ".amaga/epochs/$(cat .amaga/current-epoch).age" | tail -n +2 > "$k"
+  age -d -i "$k" secrets/prod.env.amaga | tail -n +2 > secrets/prod.env
+  rm "$k"
   ```
 
   `tail` drops the one-line JSON header of each payload. A secret under an older epoch needs that epoch's file instead. GPG members cannot decrypt without the tool, because the age CLI cannot take a file key that gpg has unwrapped.

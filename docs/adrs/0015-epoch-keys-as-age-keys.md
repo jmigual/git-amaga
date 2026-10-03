@@ -25,7 +25,8 @@ hand-built AEAD, no custom container (the reasons ADR-0003 dropped the original 
   secret is rewritten. `user remove` and `rotate` create a new epoch, re-encrypt every secret
   and move the pointer last (ADR-0007).
 - **Stale:** a secret under a non-current epoch, or a current epoch whose key set differs from
-  `.amaga/users`. `add`, `seal`, `user add` and `dismiss` refuse while the epoch is stale.
+  `.amaga/users`. `add`, `seal`, `user add` and `dismiss` refuse while the current epoch is not
+  up to date (its members differ from `.amaga/users`).
 - Epoch files are never deleted.
 - Format version 2. Repositories and secrets from 0.1.0 fail with an error; there is no migration.
 
@@ -37,7 +38,7 @@ hand-built AEAD, no custom container (the reasons ADR-0003 dropped the original 
 - `.amaga/epochs/` grows by one small file per `rotate`/`user remove` (and per interrupted
   run). Old epochs keep merged branch secrets and interrupted runs readable.
 - Whoever holds an epoch secret key reads every secret under it. The key exists in plaintext
-  only in memory (and in the escape hatch's output file).
+  only in memory (and in a private temporary file in the escape hatch).
 - Two branches that each create an epoch conflict on `current-epoch`; two that each `user add`
   conflict on the epoch file. Take either side, then `rotate` (plan.md §8).
 - The recipient set is recorded once per epoch, not per secret.

@@ -61,11 +61,14 @@ This is format version 2. Repositories written by 0.1.0 are not readable: open t
 0.1.0, then run `init` anew.
 
 **Escape hatch for age members:** the tool is not needed to read a secret. Two `age -d`
-commands; the epoch key only touches `epoch.key`, so delete it afterwards.
+commands. The epoch key goes to a temporary file outside the repository (`mktemp` makes it
+private), so it can never be committed; delete it afterwards.
 
 ```sh
-age -d -i ~/.config/git-amaga/identity.txt ".amaga/epochs/$(cat .amaga/current-epoch).age" | tail -n +2 > epoch.key
-age -d -i epoch.key secrets/prod.env.amaga | tail -n +2 > secrets/prod.env
+k=$(mktemp)
+age -d -i ~/.config/git-amaga/identity.txt ".amaga/epochs/$(cat .amaga/current-epoch).age" | tail -n +2 > "$k"
+age -d -i "$k" secrets/prod.env.amaga | tail -n +2 > secrets/prod.env
+rm "$k"
 ```
 
 `tail` drops the one-line JSON header of each payload. A secret under an older epoch needs that
