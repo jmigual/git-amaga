@@ -1,7 +1,7 @@
 //! Secret file header, payload encoding, age encryption/decryption, and the pure exposure and
 //! plaintext-state rules (plan sections 5.2, 6.1, 6.2).
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::io::{Read, Write};
 use std::path::Path;
 
@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::error::Error;
+use crate::users;
 
 /// User name -> set of key strings (`age1…` or `pgp:<FPR>`), plan 5.1.
 pub type Recipients = BTreeMap<String, BTreeSet<String>>;
@@ -86,6 +87,68 @@ pub fn decrypt<H: DeserializeOwned>(
     let mut payload = Vec::new();
     reader.read_to_end(&mut payload)?;
     decode_payload(&payload)
+}
+
+const LABEL_TAG: &str = "amaga-partition";
+
+/// The partition label stanza of a secret (plan 5.2, ADR-0017): an age recipient that adds
+/// `-> amaga-partition <p>` with an empty body and wraps nothing.
+pub struct Label(String);
+
+impl Label {
+    /// [`Error::PartitionLabelInvalid`] unless `partition` follows the name rule (plan 5.1).
+    pub fn new(partition: &str) -> Result<Self, Error> {
+        match users::valid_name(partition) {
+            true => Ok(Self(partition.to_string())),
+            false => Err(Error::PartitionLabelInvalid(partition.to_string())),
+        }
+    }
+}
+
+impl age::Recipient for Label {
+    fn wrap_file_key(
+        &self,
+        _file_key: &age_core::format::FileKey,
+    ) -> Result<(Vec<age_core::format::Stanza>, HashSet<String>), age::EncryptError> {
+        let stanza = age_core::format::Stanza {
+            tag: LABEL_TAG.to_string(),
+            args: vec![self.0.clone()],
+            body: Vec::new(),
+        };
+        Ok((vec![stanza], HashSet::new()))
+    }
+}
+
+/// The partition label of the age file `ciphertext`, read without any key (plan 5.2).
+/// [`Error::PartitionLabelInvalid`] (naming `path`) unless there is exactly one valid label.
+pub fn label_of(path: &str, ciphertext: &[u8]) -> Result<String, Error> {
+    let invalid = || Error::PartitionLabelInvalid(path.to_string());
+    let mut lines = ciphertext.split(|&b| b == b'\n');
+    if lines.next() != Some(b"age-encryption.org/v1") {
+        return Err(invalid());
+    }
+    let mut labels = Vec::new();
+    let mut terminated = false;
+    for line in lines {
+        if line.starts_with(b"---") {
+            terminated = true;
+            break;
+        }
+        if let Some(stanza) = line.strip_prefix(b"-> ") {
+            let mut args = stanza.split(|&b| b == b' ');
+            if args.next() == Some(LABEL_TAG.as_bytes()) {
+                labels.push(args.collect::<Vec<_>>());
+            }
+        }
+    }
+    match labels.as_slice() {
+        [args] if terminated && args.len() == 1 => std::str::from_utf8(args[0])
+            .ok()
+            .filter(|name| users::valid_name(name))
+            .map(str::to_string)
+            .ok_or_else(invalid),
+        _ => Err(invalid()),
+    }
 }
 
 /// The exposure rule (plan 6.1): every ciphertext write goes through this function. `old` pairs
@@ -436,6 +499,63 @@ mod tests {
         assert!(matches!(
             err,
             Error::Decrypt(age::DecryptError::NoMatchingKeys)
+        ));
+    }
+
+    // --- partition label (plan 5.2) ---
+
+    fn encrypt_labelled(labels: &[&str]) -> (Vec<u8>, age::x25519::Identity) {
+        let epoch = age::x25519::Identity::generate();
+        let epoch_pub = epoch.to_public();
+        let labels: Vec<Label> = labels.iter().map(|l| Label::new(l).unwrap()).collect();
+        let mut recipients: Vec<&dyn age::Recipient> = vec![&epoch_pub];
+        recipients.extend(labels.iter().map(|l| l as &dyn age::Recipient));
+        let ciphertext = encrypt(&header_with(Recipients::new()), b"body", &recipients).unwrap();
+        (ciphertext, epoch)
+    }
+
+    #[test]
+    fn label_is_readable_without_a_key_and_the_epoch_alone_decrypts() {
+        let (ciphertext, epoch) = encrypt_labelled(&["production"]);
+        assert_eq!(label_of("p.env.amaga", &ciphertext).unwrap(), "production");
+        let (_, body) = decrypt::<Header>(&ciphertext, &[&epoch as &dyn age::Identity]).unwrap();
+        assert_eq!(body, b"body");
+    }
+
+    #[test]
+    fn label_of_rejects_zero_two_and_non_age_input() {
+        let (none, _) = encrypt_labelled(&[]);
+        let (two, _) = encrypt_labelled(&["a", "b"]);
+        for input in [&none[..], &two[..], b"not an age file".as_slice()] {
+            assert!(matches!(
+                label_of("p.env.amaga", input),
+                Err(Error::PartitionLabelInvalid(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn label_outside_the_name_rule_is_rejected() {
+        for name in ["", "Prod", "a b", "-a"] {
+            assert!(matches!(
+                Label::new(name),
+                Err(Error::PartitionLabelInvalid(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn a_changed_label_fails_authentication() {
+        let (mut ciphertext, epoch) = encrypt_labelled(&["production"]);
+        let at = ciphertext
+            .windows(10)
+            .position(|w| w == b"production")
+            .unwrap();
+        ciphertext[at + 9] = b'x';
+        assert_eq!(label_of("p.env.amaga", &ciphertext).unwrap(), "productiox");
+        assert!(matches!(
+            decrypt::<Header>(&ciphertext, &[&epoch as &dyn age::Identity]),
+            Err(Error::Decrypt(age::DecryptError::InvalidMac))
         ));
     }
 

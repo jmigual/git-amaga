@@ -253,6 +253,10 @@ pub enum Error {
     )]
     UnmergedEpoch(String),
 
+    /// The label is missing, repeated, or not a valid partition name (plan 5.2).
+    #[error("'{0}' has no valid partition label (expected exactly one `amaga-partition` stanza)")]
+    PartitionLabelInvalid(String),
+
     #[error("nothing to dismiss: name at least one path or `--user`")]
     DismissNoTarget,
 

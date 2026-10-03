@@ -188,11 +188,20 @@ pub fn current_epoch(repo: &Repo, identity: &x25519::Identity) -> Epoch {
     epoch::unwrap(&id, &bytes, &[identity as &dyn age::Identity]).expect("unwrap current epoch")
 }
 
-/// Encrypts `header` and `body` to the current epoch, as a teammate's commit would. Needs only
+/// Encrypts `header` and `body` to the current epoch with the `default` label, as a teammate's commit would. Needs only
 /// the public key in `current-epoch`.
 pub fn encrypt_to_current_epoch(repo: &Repo, header: &Header, body: &[u8]) -> Vec<u8> {
     let recipient = x25519::Recipient::from_str(&current_epoch_id(repo)).expect("epoch id");
-    secret::encrypt(header, body, &[&recipient as &dyn age::Recipient]).expect("encrypt")
+    let label = secret::Label::new("default").expect("label");
+    secret::encrypt(
+        header,
+        body,
+        &[
+            &recipient as &dyn age::Recipient,
+            &label as &dyn age::Recipient,
+        ],
+    )
+    .expect("encrypt")
 }
 
 /// Decrypts a secret as `identity` can: through any epoch file it can unwrap. Fails with

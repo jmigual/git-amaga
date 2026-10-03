@@ -43,6 +43,7 @@ pub(crate) fn reencrypt_all(
     let epoch = Epoch::generate(users::recipients(&ctx.members));
     ctx.write_epoch(&epoch)?;
     let recipient = epoch.recipient();
+    let label = secret::Label::new("default")?;
     let mut written = Vec::new();
     for (path, old_header, body, old_epoch) in decrypted {
         let header = secret::next_header(
@@ -50,7 +51,8 @@ pub(crate) fn reencrypt_all(
             false,
             &epoch.members,
         );
-        let ciphertext = secret::encrypt(&header, &body, &[&recipient as &dyn age::Recipient])?;
+        let ciphertext =
+            secret::encrypt(&header, &body, &[&recipient as &dyn age::Recipient, &label])?;
         write_repo_file(&ctx.root, &path, &ciphertext, None)?;
         written.push(Reencrypted {
             path,

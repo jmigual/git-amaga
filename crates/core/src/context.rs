@@ -149,6 +149,7 @@ impl Context {
         path: &str,
         ciphertext: &[u8],
     ) -> Result<(secret::Header, Vec<u8>, Rc<Epoch>), Error> {
+        secret::label_of(path, ciphertext)?;
         self.current_epoch()?;
         let current_id = self.current.to_string();
         let others = epoch::list(&self.root)?
@@ -197,7 +198,12 @@ impl Context {
 
     /// Encrypts to the current epoch's public key; needs no unwrap (plan 7).
     pub(crate) fn encrypt(&self, header: &secret::Header, body: &[u8]) -> Result<Vec<u8>, Error> {
-        secret::encrypt(header, body, &[&self.current as &dyn age::Recipient])
+        let label = secret::Label::new("default")?;
+        secret::encrypt(
+            header,
+            body,
+            &[&self.current as &dyn age::Recipient, &label],
+        )
     }
 
     /// Wraps `epoch` to every member key and writes its file (plan 5.6).
