@@ -10,6 +10,7 @@ use git_amaga_core::{Error, GpgKey, Level, Outcome, Reencrypted, StatusReport, W
 #[derive(Parser)]
 #[command(
     name = "git-amaga",
+    version,
     about = "Encrypted secret files for Git repositories"
 )]
 struct Cli {

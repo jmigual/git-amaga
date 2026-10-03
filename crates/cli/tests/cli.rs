@@ -2113,3 +2113,13 @@ fn unreadable_older_epoch_is_reported_for_every_secret_under_it() {
         assert!(line.contains(&old_epoch), "got {line:?}");
     }
 }
+
+#[test]
+fn version_flag_prints_the_package_version() {
+    let repo = Repo::new();
+
+    let output = repo.run(&["--version"]);
+
+    output.assert_success();
+    assert!(String::from_utf8_lossy(&output.stdout).contains(env!("CARGO_PKG_VERSION")));
+}
