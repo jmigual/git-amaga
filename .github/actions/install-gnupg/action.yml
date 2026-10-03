@@ -1,0 +1,21 @@
+name: Install GnuPG (Windows)
+description: >
+  Extracts the official GnuPG for Windows installer (about 6 s; choco takes minutes) and puts it
+  first on PATH, dropping Git for Windows' MSYS gpg, which mangles a Windows GNUPGHOME. Do not add
+  bin\gpgconf.ctl: that switches gpg to portable mode, which ignores GNUPGHOME.
+runs:
+  using: composite
+  steps:
+    - shell: pwsh
+      env:
+        GPG_EXE: gnupg-w32-2.5.24_20260923.exe
+        GPG_SHA256: ea6f9dee2cccd83287432625b8b399173805add81d27067fcaf019c0c4da1ad8
+      run: |
+        $installer = Join-Path $env:RUNNER_TEMP $env:GPG_EXE
+        Invoke-WebRequest "https://www.gnupg.org/ftp/gcrypt/binary/$env:GPG_EXE" -OutFile $installer -MaximumRetryCount 3 -RetryIntervalSec 5
+        if ((Get-FileHash $installer -Algorithm SHA256).Hash -ne $env:GPG_SHA256) { throw "GnuPG installer checksum mismatch" }
+        $gnupg = Join-Path $env:RUNNER_TEMP gnupg
+        7z x $installer "-o$gnupg" -y | Out-Null
+        Remove-Item (Join-Path $gnupg '$PLUGINSDIR') -Force -Recurse
+        $keep = ($env:PATH -split ';') | Where-Object { $_ -and -not (Test-Path (Join-Path $_ 'gpg.exe')) }
+        "PATH=$(Join-Path $gnupg bin);$($keep -join ';')" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append

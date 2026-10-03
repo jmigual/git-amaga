@@ -21,18 +21,11 @@ jobs:
       - name: Install Rust
         run: rustup toolchain install stable --profile minimal --component rustfmt --component clippy
       - uses: Swatinem/rust-cache@v2
-      # Git for Windows' MSYS gpg mangles a Windows GNUPGHOME and a native install takes ~3 min, so
-      # Windows runs without gpg: the gpg tests print a skip notice (Linux covers them).
-      - name: Remove MSYS gpg from PATH (Windows)
+      - name: Install GnuPG (Windows)
         if: runner.os == 'Windows'
-        run: |
-          $keep = ($env:PATH -split ';') | Where-Object { $_ -and -not (Test-Path (Join-Path $_ 'gpg.exe')) }
-          "PATH=$($keep -join ';')" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+        uses: ./.github/actions/install-gnupg
       - name: gpg version
-        shell: bash
-        run: |
-          command -v gpg || echo "no gpg on PATH"
-          gpg --version || true
+        run: gpg --version
       - run: cargo fmt --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
