@@ -139,9 +139,12 @@ pub fn managed_secrets(root: &Path) -> Result<Vec<String>, Error> {
     Ok(paths)
 }
 
-pub fn unmerged_secrets(root: &Path) -> Result<Vec<String>, Error> {
+/// The unmerged paths matching `pathspecs`, sorted and deduplicated.
+pub fn unmerged_paths(root: &Path, pathspecs: &[&str]) -> Result<Vec<String>, Error> {
     // `-z`: without it git C-quotes non-ASCII paths.
-    let out = run_in(root, &["ls-files", "-u", "-z", "--", "*.amaga"])?;
+    let mut args = vec!["ls-files", "-u", "-z", "--"];
+    args.extend(pathspecs);
+    let out = run_in(root, &args)?;
     let mut paths: Vec<String> = out
         .split('\0')
         .filter_map(|entry| entry.split('\t').nth(1))

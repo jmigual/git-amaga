@@ -11,7 +11,7 @@ const UNMERGED: &str = "unmerged; resolve the conflict and `git add` the file";
 /// `git-amaga status` (plan 7.2): problems first; the caller exits 1 if `error_count` > 0.
 pub fn cmd_status(dir: &Path) -> Result<StatusReport, Error> {
     let ctx = Context::load_allowing_unmerged(dir)?;
-    let unmerged = git::unmerged_secrets(&ctx.root)?;
+    let unmerged = git::unmerged_paths(&ctx.root, &["*.amaga"])?;
     let up_to_date = ctx.epoch_up_to_date()?;
 
     let mut warnings = Vec::new();

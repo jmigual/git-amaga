@@ -1915,3 +1915,61 @@ fn repository_without_current_epoch_errors() {
     let stderr = String::from_utf8_lossy(&status.stderr);
     assert!(stderr.contains("current-epoch"), "got {stderr:?}");
 }
+
+/// Test 41: two branches that each `rotate` conflict on `current-epoch`; every command refuses
+/// until it is resolved, then `rotate` finishes the job.
+#[test]
+fn parallel_rotations_conflict_on_current_epoch() {
+    let (repo, _identity_path) = repo_with_alice();
+    repo.commit_all("init");
+    let main = String::from_utf8(repo.git(&["rev-parse", "--abbrev-ref", "HEAD"]).stdout)
+        .unwrap()
+        .trim()
+        .to_string();
+
+    repo.git(&["checkout", "-b", "other"]).assert_success();
+    repo.run(&["rotate"]).assert_success();
+    std::fs::write(repo.path().join("a.env"), b"a").unwrap();
+    repo.run(&["add", "a.env"]).assert_success();
+    repo.commit_all("rotate and add a secret");
+    // `main` does not ignore the plaintext, so it must not stay in the work tree.
+    std::fs::remove_file(repo.path().join("a.env")).unwrap();
+
+    repo.git(&["checkout", &main]).assert_success();
+    repo.run(&["rotate"]).assert_success();
+    repo.commit_all("rotate");
+    repo.git(&["merge", "--no-edit", "other"]).assert_failure();
+
+    std::fs::write(repo.path().join("b.env"), b"b").unwrap();
+    let carol = age::x25519::Identity::generate().to_public().to_string();
+    let commands: [&[&str]; 8] = [
+        &["status"],
+        &["rotate"],
+        &["open"],
+        &["seal"],
+        &["add", "b.env"],
+        &["user", "add", "carol", &carol],
+        &["user", "remove", "alice"],
+        &["close"],
+    ];
+    for args in commands {
+        let output = repo.run(args);
+        assert_eq!(output.status.code(), Some(1), "{args:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains(".amaga/current-epoch"),
+            "{args:?}: {stderr:?}"
+        );
+        assert!(
+            stderr.contains("git checkout --ours"),
+            "{args:?}: {stderr:?}"
+        );
+    }
+
+    repo.git(&["checkout", "--ours", "--", ".amaga/current-epoch"])
+        .assert_success();
+    repo.git(&["add", ".amaga/current-epoch"]).assert_success();
+    assert_status_error(&repo, "run git-amaga rotate");
+    repo.run(&["rotate"]).assert_success();
+    status_stdout(&repo);
+}

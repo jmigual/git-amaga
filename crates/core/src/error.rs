@@ -247,4 +247,9 @@ pub enum Error {
 
     #[error("`.amaga/users` differs from the current epoch; run `git-amaga rotate` first")]
     EpochStale,
+
+    #[error(
+        "unmerged epoch files must be resolved first: {0}\nrun `git checkout --ours -- <paths> && git add <paths>`, then `git-amaga rotate`"
+    )]
+    UnmergedEpoch(String),
 }

@@ -38,7 +38,7 @@ impl Context {
 
     fn load_refusing_unmerged(dir: &Path, tolerated: Option<&str>) -> Result<Self, Error> {
         let root = git::toplevel(dir)?;
-        let unmerged = git::unmerged_secrets(&root)?;
+        let unmerged = git::unmerged_paths(&root, &["*.amaga"])?;
         if !unmerged.is_empty() {
             return Err(Error::UnmergedAmagaFiles(unmerged.join(", ")));
         }
@@ -51,6 +51,11 @@ impl Context {
     }
 
     fn load_in(dir: &Path, root: PathBuf, tolerated: Option<&str>) -> Result<Self, Error> {
+        let unmerged_epoch =
+            git::unmerged_paths(&root, &[".amaga/current-epoch", ".amaga/epochs"])?;
+        if !unmerged_epoch.is_empty() {
+            return Err(Error::UnmergedEpoch(unmerged_epoch.join(", ")));
+        }
         let members = users::load_tolerating(&root.join(".amaga/users"), tolerated)?;
         let current = age::x25519::Recipient::from_str(&epoch::read_pointer(&root)?)
             .expect("read_pointer returns a valid public key");

@@ -832,7 +832,7 @@ be split further without a commit in which `add` and `open` disagree on the form
 ### 15.7 `core: refuse while an epoch path is unmerged`
 
 - Files: `crates/core/src/{git,context,error}.rs` (`UnmergedEpoch`), `crates/cli/tests/cli.rs`.
-- Change: generalise `git::unmerged_secrets` to take pathspecs (callers pass `*.amaga`), and
+- Change: generalise `git::unmerged_secrets` into `unmerged_paths`, which takes pathspecs (callers pass `*.amaga`), and
   make `Context` loading refuse when `.amaga/current-epoch` or `.amaga/epochs` is unmerged, for
   every command including `status` (7).
 - Tests that fail before and pass after: 41 (asserts the `git checkout --ours` hint, which the
