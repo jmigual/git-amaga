@@ -99,21 +99,21 @@ enum UserCommand {
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let result = match cli.command {
-        Command::Keygen { path } => git_amaga::cmd_keygen(path.as_deref()),
-        Command::Init { name, keys } => git_amaga::cmd_init(&name, &keys),
-        Command::Add { force, paths } => git_amaga::cmd_add(force, &paths),
-        Command::Seal { force, paths } => git_amaga::cmd_seal(force, &paths),
-        Command::Open { force, paths } => git_amaga::cmd_open(force, &paths),
-        Command::Close { paths } => git_amaga::cmd_close(&paths),
-        Command::Remove { paths } => git_amaga::cmd_remove(&paths),
+        Command::Keygen { path } => git_amaga_core::cmd_keygen(path.as_deref()),
+        Command::Init { name, keys } => git_amaga_core::cmd_init(&name, &keys),
+        Command::Add { force, paths } => git_amaga_core::cmd_add(force, &paths),
+        Command::Seal { force, paths } => git_amaga_core::cmd_seal(force, &paths),
+        Command::Open { force, paths } => git_amaga_core::cmd_open(force, &paths),
+        Command::Close { paths } => git_amaga_core::cmd_close(&paths),
+        Command::Remove { paths } => git_amaga_core::cmd_remove(&paths),
         Command::User {
             command: UserCommand::Add { name, keys },
-        } => git_amaga::cmd_user_add(&name, &keys),
+        } => git_amaga_core::cmd_user_add(&name, &keys),
         Command::User {
             command: UserCommand::Remove { name },
-        } => git_amaga::cmd_user_remove(&name),
-        Command::Rotate => git_amaga::cmd_rotate(),
-        Command::Status => git_amaga::cmd_status(),
+        } => git_amaga_core::cmd_user_remove(&name),
+        Command::Rotate => git_amaga_core::cmd_rotate(),
+        Command::Status => git_amaga_core::cmd_status(),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,

@@ -8,7 +8,7 @@ use std::process::Output;
 
 use age::x25519;
 use common::{OutputExt, Repo, repo_with_alice};
-use git_amaga::secret::{self, Header};
+use git_amaga_core::secret::{self, Header};
 
 fn stderr(output: &std::process::Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
@@ -33,13 +33,13 @@ fn write_member(repo: &Repo, name: &str) -> x25519::Identity {
 fn decrypt_with(
     ciphertext: &[u8],
     identity: &x25519::Identity,
-) -> Result<(Header, Vec<u8>), git_amaga::Error> {
+) -> Result<(Header, Vec<u8>), git_amaga_core::Error> {
     secret::decrypt(ciphertext, &[identity as &dyn age::Identity])
 }
 
 /// The decrypted header of `path`, read with alice's identity file.
 fn header_of(repo: &Repo, identity_path: &Path, path: &str) -> Header {
-    let alice = git_amaga::identity::load_identity_file(identity_path).unwrap();
+    let alice = git_amaga_core::identity::load_identity_file(identity_path).unwrap();
     let ciphertext = std::fs::read(repo.path().join(path)).unwrap();
     decrypt_with(&ciphertext, &alice[0]).unwrap().0
 }
@@ -300,10 +300,22 @@ fn user_add_rejects_unusable_gpg_keys() {
     add_secret(&repo, "secret.env", b"v1");
     let before_audit = audit_events(&repo);
     let fixtures = [
-        ("expired", include_str!("fixtures/expired.asc")),
-        ("revoked", include_str!("fixtures/revoked.asc")),
-        ("sign_only", include_str!("fixtures/sign_only.asc")),
-        ("third_party", include_str!("fixtures/third_party.asc")),
+        (
+            "expired",
+            include_str!("../../core/tests/fixtures/expired.asc"),
+        ),
+        (
+            "revoked",
+            include_str!("../../core/tests/fixtures/revoked.asc"),
+        ),
+        (
+            "sign_only",
+            include_str!("../../core/tests/fixtures/sign_only.asc"),
+        ),
+        (
+            "third_party",
+            include_str!("../../core/tests/fixtures/third_party.asc"),
+        ),
     ];
     for (name, armored) in fixtures {
         let key_path = repo.path().join(format!("{name}.asc"));
@@ -321,10 +333,10 @@ fn user_add_rejects_unusable_gpg_keys() {
 fn gpg_member_add_then_remove_flags_its_pgp_key() {
     let (repo, identity_path) = repo_with_alice();
     add_secret(&repo, "secret.env", b"v1");
-    let armored = include_str!("fixtures/valid_cv25519.asc");
+    let armored = include_str!("../../core/tests/fixtures/valid_cv25519.asc");
     let key_path = repo.path().join("bob-key.asc");
     std::fs::write(&key_path, armored).unwrap();
-    let asc = git_amaga::gpg::validate(armored).unwrap();
+    let asc = git_amaga_core::gpg::validate(armored).unwrap();
 
     let add = user_add(&repo, "bob", key_path.to_str().unwrap());
     add.assert_success();
@@ -378,10 +390,10 @@ fn user_add_resolves_an_email_from_the_gpg_keyring() {
 #[test]
 fn gpg_subkey_replacement_flags_exposure() {
     let (repo, identity_path) = repo_with_alice();
-    let old = include_str!("fixtures/rotated_subkey_old.asc");
-    let new = include_str!("fixtures/rotated_subkey_new.asc");
-    let old_fpr = git_amaga::gpg::validate(old).unwrap().fpr;
-    let new_fpr = git_amaga::gpg::validate(new).unwrap().fpr;
+    let old = include_str!("../../core/tests/fixtures/rotated_subkey_old.asc");
+    let new = include_str!("../../core/tests/fixtures/rotated_subkey_new.asc");
+    let old_fpr = git_amaga_core::gpg::validate(old).unwrap().fpr;
+    let new_fpr = git_amaga_core::gpg::validate(new).unwrap().fpr;
     let key_path = repo.path().join("bob-key.asc");
     std::fs::write(&key_path, old).unwrap();
     user_add(&repo, "bob", key_path.to_str().unwrap()).assert_success();

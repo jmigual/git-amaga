@@ -205,12 +205,15 @@ fn init_deduplicates_a_key_given_twice() {
 /// Overwrites `secret.env.amaga` with a fresh encryption of `body` to alice, standing in for a
 /// teammate's push. Returns the new ciphertext.
 fn rotate_ciphertext(repo: &Repo, body: &[u8]) -> Vec<u8> {
-    let members = git_amaga::users::load(&repo.path().join(".amaga/users")).unwrap();
-    let header =
-        git_amaga::secret::next_header(None, false, &git_amaga::users::recipients(&members));
+    let members = git_amaga_core::users::load(&repo.path().join(".amaga/users")).unwrap();
+    let header = git_amaga_core::secret::next_header(
+        None,
+        false,
+        &git_amaga_core::users::recipients(&members),
+    );
     let alice = members["alice"].age_keys[0].clone();
     let ciphertext =
-        git_amaga::secret::encrypt(&header, body, &[&alice as &dyn age::Recipient]).unwrap();
+        git_amaga_core::secret::encrypt(&header, body, &[&alice as &dyn age::Recipient]).unwrap();
     std::fs::write(repo.path().join("secret.env.amaga"), &ciphertext).unwrap();
     ciphertext
 }
@@ -413,22 +416,22 @@ fn renamed_secret_plaintext_stays_ignored() {
 fn readd_deleted_secret_requires_force() {
     let (repo, identity_path) = repo_with_alice();
 
-    let members = git_amaga::users::load(&repo.path().join(".amaga/users")).unwrap();
-    let recipients = git_amaga::users::recipients(&members);
+    let members = git_amaga_core::users::load(&repo.path().join(".amaga/users")).unwrap();
+    let recipients = git_amaga_core::users::recipients(&members);
     let age_recipient = members["alice"].age_keys[0].clone();
-    let mut exposed_to = git_amaga::secret::Recipients::new();
+    let mut exposed_to = git_amaga_core::secret::Recipients::new();
     exposed_to.insert(
         "charlie".to_string(),
         std::collections::BTreeSet::from(["age1charliestalekey".to_string()]),
     );
-    let header = git_amaga::secret::Header {
+    let header = git_amaga_core::secret::Header {
         v: 1,
         recipients,
         exposed_to,
     };
     let body: &[u8] = b"v1";
     let original =
-        git_amaga::secret::encrypt(&header, body, &[&age_recipient as &dyn age::Recipient])
+        git_amaga_core::secret::encrypt(&header, body, &[&age_recipient as &dyn age::Recipient])
             .unwrap();
     let cipher_path = repo.path().join("secret.env.amaga");
     std::fs::write(&cipher_path, &original).unwrap();
@@ -459,11 +462,11 @@ fn readd_deleted_secret_requires_force() {
         "got {:?}",
         String::from_utf8_lossy(&forced.stderr)
     );
-    let identities = git_amaga::identity::load_identity_file(&identity_path).unwrap();
+    let identities = git_amaga_core::identity::load_identity_file(&identity_path).unwrap();
     let id_refs: Vec<&dyn age::Identity> =
         identities.iter().map(|i| i as &dyn age::Identity).collect();
     let (forced_header, _) =
-        git_amaga::secret::decrypt(&std::fs::read(&cipher_path).unwrap(), &id_refs).unwrap();
+        git_amaga_core::secret::decrypt(&std::fs::read(&cipher_path).unwrap(), &id_refs).unwrap();
     assert!(
         forced_header.exposed_to.is_empty(),
         "add --force drops exposure history"
@@ -473,7 +476,7 @@ fn readd_deleted_secret_requires_force() {
         .assert_success();
     repo.run(&["seal", "secret.env"]).assert_success();
     let (restored_header, _) =
-        git_amaga::secret::decrypt(&std::fs::read(&cipher_path).unwrap(), &id_refs).unwrap();
+        git_amaga_core::secret::decrypt(&std::fs::read(&cipher_path).unwrap(), &id_refs).unwrap();
     assert_eq!(
         restored_header.exposed_to.len(),
         1,
@@ -525,15 +528,18 @@ fn seal_force_warns_when_clearing_exposed_to() {
     std::fs::write(repo.path().join("secret.env"), b"v1").unwrap();
     repo.run(&["add", "secret.env"]).assert_success();
 
-    let members = git_amaga::users::load(&repo.path().join(".amaga/users")).unwrap();
+    let members = git_amaga_core::users::load(&repo.path().join(".amaga/users")).unwrap();
     let age_recipient = members["alice"].age_keys[0].clone();
-    let mut header =
-        git_amaga::secret::next_header(None, false, &git_amaga::users::recipients(&members));
+    let mut header = git_amaga_core::secret::next_header(
+        None,
+        false,
+        &git_amaga_core::users::recipients(&members),
+    );
     header.exposed_to.insert(
         "charlie".to_string(),
         std::collections::BTreeSet::from(["age1charliestalekey".to_string()]),
     );
-    let pulled = git_amaga::secret::encrypt(
+    let pulled = git_amaga_core::secret::encrypt(
         &header,
         b"v2-rotated",
         &[&age_recipient as &dyn age::Recipient],
@@ -552,11 +558,11 @@ fn seal_force_warns_when_clearing_exposed_to() {
         "got {:?}",
         String::from_utf8_lossy(&forced.stderr)
     );
-    let identities = git_amaga::identity::load_identity_file(&identity_path).unwrap();
+    let identities = git_amaga_core::identity::load_identity_file(&identity_path).unwrap();
     let id_refs: Vec<&dyn age::Identity> =
         identities.iter().map(|i| i as &dyn age::Identity).collect();
     let (sealed_header, body) =
-        git_amaga::secret::decrypt(&std::fs::read(&cipher_path).unwrap(), &id_refs).unwrap();
+        git_amaga_core::secret::decrypt(&std::fs::read(&cipher_path).unwrap(), &id_refs).unwrap();
     assert!(sealed_header.exposed_to.is_empty());
     assert_eq!(body, b"v1");
 }
@@ -745,7 +751,7 @@ fn no_identity_error_lists_members() {
 
     std::fs::write(
         repo.path().join(".amaga/users/bob.asc"),
-        include_str!("fixtures/valid_cv25519.asc"),
+        include_str!("../../core/tests/fixtures/valid_cv25519.asc"),
     )
     .unwrap();
     repo.git(&["config", "--global", "--unset", "amaga.identity"])
@@ -789,10 +795,16 @@ fn init_with_gpg_key_file() {
     let Some(gpg_home) = common::GpgHome::new("init_with_gpg_key_file") else {
         return;
     };
-    gpg_home.import_secret_key(include_str!("fixtures/valid_cv25519.secret.asc"));
+    gpg_home.import_secret_key(include_str!(
+        "../../core/tests/fixtures/valid_cv25519.secret.asc"
+    ));
 
     let key_path = repo.path().join("alice.asc");
-    std::fs::write(&key_path, include_str!("fixtures/valid_cv25519.asc")).unwrap();
+    std::fs::write(
+        &key_path,
+        include_str!("../../core/tests/fixtures/valid_cv25519.asc"),
+    )
+    .unwrap();
     repo.run(&["init", "alice", key_path.to_str().unwrap()])
         .assert_success();
     assert!(repo.path().join(".amaga/users/alice.asc").is_file());
@@ -824,12 +836,14 @@ fn age_member_seals_for_gpg_member_without_gpg() {
     let Some(gpg_home) = common::GpgHome::new("age_member_seals_for_gpg_member_without_gpg") else {
         return;
     };
-    gpg_home.import_secret_key(include_str!("fixtures/valid_cv25519.secret.asc"));
+    gpg_home.import_secret_key(include_str!(
+        "../../core/tests/fixtures/valid_cv25519.secret.asc"
+    ));
 
     // bob: a GPG member, added by writing the file directly.
     std::fs::write(
         repo.path().join(".amaga/users/bob.asc"),
-        include_str!("fixtures/valid_cv25519.asc"),
+        include_str!("../../core/tests/fixtures/valid_cv25519.asc"),
     )
     .unwrap();
 
@@ -872,10 +886,16 @@ fn gpg_decrypt_failure_writes_nothing() {
     let Some(gpg_home) = common::GpgHome::new("gpg_decrypt_failure_writes_nothing") else {
         return;
     };
-    gpg_home.import_secret_key(include_str!("fixtures/valid_cv25519.secret.asc"));
+    gpg_home.import_secret_key(include_str!(
+        "../../core/tests/fixtures/valid_cv25519.secret.asc"
+    ));
 
     let key_path = repo.path().join("alice.asc");
-    std::fs::write(&key_path, include_str!("fixtures/valid_cv25519.asc")).unwrap();
+    std::fs::write(
+        &key_path,
+        include_str!("../../core/tests/fixtures/valid_cv25519.asc"),
+    )
+    .unwrap();
     repo.run(&["init", "alice", key_path.to_str().unwrap()])
         .assert_success();
 
@@ -887,7 +907,9 @@ fn gpg_decrypt_failure_writes_nothing() {
     .assert_success();
     std::fs::remove_file(repo.path().join("secret.env")).unwrap();
 
-    let asc = git_amaga::gpg::validate(include_str!("fixtures/valid_cv25519.asc")).unwrap();
+    let asc =
+        git_amaga_core::gpg::validate(include_str!("../../core/tests/fixtures/valid_cv25519.asc"))
+            .unwrap();
     gpg_home.delete_secret_key(&asc.fpr);
 
     let open = repo.run_with_env(
@@ -925,7 +947,9 @@ fn init_gpg_key_by_unique_email() {
     let stored = std::fs::read_to_string(repo.path().join(".amaga/users/alice.asc")).unwrap();
     assert_eq!(stored, gpg_home.export_minimal(&alice));
     assert_eq!(
-        git_amaga::gpg::validate(&stored).unwrap().primary_fpr(),
+        git_amaga_core::gpg::validate(&stored)
+            .unwrap()
+            .primary_fpr(),
         alice
     );
     let stdout = String::from_utf8_lossy(&init.stdout);
@@ -988,7 +1012,9 @@ fn gpg_lookup_skips_a_revoked_key_under_the_same_email() {
 
     let stored = std::fs::read_to_string(repo.path().join(".amaga/users/alice.asc")).unwrap();
     assert_eq!(
-        git_amaga::gpg::validate(&stored).unwrap().primary_fpr(),
+        git_amaga_core::gpg::validate(&stored)
+            .unwrap()
+            .primary_fpr(),
         new
     );
 }
@@ -1073,7 +1099,7 @@ fn gpg_lookup_exports_minimal() {
         .assert_success();
 
     let stored = std::fs::read_to_string(repo.path().join(".amaga/users/alice.asc")).unwrap();
-    git_amaga::gpg::validate(&stored).expect("stored key passes verify_bindings");
+    git_amaga_core::gpg::validate(&stored).expect("stored key passes verify_bindings");
 }
 
 /// Test 37: keygen's stdout is the bare public key; the `user add` line goes to stderr.
@@ -1447,15 +1473,18 @@ fn status_warns_about_exposure_with_exit_zero() {
     let (repo, _identity_path) = repo_with_alice();
     std::fs::write(repo.path().join("secret.env"), b"v1").unwrap();
     repo.run(&["add", "secret.env"]).assert_success();
-    let members = git_amaga::users::load(&repo.path().join(".amaga/users")).unwrap();
-    let mut header =
-        git_amaga::secret::next_header(None, false, &git_amaga::users::recipients(&members));
+    let members = git_amaga_core::users::load(&repo.path().join(".amaga/users")).unwrap();
+    let mut header = git_amaga_core::secret::next_header(
+        None,
+        false,
+        &git_amaga_core::users::recipients(&members),
+    );
     header
         .exposed_to
         .insert("charlie".into(), Default::default());
     let alice = members["alice"].age_keys[0].clone();
     let ciphertext =
-        git_amaga::secret::encrypt(&header, b"v1", &[&alice as &dyn age::Recipient]).unwrap();
+        git_amaga_core::secret::encrypt(&header, b"v1", &[&alice as &dyn age::Recipient]).unwrap();
     std::fs::write(repo.path().join("secret.env.amaga"), ciphertext).unwrap();
 
     let stdout = status_stdout(&repo);

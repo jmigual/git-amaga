@@ -1069,8 +1069,17 @@ name = "git-amaga"
 version = "0.1.0"
 dependencies = [
  "age",
- "age-core",
  "clap",
+ "git-amaga-core",
+ "tempfile",
+]
+
+[[package]]
+name = "git-amaga-core"
+version = "0.1.0"
+dependencies = [
+ "age",
+ "age-core",
  "pgp",
  "rand",
  "serde",
