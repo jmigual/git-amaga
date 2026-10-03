@@ -41,6 +41,9 @@ enum Command {
         /// Overwrite the refusal when `<path>.amaga` appears in git history.
         #[arg(long)]
         force: bool,
+        /// The partition to encrypt into (default: `default`).
+        #[arg(long, value_name = "NAME")]
+        partition: Option<String>,
         /// Plaintext or `.amaga` paths to add.
         #[arg(required = true)]
         paths: Vec<String>,
@@ -80,6 +83,11 @@ enum Command {
         #[command(subcommand)]
         command: UserCommand,
     },
+    /// Manage partitions: named member lists, each with its own key.
+    Partition {
+        #[command(subcommand)]
+        command: PartitionCommand,
+    },
     /// Re-encrypt every secret with fresh keys; also finishes an interrupted removal.
     Rotate,
     /// Clear NEEDS ROTATION without changing the plaintext.
@@ -112,6 +120,18 @@ enum UserCommand {
     },
 }
 
+#[derive(Subcommand)]
+enum PartitionCommand {
+    /// Create a partition with a new key, wrapped to the listed members.
+    Create {
+        /// The new partition's name.
+        name: String,
+        /// Members (names in `.amaga/users`) who can read its secrets.
+        #[arg(required = true)]
+        members: Vec<String>,
+    },
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
     match run(cli.dir, cli.command) {
@@ -137,8 +157,13 @@ fn run(dir: Option<PathBuf>, command: Command) -> Result<ExitCode, Error> {
         Command::Init { name, keys } => {
             print_gpg_key(&name, git_amaga_core::cmd_init(dir, &name, &keys)?);
         }
-        Command::Add { force, paths } => {
-            print_outcome("added", git_amaga_core::cmd_add(dir, force, &paths)?);
+        Command::Add {
+            force,
+            partition,
+            paths,
+        } => {
+            let added = git_amaga_core::cmd_add(dir, force, partition.as_deref(), &paths)?;
+            print_outcome("added", added);
         }
         Command::Seal { force, paths } => {
             print_outcome("sealed", git_amaga_core::cmd_seal(dir, force, &paths)?);
@@ -160,6 +185,9 @@ fn run(dir: Option<PathBuf>, command: Command) -> Result<ExitCode, Error> {
         Command::User {
             command: UserCommand::Remove { name },
         } => print_reencrypted(&git_amaga_core::cmd_user_remove(dir, &name)?),
+        Command::Partition {
+            command: PartitionCommand::Create { name, members },
+        } => git_amaga_core::cmd_partition_create(dir, &name, &members)?,
         Command::Rotate => print_reencrypted(&git_amaga_core::cmd_rotate(dir)?),
         Command::Dismiss { users, paths } => print_outcome(
             "dismissed",
@@ -207,13 +235,21 @@ fn print_reencrypted(written: &[Reencrypted]) {
 fn print_status(report: &StatusReport) -> ExitCode {
     print_warnings(&report.warnings);
     println!("members: {}", report.members);
+    for (name, members) in &report.partitions {
+        println!("partition {name}: {}", members.join(", "));
+    }
     for secret in &report.secrets {
         let label = match secret.level {
             Level::Error => "ERROR",
             Level::Warn => "WARN",
             Level::Ok => "ok",
         };
-        println!("{label} {}: {}", secret.path, secret.messages.join("; "));
+        let partition = match secret.partition.as_str() {
+            "" | "default" => String::new(),
+            p => format!(" ({p})"),
+        };
+        let path = &secret.path;
+        println!("{label} {path}{partition}: {}", secret.messages.join("; "));
     }
     match report.error_count() {
         0 => ExitCode::SUCCESS,

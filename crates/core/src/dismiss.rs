@@ -3,10 +3,11 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use crate::context::{Context, secret_paths_for};
+use crate::context::Context;
 use crate::files::{read_repo_file, write_repo_file};
 use crate::outcome::Outcome;
 use crate::secret::{self, Header, Recipients};
+use crate::selection::secret_paths_for;
 use crate::{Error, audit};
 
 /// `git-amaga dismiss [--user <name>]… [<path>…]` (plan 7): clears `exposed_to` for `users` (all
@@ -53,6 +54,7 @@ pub fn cmd_dismiss(dir: &Path, users: &[String], args: &[String]) -> Result<Outc
                 "exposure.dismissed",
                 Some(&sp.plaintext),
                 Some(name),
+                None,
                 None,
             )?;
         }

@@ -2,11 +2,12 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
 
-use crate::context::{Context, Decrypted, secret_paths_for, write_epoch};
+use crate::context::{Context, Decrypted, write_epoch};
 use crate::epoch::Epoch;
 use crate::files::{ensure_ignored, read_plaintext, read_repo_file, write_repo_file};
 use crate::keyring::{GpgKey, ResolvedKeys};
 use crate::outcome::{Outcome, Warning};
+use crate::selection::secret_paths_for;
 use crate::{Error, audit, git, identity, keyring, partition, paths, secret, users};
 
 const GITATTRIBUTES_LINES: [&str; 4] = [
@@ -74,16 +75,25 @@ pub fn cmd_init(dir: &Path, name: &str, keys: &[String]) -> Result<Option<GpgKey
         "init",
         None,
         None,
+        None,
         gpg_info,
     )?;
 
     Ok(resolved.gpg)
 }
 
-/// `git-amaga add [--force] <path>…` (plan 7).
-pub fn cmd_add(dir: &Path, force: bool, args: &[String]) -> Result<Outcome, Error> {
+/// `git-amaga add [--force] [--partition <p>] <path>…` (plan 7): `partition` defaults to
+/// `default`.
+pub fn cmd_add(
+    dir: &Path,
+    force: bool,
+    partition: Option<&str>,
+    args: &[String],
+) -> Result<Outcome, Error> {
     let mut ctx = Context::load(dir)?;
-    ctx.require_up_to_date(partition::DEFAULT)?;
+    let partition = partition.unwrap_or(partition::DEFAULT);
+    ctx.require_member(partition)?;
+    ctx.require_up_to_date(partition)?;
     let mut outcome = Outcome::default();
 
     for arg in args {
@@ -118,9 +128,8 @@ pub fn cmd_add(dir: &Path, force: bool, args: &[String]) -> Result<Outcome, Erro
 
         ensure_ignored(&ctx.root, &sp.plaintext)?;
         let body = read_repo_file(&ctx.root, &sp.plaintext)?;
-        let header =
-            secret::next_header(None, false, &ctx.current_epoch(partition::DEFAULT)?.members);
-        let ciphertext = ctx.encrypt(partition::DEFAULT, &header, &body)?;
+        let header = secret::next_header(None, false, &ctx.current_epoch(partition)?.members);
+        let ciphertext = ctx.encrypt(partition, &header, &body)?;
         write_repo_file(&ctx.root, &sp.ciphertext, &ciphertext, None)?;
         ctx.set_base(&sp.plaintext, &body)?;
         ctx.audit("secret.added", &sp.plaintext)?;

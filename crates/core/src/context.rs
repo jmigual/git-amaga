@@ -6,7 +6,6 @@ use std::rc::Rc;
 use crate::epoch::{self, Epoch};
 use crate::failure::{EpochFailure, is_not_a_recipient};
 use crate::files::read_repo_file;
-use crate::outcome::Warning;
 use crate::partition::{self, Partition, Partitions};
 use crate::{Error, audit, git, gpg, identity, paths, secret, users};
 
@@ -92,6 +91,22 @@ impl Context {
         self.partitions
             .get(p)
             .ok_or_else(|| Error::UnknownPartition(p.to_string()))
+    }
+
+    /// Whether the actor is listed in partition `p` (plan 5.7).
+    pub(crate) fn in_partition(&self, p: &str) -> Result<bool, Error> {
+        Ok(self.partition(p)?.members.contains(&self.actor))
+    }
+
+    /// [`Error::NotInPartition`] unless the actor is listed in partition `p` (plan 7).
+    pub(crate) fn require_member(&self, p: &str) -> Result<(), Error> {
+        match self.in_partition(p)? {
+            true => Ok(()),
+            false => Err(Error::NotInPartition {
+                partition: p.to_string(),
+                path: None,
+            }),
+        }
     }
 
     /// The users that partition `p` lists; names that are not users are left out (plan 5.7).
@@ -181,6 +196,12 @@ impl Context {
     // The label's current epoch first, then the others in name order (plan 5.6).
     pub(crate) fn decrypt(&self, path: &str, ciphertext: &[u8]) -> Result<Decrypted, Error> {
         let partition = secret::label_of(path, ciphertext)?;
+        if !self.in_partition(&partition)? {
+            return Err(Error::NotInPartition {
+                partition,
+                path: Some(path.to_string()),
+            });
+        }
         self.current_epoch(&partition)?;
         let current_id = self.partition(&partition)?.current.to_string();
         let others = epoch::list(&self.root)?
@@ -282,6 +303,7 @@ impl Context {
             Some(path),
             None,
             None,
+            None,
         )
     }
 
@@ -298,7 +320,26 @@ impl Context {
             event,
             None,
             user,
+            None,
             gpg,
+        )
+    }
+
+    // A `partition.*` event about `partition`, and `user` when it concerns a member (plan 5.3).
+    pub(crate) fn audit_partition(
+        &self,
+        event: &str,
+        partition: &str,
+        user: Option<&str>,
+    ) -> Result<(), Error> {
+        audit::append(
+            &self.root.join(".amaga/audit.jsonl"),
+            &self.actor,
+            event,
+            None,
+            user,
+            Some(partition),
+            None,
         )
     }
 }
@@ -335,43 +376,4 @@ pub(crate) fn write_epoch(
         .chain(pgp.iter().map(|r| r as &dyn age::Recipient))
         .collect();
     epoch::write(root, epoch, &recipients)
-}
-
-// Explicit args must have a `.amaga`. No args: every existing managed secret, skipping invalid
-// listed paths with a `Skipped` warning.
-pub(crate) fn secret_paths_for(
-    ctx: &Context,
-    args: &[String],
-    existing_plaintext_only: bool,
-    warnings: &mut Vec<Warning>,
-) -> Result<Vec<paths::SecretPath>, Error> {
-    if !args.is_empty() {
-        return args
-            .iter()
-            .map(|a| {
-                let sp = paths::resolve_arg(&ctx.prefix, a)?;
-                if !ctx.root.join(&sp.ciphertext).exists() {
-                    return Err(Error::NotManagedSecret(sp.plaintext));
-                }
-                Ok(sp)
-            })
-            .collect();
-    }
-    let mut found = Vec::new();
-    for ciphertext in git::managed_secrets(&ctx.root)? {
-        if !ctx.root.join(&ciphertext).exists() {
-            continue;
-        }
-        match paths::resolve_arg("", &ciphertext) {
-            Ok(sp) if !existing_plaintext_only || ctx.root.join(&sp.plaintext).exists() => {
-                found.push(sp)
-            }
-            Ok(_) => {}
-            Err(error) => warnings.push(Warning::Skipped {
-                path: ciphertext,
-                error,
-            }),
-        }
-    }
-    Ok(found)
 }

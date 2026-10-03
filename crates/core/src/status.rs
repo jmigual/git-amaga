@@ -2,11 +2,12 @@
 
 use std::path::Path;
 
-use crate::context::{Context, Decrypted, secret_paths_for};
+use crate::context::{Context, Decrypted};
 use crate::files::{read_plaintext, read_repo_file};
-use crate::outcome::{Level, SecretStatus, StatusReport};
+use crate::outcome::{Level, SecretStatus, StatusReport, Warning};
 use crate::partition::DEFAULT;
-use crate::{Error, git, identity, paths, secret};
+use crate::selection::all_secret_paths;
+use crate::{Error, git, identity, paths, secret, users};
 
 const UNMERGED: &str = "unmerged; resolve the conflict and `git add` the file";
 
@@ -16,8 +17,18 @@ pub fn cmd_status(dir: &Path) -> Result<StatusReport, Error> {
     let unmerged = git::unmerged_paths(&ctx.root, &["*.amaga"])?;
 
     let mut warnings = Vec::new();
+    let mut partitions = Vec::new();
+    for (p, partition) in &ctx.partitions {
+        partitions.push((p.clone(), partition.members.iter().cloned().collect()));
+        for name in users::select(&ctx.members, &partition.members).1 {
+            warnings.push(Warning::UnknownMember {
+                partition: p.clone(),
+                name,
+            });
+        }
+    }
     let mut statuses = Vec::new();
-    let secrets = secret_paths_for(&ctx, &[], false, &mut warnings)?;
+    let secrets = all_secret_paths(&ctx, false, &mut warnings)?;
     for sp in &secrets {
         statuses.push(secret_status(&ctx, sp, &unmerged)?);
     }
@@ -29,18 +40,21 @@ pub fn cmd_status(dir: &Path) -> Result<StatusReport, Error> {
         statuses.push(SecretStatus {
             level: Level::Error,
             path: path.clone(),
+            partition: String::new(),
             messages: vec![UNMERGED.into()],
         });
     }
     statuses.sort_by_key(|status| status.level);
     Ok(StatusReport {
         members: identity::member_summary(&ctx.members, false),
+        partitions,
         secrets: statuses,
         warnings,
     })
 }
 
-// The messages of one secret. Undecryptable secrets report no state.
+// The messages of one secret. Undecryptable secrets report no state, and a secret of a partition
+// that does not list the actor only gets the checks that need no key.
 fn secret_status(
     ctx: &Context,
     sp: &paths::SecretPath,
@@ -49,6 +63,7 @@ fn secret_status(
     let mut errors = Vec::new();
     let mut warnings = Vec::new();
     let mut ok = "in sync";
+    let mut partition = String::new();
     let plaintext = &sp.plaintext;
 
     if !git::text_is_unset(&ctx.root, &sp.ciphertext)? {
@@ -70,40 +85,19 @@ fn secret_status(
     if unmerged.contains(&sp.ciphertext) {
         errors.push(UNMERGED.into());
     } else {
-        let decrypted = read_repo_file(&ctx.root, &sp.ciphertext)
-            .and_then(|ciphertext| ctx.decrypt(&sp.ciphertext, &ciphertext));
-        match decrypted {
+        let read = read_repo_file(&ctx.root, &sp.ciphertext).and_then(|ciphertext| {
+            let label = secret::label_of(&sp.ciphertext, &ciphertext)?;
+            Ok((ciphertext, label))
+        });
+        match read {
             Err(e) => errors.push(without_path(e)),
-            Ok(Decrypted {
-                header,
-                body,
-                epoch,
-                partition,
-            }) => {
-                match stale(ctx, &partition, &epoch.id()) {
+            Ok((ciphertext, label)) => {
+                partition = label;
+                match ctx.in_partition(&partition) {
+                    Err(e) => errors.push(e.to_string()),
+                    Ok(false) => ok = "not a member",
                     Ok(true) => {
-                        let flag = match partition.as_str() {
-                            DEFAULT => String::new(),
-                            p => format!(" --partition {p}"),
-                        };
-                        errors.push(format!("stale recipients; run git-amaga rotate{flag}"));
-                    }
-                    Ok(false) => {}
-                    Err(e) => errors.push(e.to_string()),
-                }
-                if !header.exposed_to.is_empty() {
-                    let names: Vec<&str> = header.exposed_to.keys().map(String::as_str).collect();
-                    warnings.push(format!("NEEDS ROTATION: exposed to {}", names.join(", ")));
-                }
-                match read_plaintext(&ctx.root, plaintext) {
-                    Err(e) => errors.push(e.to_string()),
-                    Ok(local) => {
-                        let base = ctx.base.get(plaintext).copied();
-                        let state = secret::plaintext_state(local.as_deref(), &body, base);
-                        if state == secret::PlaintextState::Closed {
-                            ok = "closed";
-                        }
-                        errors.extend(state_problem(plaintext, state));
+                        ok = decrypted_messages(ctx, sp, &ciphertext, &mut errors, &mut warnings);
                     }
                 }
             }
@@ -122,8 +116,58 @@ fn secret_status(
     Ok(SecretStatus {
         level,
         path: sp.ciphertext.clone(),
+        partition,
         messages: errors,
     })
+}
+
+// The checks that need the secret decrypted; returns the plain state when nothing is wrong.
+fn decrypted_messages(
+    ctx: &Context,
+    sp: &paths::SecretPath,
+    ciphertext: &[u8],
+    errors: &mut Vec<String>,
+    warnings: &mut Vec<String>,
+) -> &'static str {
+    let plaintext = &sp.plaintext;
+    let mut ok = "in sync";
+    match ctx.decrypt(&sp.ciphertext, ciphertext) {
+        Err(e) => errors.push(without_path(e)),
+        Ok(Decrypted {
+            header,
+            body,
+            epoch,
+            partition,
+        }) => {
+            match stale(ctx, &partition, &epoch.id()) {
+                Ok(true) => {
+                    let flag = match partition.as_str() {
+                        DEFAULT => String::new(),
+                        p => format!(" --partition {p}"),
+                    };
+                    errors.push(format!("stale recipients; run git-amaga rotate{flag}"));
+                }
+                Ok(false) => {}
+                Err(e) => errors.push(e.to_string()),
+            }
+            if !header.exposed_to.is_empty() {
+                let names: Vec<&str> = header.exposed_to.keys().map(String::as_str).collect();
+                warnings.push(format!("NEEDS ROTATION: exposed to {}", names.join(", ")));
+            }
+            match read_plaintext(&ctx.root, plaintext) {
+                Err(e) => errors.push(e.to_string()),
+                Ok(local) => {
+                    let base = ctx.base.get(plaintext).copied();
+                    let state = secret::plaintext_state(local.as_deref(), &body, base);
+                    if state == secret::PlaintextState::Closed {
+                        ok = "closed";
+                    }
+                    errors.extend(state_problem(plaintext, state));
+                }
+            }
+        }
+    }
+    ok
 }
 
 // Whether the secret is under an older epoch, or its partition is not up to date (plan 5.7).

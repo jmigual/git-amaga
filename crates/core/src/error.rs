@@ -258,6 +258,19 @@ pub enum Error {
     #[error("partition '{0}' does not exist")]
     UnknownPartition(String),
 
+    #[error("'{0}' is not a valid partition name (expected [a-z0-9][a-z0-9._-]{{0,63}})")]
+    InvalidPartitionName(String),
+
+    #[error("partition '{0}' already exists")]
+    PartitionExists(String),
+
+    /// `path` is set when the command was reading that secret.
+    #[error("you are not a member of partition '{partition}'{}", .path.as_ref().map(|p| format!(" (needed for '{p}')")).unwrap_or_default())]
+    NotInPartition {
+        partition: String,
+        path: Option<String>,
+    },
+
     #[error(
         "unmerged epoch files must be resolved first: {0}\nrun `git checkout --ours -- <paths> && git add <paths>`, then `git-amaga rotate`"
     )]

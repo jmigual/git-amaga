@@ -20,13 +20,16 @@ struct Event<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     user: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    partition: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     gpg_fpr: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     gpg_uid: Option<&'a str>,
 }
 
-/// Appends one JSONL event (plan 5.3); `secret_path` is the repo-relative plaintext path and `user`
-/// the member a `user.*` event is about. `gpg` is the member's (primary fingerprint, first user
+/// Appends one JSONL event (plan 5.3); `secret_path` is the repo-relative plaintext path, `user`
+/// the member a `user.*` or `partition.*` event is about and `partition` the partition it
+/// concerns. `gpg` is the member's (primary fingerprint, first user
 /// ID), if it has an `.asc`.
 pub fn append(
     path: &Path,
@@ -34,6 +37,7 @@ pub fn append(
     event: &str,
     secret_path: Option<&str>,
     user: Option<&str>,
+    partition: Option<&str>,
     gpg: Option<(&str, &str)>,
 ) -> Result<(), Error> {
     let line = serde_json::to_string(&Event {
@@ -42,6 +46,7 @@ pub fn append(
         event,
         path: secret_path,
         user,
+        partition,
         gpg_fpr: gpg.map(|(fpr, _)| fpr),
         gpg_uid: gpg.map(|(_, uid)| uid),
     })
@@ -127,13 +132,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("audit.jsonl");
 
-        append(&path, "alice", "init", None, None, None).unwrap();
+        append(&path, "alice", "init", None, None, None, None).unwrap();
         append(
             &path,
             "alice",
             "rotated",
             Some("secrets/prod.env"),
             None,
+            Some("production"),
             None,
         )
         .unwrap();
@@ -146,6 +152,8 @@ mod tests {
         assert!(!lines[0].contains("\"path\""));
         assert!(lines[1].contains("\"event\":\"rotated\""));
         assert!(lines[1].contains("\"path\":\"secrets/prod.env\""));
+        assert!(lines[1].contains("\"partition\":\"production\""));
+        assert!(!lines[0].contains("\"partition\""));
     }
 
     #[test]
@@ -157,6 +165,7 @@ mod tests {
             &path,
             "alice",
             "init",
+            None,
             None,
             None,
             Some(("ABCD", "Alice <a@x>")),

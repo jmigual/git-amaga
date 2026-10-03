@@ -4,9 +4,10 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
 
-use crate::context::{Context, secret_paths_for};
+use crate::context::Context;
 use crate::files::{read_plaintext, read_repo_file};
 use crate::outcome::Outcome;
+use crate::selection::secret_paths_for;
 use crate::{Error, secret};
 
 /// `git-amaga remove <path>…` (plan 7): deletes the `.amaga` file only. The plaintext and its

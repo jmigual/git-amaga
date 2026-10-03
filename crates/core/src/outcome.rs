@@ -27,6 +27,13 @@ pub enum Warning {
         /// How many members were flagged as exposed.
         members: usize,
     },
+    /// A partition lists a name that is not in `.amaga/users`; it grants nothing.
+    UnknownMember {
+        /// The partition.
+        partition: String,
+        /// The listed name.
+        name: String,
+    },
     /// A managed secret with an invalid path was left out of a command that lists them all.
     Skipped {
         /// The `.amaga` path.
@@ -48,6 +55,10 @@ impl fmt::Display for Warning {
                 f,
                 "sealing '{plaintext}' with --force clears NEEDS ROTATION for {members} member(s); \
                  the local copy may still hold an old value"
+            ),
+            Self::UnknownMember { partition, name } => write!(
+                f,
+                "partition '{partition}' lists '{name}', who is not in .amaga/users; it grants nothing"
             ),
             Self::Skipped { path, error } => write!(f, "skipping '{path}': {error}"),
         }
@@ -81,6 +92,8 @@ pub struct SecretStatus {
     pub level: Level,
     /// The `.amaga` path.
     pub path: String,
+    /// The partition in the label; empty when the label could not be read.
+    pub partition: String,
     /// What was found; a single plain state such as `in sync` when there is no problem.
     pub messages: Vec<String>,
 }
@@ -90,6 +103,8 @@ pub struct SecretStatus {
 pub struct StatusReport {
     /// A one-line description of the members, such as `alice (age), bob (gpg)`.
     pub members: String,
+    /// Each partition and the names it lists.
+    pub partitions: Vec<(String, Vec<String>)>,
     /// One entry per secret, errors first.
     pub secrets: Vec<SecretStatus>,
     /// Problems that did not stop the report.
@@ -114,6 +129,7 @@ mod tests {
         SecretStatus {
             level,
             path: "a.env.amaga".into(),
+            partition: "default".into(),
             messages: vec!["in sync".into()],
         }
     }
@@ -122,6 +138,7 @@ mod tests {
     fn error_count_counts_only_errors() {
         let report = StatusReport {
             members: "alice (age)".into(),
+            partitions: Vec::new(),
             secrets: vec![
                 status(Level::Error),
                 status(Level::Warn),

@@ -771,7 +771,7 @@ Install and CI:
 `lib.rs` gets a one-line crate doc: each command takes the directory it runs in, acts on the
 repository containing it and never prints. Public modules: `epoch` (section 15), `error`, `gpg`, `identity`, `partition` (section 16), `secret`, `users`. Private
 modules: `audit`, `commands`, `context`, `dismiss` and `status` (section 15), `files` and `import` (section 16), `git`, `keyring`, `membership`, `outcome`, `paths`,
-`remove`. Root re-exports: `Error`, `keyring::GpgKey`, the `outcome` types, and every `cmd_*`.
+`remove`, `selection`. Root re-exports: `Error`, `keyring::GpgKey`, the `outcome` types, and every `cmd_*`.
 
 ```text
 cmd_keygen(dir, path: Option<&Path>)           -> Result<age::x25519::Recipient, Error>
@@ -1136,7 +1136,8 @@ full. Struct and function names are illustrative unless 14.2 fixes them.
 
 - Files:
   - `crates/core/src/`: `membership.rs`, `commands.rs`, `context.rs`, `status.rs`, `outcome.rs`,
-    `audit.rs`, `error.rs` and `lib.rs`.
+    `audit.rs`, `error.rs` and `lib.rs`, plus a new `selection.rs`: `secret_paths_for` moves there
+    from `context.rs`, which would pass ~400 lines, and gains `all_secret_paths` for `status`.
   - `crates/cli/src/main.rs` and `crates/cli/tests/partitions.rs`.
 - Change:
   - `cmd_partition_create` (7). **API**
@@ -1240,6 +1241,7 @@ full. Struct and function names are illustrative unless 14.2 fixes them.
 
 - Files: `CLAUDE.md`.
 - Change: add `files.rs` (repo file helpers), `partition.rs` (partition directory, pointers),
+  `selection.rs` (which secrets a command acts on),
   `import.rs` (`import-git-crypt`, plus `gitcrypt.rs` and `partition_commands.rs` if they were
   split out). `membership.rs` becomes "`rotate`, `user add`/`user remove`, `partition`
   commands". `secret.rs` gains "partition label". The tests list gains

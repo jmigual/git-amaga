@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::context::{Context, Decrypted};
+use crate::context::{Context, Decrypted, write_epoch};
 use crate::epoch::Epoch;
 use crate::files::{read_repo_file, write_repo_file};
 use crate::keyring::GpgKey;
@@ -106,6 +106,37 @@ pub fn cmd_rotate(dir: &Path) -> Result<Vec<Reencrypted>, Error> {
     let written = reencrypt(&mut ctx, &all, |_| Ok(()))?;
     ctx.audit_event("rotated", None, None)?;
     Ok(written)
+}
+
+/// `git-amaga partition create <p> <member>…` (plan 7): a new partition with a new epoch wrapped
+/// to the members. The actor need not be listed.
+pub fn cmd_partition_create(dir: &Path, name: &str, members: &[String]) -> Result<(), Error> {
+    if !users::valid_name(name) {
+        return Err(Error::InvalidPartitionName(name.to_string()));
+    }
+    let ctx = Context::load(dir)?;
+    if ctx.partitions.contains_key(name) {
+        return Err(Error::PartitionExists(name.to_string()));
+    }
+    let listed: BTreeSet<String> = members.iter().cloned().collect();
+    if listed.is_empty() {
+        return Err(Error::PartitionInvalid(format!(
+            "{name}: needs at least one member"
+        )));
+    }
+    if let Some(unknown) = listed.iter().find(|m| !ctx.members.contains_key(*m)) {
+        return Err(Error::UserNotFound(unknown.clone()));
+    }
+    let (wrapped_to, _) = users::select(&ctx.members, &listed);
+    let epoch = Epoch::generate(users::recipients(&wrapped_to));
+    write_epoch(&ctx.root, &wrapped_to, &epoch)?;
+    partition::write_members(&ctx.root, name, &listed)?;
+    partition::write_pointer(&ctx.root, name, &epoch.id())?;
+    ctx.audit_partition("partition.created", name, None)?;
+    for member in &listed {
+        ctx.audit_partition("partition.member_added", name, Some(member))?;
+    }
+    Ok(())
 }
 
 /// `git-amaga user add <name> <KEY>…` (plan 7): validates the keys, then re-wraps the current epoch
