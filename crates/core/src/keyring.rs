@@ -36,13 +36,6 @@ pub struct GpgKey {
     pub uid: String,
 }
 
-impl GpgKey {
-    /// The line printed for each OpenPGP key (plan 7).
-    pub fn summary(&self, name: &str) -> String {
-        format!("{name}: GPG key {} \"{}\"", self.fpr, self.uid)
-    }
-}
-
 pub struct ResolvedKeys {
     pub age_keys: Vec<age::x25519::Recipient>,
     pub gpg: Option<GpgKey>,

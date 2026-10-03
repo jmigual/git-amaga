@@ -4,15 +4,17 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::context::{Context, read_repo_file, write_repo_file};
+use crate::keyring::GpgKey;
+use crate::outcome::Reencrypted;
 use crate::{Error, git, keyring, secret, users};
 
 /// Plan 7.1: decrypts every secret first and writes nothing if any fails, then runs `change` (the
 /// membership change and its audit event, for `user add`/`user remove`; it may update
-/// `ctx.members`), then rewrites each secret for the current members.
+/// `ctx.members`), then rewrites each secret for the current members, in order.
 pub(crate) fn reencrypt_all(
     ctx: &mut Context,
     change: impl FnOnce(&mut Context) -> Result<(), Error>,
-) -> Result<(), Error> {
+) -> Result<Vec<Reencrypted>, Error> {
     let mut decrypted = Vec::new();
     let mut failures = Vec::new();
     for path in git::managed_secrets(&ctx.root)? {
@@ -31,32 +33,33 @@ pub(crate) fn reencrypt_all(
     change(ctx)?;
 
     let current = users::recipients(&ctx.members);
+    let mut written = Vec::new();
     for (path, old_header, body) in decrypted {
         let header = secret::next_header(Some(&old_header), false, &current);
         let ciphertext = ctx.encrypt(&header, &body)?;
         write_repo_file(&ctx.root, &path, &ciphertext, None)?;
-        let exposed: Vec<&str> = header.exposed_to.keys().map(String::as_str).collect();
-        if exposed.is_empty() {
-            println!("re-encrypted {path}");
-        } else {
-            println!(
-                "re-encrypted {path} (NEEDS ROTATION: exposed to {})",
-                exposed.join(", ")
-            );
-        }
+        written.push(Reencrypted {
+            path,
+            exposed_to: header.exposed_to.keys().cloned().collect(),
+        });
     }
-    Ok(())
+    Ok(written)
 }
 
 /// `git-amaga rotate` (plan 7): re-encrypts everything; also finishes an interrupted run.
-pub fn cmd_rotate() -> Result<(), Error> {
+pub fn cmd_rotate() -> Result<Vec<Reencrypted>, Error> {
     let mut ctx = Context::load()?;
-    reencrypt_all(&mut ctx, |_| Ok(()))?;
-    ctx.audit_event("rotated", None, None)
+    let written = reencrypt_all(&mut ctx, |_| Ok(()))?;
+    ctx.audit_event("rotated", None, None)?;
+    Ok(written)
 }
 
 /// `git-amaga user add <name> <KEY>…` (plan 7): validates the keys, then re-encrypts everything.
-pub fn cmd_user_add(name: &str, keys: &[String]) -> Result<(), Error> {
+/// Returns the new member's GPG key, if any, and the rewritten secrets.
+pub fn cmd_user_add(
+    name: &str,
+    keys: &[String],
+) -> Result<(Option<GpgKey>, Vec<Reencrypted>), Error> {
     if !users::valid_name(name) {
         return Err(Error::InvalidMemberName(name.to_string()));
     }
@@ -71,22 +74,19 @@ pub fn cmd_user_add(name: &str, keys: &[String]) -> Result<(), Error> {
         .insert(name.to_string(), users::member_from_keys(&resolved));
     users::check(&ctx.members, None)?;
 
-    reencrypt_all(&mut ctx, |ctx| {
+    let written = reencrypt_all(&mut ctx, |ctx| {
         users::write_member(&users_dir, name, &resolved)?;
         let gpg = resolved
             .gpg
             .as_ref()
             .map(|k| (k.fpr.as_str(), k.uid.as_str()));
-        ctx.audit_event("user.added", Some(name), gpg)?;
-        if let Some(key) = &resolved.gpg {
-            println!("{}", key.summary(name));
-        }
-        Ok(())
-    })
+        ctx.audit_event("user.added", Some(name), gpg)
+    })?;
+    Ok((resolved.gpg, written))
 }
 
 /// `git-amaga user remove <name>` (plan 7): the member's own files need not be valid.
-pub fn cmd_user_remove(name: &str) -> Result<(), Error> {
+pub fn cmd_user_remove(name: &str) -> Result<Vec<Reencrypted>, Error> {
     if !users::valid_name(name) {
         return Err(Error::InvalidMemberName(name.to_string()));
     }

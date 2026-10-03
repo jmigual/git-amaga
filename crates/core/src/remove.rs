@@ -4,21 +4,23 @@ use std::collections::BTreeSet;
 use std::fs;
 
 use crate::context::{Context, read_plaintext, read_repo_file, secret_paths_for};
+use crate::outcome::Outcome;
 use crate::{Error, secret};
 
 /// `git-amaga remove <path>…` (plan 7): deletes the `.amaga` file only. The plaintext and its
 /// ignore entry stay (ADR-0011), so the plaintext must be open and in sync: it is then the copy
 /// the user keeps, even if the `.amaga` was never committed.
-pub fn cmd_remove(args: &[String]) -> Result<(), Error> {
+pub fn cmd_remove(args: &[String]) -> Result<Outcome, Error> {
     // `secret_paths_for` treats no paths as "every secret".
     if args.is_empty() {
         return Err(Error::NoPaths);
     }
     let mut ctx = Context::load()?;
+    let mut outcome = Outcome::default();
 
     // Everything is checked up front, so one bad path removes nothing.
     let mut seen = BTreeSet::new();
-    let mut targets = secret_paths_for(&ctx, args, false)?;
+    let mut targets = secret_paths_for(&ctx, args, false, &mut outcome.warnings)?;
     targets.retain(|sp| seen.insert(sp.ciphertext.clone()));
     for sp in &targets {
         let (_header, body) = read_repo_file(&ctx.root, &sp.ciphertext)
@@ -42,9 +44,9 @@ pub fn cmd_remove(args: &[String]) -> Result<(), Error> {
         })?;
         ctx.drop_base(&sp.plaintext)?;
         ctx.audit("secret.removed", &sp.plaintext)?;
-        println!("removed {}", sp.ciphertext);
+        outcome.changed.push(sp.ciphertext);
     }
-    Ok(())
+    Ok(outcome)
 }
 
 #[cfg(test)]

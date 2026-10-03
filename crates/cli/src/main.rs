@@ -1,10 +1,11 @@
-//! `git-amaga` CLI entry point (plan section 7): parses arguments, calls into the library, and
-//! maps [`Error`] to an exit code.
+//! `git-amaga` CLI entry point (plan section 7): parses arguments, calls into the core, prints
+//! the results and maps [`Error`] to an exit code (plan 14.3).
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
+use git_amaga_core::{Error, GpgKey, Level, Outcome, Reencrypted, StatusReport, Warning};
 
 #[derive(Parser)]
 #[command(
@@ -97,28 +98,103 @@ enum UserCommand {
 }
 
 fn main() -> ExitCode {
-    let cli = Cli::parse();
-    let result = match cli.command {
-        Command::Keygen { path } => git_amaga_core::cmd_keygen(path.as_deref()),
-        Command::Init { name, keys } => git_amaga_core::cmd_init(&name, &keys),
-        Command::Add { force, paths } => git_amaga_core::cmd_add(force, &paths),
-        Command::Seal { force, paths } => git_amaga_core::cmd_seal(force, &paths),
-        Command::Open { force, paths } => git_amaga_core::cmd_open(force, &paths),
-        Command::Close { paths } => git_amaga_core::cmd_close(&paths),
-        Command::Remove { paths } => git_amaga_core::cmd_remove(&paths),
-        Command::User {
-            command: UserCommand::Add { name, keys },
-        } => git_amaga_core::cmd_user_add(&name, &keys),
-        Command::User {
-            command: UserCommand::Remove { name },
-        } => git_amaga_core::cmd_user_remove(&name),
-        Command::Rotate => git_amaga_core::cmd_rotate(),
-        Command::Status => git_amaga_core::cmd_status(),
-    };
-    match result {
-        Ok(()) => ExitCode::SUCCESS,
+    match run(Cli::parse().command) {
+        Ok(code) => code,
         Err(e) => {
             eprintln!("error: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn run(command: Command) -> Result<ExitCode, Error> {
+    match command {
+        Command::Keygen { path } => {
+            let public = git_amaga_core::cmd_keygen(path.as_deref())?;
+            println!("{public}");
+            eprintln!(
+                "to join a repository, send this to a member: git-amaga user add <name> {public}"
+            );
+        }
+        Command::Init { name, keys } => {
+            print_gpg_key(&name, git_amaga_core::cmd_init(&name, &keys)?);
+        }
+        Command::Add { force, paths } => {
+            print_outcome("added", git_amaga_core::cmd_add(force, &paths)?);
+        }
+        Command::Seal { force, paths } => {
+            print_outcome("sealed", git_amaga_core::cmd_seal(force, &paths)?);
+        }
+        Command::Open { force, paths } => {
+            print_outcome("opened", git_amaga_core::cmd_open(force, &paths)?);
+        }
+        Command::Close { paths } => print_outcome("closed", git_amaga_core::cmd_close(&paths)?),
+        Command::Remove { paths } => print_outcome("removed", git_amaga_core::cmd_remove(&paths)?),
+        Command::User {
+            command: UserCommand::Add { name, keys },
+        } => {
+            let (gpg, written) = git_amaga_core::cmd_user_add(&name, &keys)?;
+            print_gpg_key(&name, gpg);
+            print_reencrypted(&written);
+        }
+        Command::User {
+            command: UserCommand::Remove { name },
+        } => print_reencrypted(&git_amaga_core::cmd_user_remove(&name)?),
+        Command::Rotate => print_reencrypted(&git_amaga_core::cmd_rotate()?),
+        Command::Status => return Ok(print_status(&git_amaga_core::cmd_status()?)),
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn print_warnings(warnings: &[Warning]) {
+    for warning in warnings {
+        eprintln!("warning: {warning}");
+    }
+}
+
+fn print_outcome(verb: &str, outcome: Outcome) {
+    print_warnings(&outcome.warnings);
+    for path in &outcome.changed {
+        println!("{verb} {path}");
+    }
+}
+
+fn print_gpg_key(name: &str, key: Option<GpgKey>) {
+    if let Some(key) = key {
+        println!("{name}: GPG key {} \"{}\"", key.fpr, key.uid);
+    }
+}
+
+fn print_reencrypted(written: &[Reencrypted]) {
+    for item in written {
+        if item.exposed_to.is_empty() {
+            println!("re-encrypted {}", item.path);
+        } else {
+            println!(
+                "re-encrypted {} (NEEDS ROTATION: exposed to {})",
+                item.path,
+                item.exposed_to.join(", ")
+            );
+        }
+    }
+}
+
+// Exits 1 when any secret is at `Level::Error`.
+fn print_status(report: &StatusReport) -> ExitCode {
+    print_warnings(&report.warnings);
+    println!("members: {}", report.members);
+    for secret in &report.secrets {
+        let label = match secret.level {
+            Level::Error => "ERROR",
+            Level::Warn => "WARN",
+            Level::Ok => "ok",
+        };
+        println!("{label} {}: {}", secret.path, secret.messages.join("; "));
+    }
+    match report.error_count() {
+        0 => ExitCode::SUCCESS,
+        n => {
+            eprintln!("error: status found problems with {n} secret(s)");
             ExitCode::FAILURE
         }
     }

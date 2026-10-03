@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::outcome::Warning;
 use crate::{Error, audit, git, gpg, identity, paths, secret, users};
 
 // Per-command state: repo, membership, actor identities and base hashes (plan 5.5).
@@ -158,11 +159,12 @@ impl Context {
 }
 
 // Explicit args must have a `.amaga`. No args: every existing managed secret, skipping invalid
-// listed paths with a warning.
+// listed paths with a `Skipped` warning.
 pub(crate) fn secret_paths_for(
     ctx: &Context,
     args: &[String],
     existing_plaintext_only: bool,
+    warnings: &mut Vec<Warning>,
 ) -> Result<Vec<paths::SecretPath>, Error> {
     if !args.is_empty() {
         return args
@@ -186,7 +188,10 @@ pub(crate) fn secret_paths_for(
                 found.push(sp)
             }
             Ok(_) => {}
-            Err(e) => eprintln!("warning: skipping '{ciphertext}': {e}"),
+            Err(error) => warnings.push(Warning::Skipped {
+                path: ciphertext,
+                error,
+            }),
         }
     }
     Ok(found)

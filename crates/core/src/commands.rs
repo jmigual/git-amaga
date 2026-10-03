@@ -5,7 +5,8 @@ use std::path::Path;
 use crate::context::{
     Context, ensure_ignored, read_plaintext, read_repo_file, secret_paths_for, write_repo_file,
 };
-use crate::keyring::ResolvedKeys;
+use crate::keyring::{GpgKey, ResolvedKeys};
+use crate::outcome::{Level, Outcome, SecretStatus, StatusReport, Warning};
 use crate::{Error, audit, git, identity, keyring, paths, secret, users};
 
 const GITATTRIBUTES_LINES: [&str; 3] = [
@@ -15,15 +16,13 @@ const GITATTRIBUTES_LINES: [&str; 3] = [
 ];
 
 /// `git-amaga keygen [PATH]` (plan 7).
-pub fn cmd_keygen(path: Option<&Path>) -> Result<(), Error> {
+pub fn cmd_keygen(path: Option<&Path>) -> Result<age::x25519::Recipient, Error> {
     let (_path, public) = identity::keygen(path)?;
-    println!("{public}");
-    eprintln!("to join a repository, send this to a member: git-amaga user add <name> {public}");
-    Ok(())
+    Ok(public)
 }
 
-/// `git-amaga init <name> [KEY…]` (plan 7).
-pub fn cmd_init(name: &str, keys: &[String]) -> Result<(), Error> {
+/// `git-amaga init <name> [KEY…]` (plan 7): returns the member's GPG key, if any.
+pub fn cmd_init(name: &str, keys: &[String]) -> Result<Option<GpgKey>, Error> {
     if !users::valid_name(name) {
         return Err(Error::InvalidMemberName(name.to_string()));
     }
@@ -69,17 +68,15 @@ pub fn cmd_init(name: &str, keys: &[String]) -> Result<(), Error> {
         None,
         gpg_info,
     )?;
-    if let Some(key) = &resolved.gpg {
-        println!("{}", key.summary(name));
-    }
 
-    Ok(())
+    Ok(resolved.gpg)
 }
 
 /// `git-amaga add [--force] <path>…` (plan 7).
-pub fn cmd_add(force: bool, args: &[String]) -> Result<(), Error> {
+pub fn cmd_add(force: bool, args: &[String]) -> Result<Outcome, Error> {
     let mut ctx = Context::load()?;
     let current = users::recipients(&ctx.members);
+    let mut outcome = Outcome::default();
 
     for arg in args {
         let sp = paths::resolve_arg(&ctx.prefix, arg)?;
@@ -98,16 +95,17 @@ pub fn cmd_add(force: bool, args: &[String]) -> Result<(), Error> {
             return Err(Error::CiphertextExists(sp.ciphertext));
         }
         if git::path_in_history(&ctx.root, &sp.plaintext)? {
-            eprintln!("warning: '{}' already appears in git history", sp.plaintext);
+            outcome
+                .warnings
+                .push(Warning::PlaintextInHistory(sp.plaintext.clone()));
         }
         if git::path_in_history(&ctx.root, &sp.ciphertext)? {
             if !force {
                 return Err(Error::CiphertextInHistory(sp.ciphertext));
             }
-            eprintln!(
-                "warning: '{}' appears in git history; its exposure history is dropped",
-                sp.ciphertext
-            );
+            outcome
+                .warnings
+                .push(Warning::ExposureHistoryDropped(sp.ciphertext.clone()));
         }
 
         ensure_ignored(&ctx.root, &sp.plaintext)?;
@@ -117,17 +115,18 @@ pub fn cmd_add(force: bool, args: &[String]) -> Result<(), Error> {
         write_repo_file(&ctx.root, &sp.ciphertext, &ciphertext, None)?;
         ctx.set_base(&sp.plaintext, &body)?;
         ctx.audit("secret.added", &sp.plaintext)?;
-        println!("added {}", sp.ciphertext);
+        outcome.changed.push(sp.ciphertext);
     }
-    Ok(())
+    Ok(outcome)
 }
 
 /// `git-amaga seal [--force] [<path>…]` (plan 7).
-pub fn cmd_seal(force: bool, args: &[String]) -> Result<(), Error> {
+pub fn cmd_seal(force: bool, args: &[String]) -> Result<Outcome, Error> {
     let mut ctx = Context::load()?;
     let current = users::recipients(&ctx.members);
+    let mut outcome = Outcome::default();
 
-    for sp in secret_paths_for(&ctx, args, true)? {
+    for sp in secret_paths_for(&ctx, args, true, &mut outcome.warnings)? {
         let ciphertext = read_repo_file(&ctx.root, &sp.ciphertext)?;
         let (old_header, old_body) = ctx.decrypt(&sp.ciphertext, &ciphertext)?;
         ensure_ignored(&ctx.root, &sp.plaintext)?;
@@ -152,11 +151,10 @@ pub fn cmd_seal(force: bool, args: &[String]) -> Result<(), Error> {
                 return Err(Error::SealRefused(sp.plaintext, state));
             }
             if !old_header.exposed_to.is_empty() {
-                eprintln!(
-                    "warning: sealing '{}' with --force clears NEEDS ROTATION for {} member(s); the local copy may still hold an old value",
-                    sp.plaintext,
-                    old_header.exposed_to.len()
-                );
+                outcome.warnings.push(Warning::ExposureCleared {
+                    plaintext: sp.plaintext.clone(),
+                    members: old_header.exposed_to.len(),
+                });
             }
         }
 
@@ -165,16 +163,17 @@ pub fn cmd_seal(force: bool, args: &[String]) -> Result<(), Error> {
         write_repo_file(&ctx.root, &sp.ciphertext, &new_ciphertext, None)?;
         ctx.set_base(&sp.plaintext, &local)?;
         ctx.audit("secret.updated", &sp.plaintext)?;
-        println!("sealed {}", sp.ciphertext);
+        outcome.changed.push(sp.ciphertext);
     }
-    Ok(())
+    Ok(outcome)
 }
 
 /// `git-amaga open [--force] [<path>…]` (plan 7).
-pub fn cmd_open(force: bool, args: &[String]) -> Result<(), Error> {
+pub fn cmd_open(force: bool, args: &[String]) -> Result<Outcome, Error> {
     let mut ctx = Context::load()?;
+    let mut outcome = Outcome::default();
 
-    for sp in secret_paths_for(&ctx, args, false)? {
+    for sp in secret_paths_for(&ctx, args, false, &mut outcome.warnings)? {
         let ciphertext = read_repo_file(&ctx.root, &sp.ciphertext)?;
         let (_header, body) = ctx.decrypt(&sp.ciphertext, &ciphertext)?;
         if git::is_tracked(&ctx.root, &sp.plaintext)? {
@@ -201,16 +200,17 @@ pub fn cmd_open(force: bool, args: &[String]) -> Result<(), Error> {
 
         write_repo_file(&ctx.root, &sp.plaintext, &body, Some(0o600))?;
         ctx.set_base(&sp.plaintext, &body)?;
-        println!("opened {}", sp.plaintext);
+        outcome.changed.push(sp.plaintext);
     }
-    Ok(())
+    Ok(outcome)
 }
 
 /// `git-amaga close [<path>…]` (plan 7).
-pub fn cmd_close(args: &[String]) -> Result<(), Error> {
+pub fn cmd_close(args: &[String]) -> Result<Outcome, Error> {
     let mut ctx = Context::load()?;
+    let mut outcome = Outcome::default();
 
-    for sp in secret_paths_for(&ctx, args, true)? {
+    for sp in secret_paths_for(&ctx, args, true, &mut outcome.warnings)? {
         let Some(local) = read_plaintext(&ctx.root, &sp.plaintext)? else {
             continue;
         };
@@ -227,61 +227,51 @@ pub fn cmd_close(args: &[String]) -> Result<(), Error> {
             source,
         })?;
         ctx.drop_base(&sp.plaintext)?;
-        println!("closed {}", sp.plaintext);
+        outcome.changed.push(sp.plaintext);
     }
-    Ok(())
+    Ok(outcome)
 }
 
 const UNMERGED: &str = "unmerged; resolve the conflict and `git add` the file";
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum Level {
-    Error,
-    Warn,
-    Ok,
-}
-
-/// `git-amaga status` (plan 7.2): problems first, exit 1 if any secret has an error.
-pub fn cmd_status() -> Result<(), Error> {
+/// `git-amaga status` (plan 7.2): problems first; the caller exits 1 if `error_count` > 0.
+pub fn cmd_status() -> Result<StatusReport, Error> {
     let ctx = Context::load_allowing_unmerged()?;
     let unmerged = git::unmerged_secrets(&ctx.root)?;
     let current = users::recipients(&ctx.members);
 
-    println!("members: {}", identity::member_summary(&ctx.members, false));
-    let mut lines = Vec::new();
-    let secrets = secret_paths_for(&ctx, &[], false)?;
+    let mut warnings = Vec::new();
+    let mut statuses = Vec::new();
+    let secrets = secret_paths_for(&ctx, &[], false, &mut warnings)?;
     for sp in &secrets {
-        lines.push(secret_status(&ctx, sp, &unmerged, &current)?);
+        statuses.push(secret_status(&ctx, sp, &unmerged, &current)?);
     }
     // Unmerged files that are not listed above (deleted from the worktree, or invalid paths).
     for path in unmerged
         .iter()
         .filter(|p| !secrets.iter().any(|s| &s.ciphertext == *p))
     {
-        lines.push((Level::Error, format!("{path}: {UNMERGED}")));
+        statuses.push(SecretStatus {
+            level: Level::Error,
+            path: path.clone(),
+            messages: vec![UNMERGED.into()],
+        });
     }
-    lines.sort_by_key(|(level, _)| *level);
-    for (level, line) in &lines {
-        let label = match level {
-            Level::Error => "ERROR",
-            Level::Warn => "WARN",
-            Level::Ok => "ok",
-        };
-        println!("{label} {line}");
-    }
-    match lines.iter().filter(|(l, _)| *l == Level::Error).count() {
-        0 => Ok(()),
-        n => Err(Error::StatusProblems(n)),
-    }
+    statuses.sort_by_key(|status| status.level);
+    Ok(StatusReport {
+        members: identity::member_summary(&ctx.members, false),
+        secrets: statuses,
+        warnings,
+    })
 }
 
-// One `path: message; message` line per secret. Undecryptable secrets report no state.
+// The messages of one secret. Undecryptable secrets report no state.
 fn secret_status(
     ctx: &Context,
     sp: &paths::SecretPath,
     unmerged: &[String],
     current: &secret::Recipients,
-) -> Result<(Level, String), Error> {
+) -> Result<SecretStatus, Error> {
     let mut errors = Vec::new();
     let mut warnings = Vec::new();
     let mut ok = "in sync";
@@ -342,7 +332,11 @@ fn secret_status(
     if errors.is_empty() {
         errors.push(ok.into());
     }
-    Ok((level, format!("{}: {}", sp.ciphertext, errors.join("; "))))
+    Ok(SecretStatus {
+        level,
+        path: sp.ciphertext.clone(),
+        messages: errors,
+    })
 }
 
 // The status line already starts with the secret's path; drop the copy inside the error.
