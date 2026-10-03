@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read, Write};
 use std::path::Path;
 
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -20,6 +21,9 @@ pub fn hash(data: &[u8]) -> Hash {
     Sha256::digest(data).into()
 }
 
+/// The format version of secret and epoch headers (plan 5.2, 5.6).
+pub const VERSION: u8 = 1;
+
 /// The JSON header stored as the first line of a decrypted secret payload (plan 5.2).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -31,7 +35,7 @@ pub struct Header {
 }
 
 /// Serializes `header` as one compact JSON line followed by `body` (plan 5.2).
-pub fn encode_payload(header: &Header, body: &[u8]) -> Result<Vec<u8>, Error> {
+pub fn encode_payload<H: Serialize>(header: &H, body: &[u8]) -> Result<Vec<u8>, Error> {
     let mut payload = serde_json::to_vec(header)?;
     payload.push(b'\n');
     payload.extend_from_slice(body);
@@ -46,22 +50,22 @@ struct VersionProbe {
 }
 
 /// Splits a decrypted payload into its header and body (plan 5.2 parse rules).
-pub fn decode_payload(payload: &[u8]) -> Result<(Header, Vec<u8>), Error> {
+pub fn decode_payload<H: DeserializeOwned>(payload: &[u8]) -> Result<(H, Vec<u8>), Error> {
     let newline = payload
         .iter()
         .position(|&b| b == b'\n')
         .ok_or(Error::HeaderMissingNewline)?;
     let header_bytes = &payload[..newline];
     let probe: VersionProbe = serde_json::from_slice(header_bytes)?;
-    if probe.v != 1 {
+    if probe.v != VERSION {
         return Err(Error::UnsupportedVersion(probe.v));
     }
-    let header: Header = serde_json::from_slice(header_bytes)?;
+    let header: H = serde_json::from_slice(header_bytes)?;
     Ok((header, payload[newline + 1..].to_vec()))
 }
 
-pub fn encrypt(
-    header: &Header,
+pub fn encrypt<H: Serialize>(
+    header: &H,
     body: &[u8],
     recipients: &[&dyn age::Recipient],
 ) -> Result<Vec<u8>, Error> {
@@ -74,10 +78,10 @@ pub fn encrypt(
     Ok(ciphertext)
 }
 
-pub fn decrypt(
+pub fn decrypt<H: DeserializeOwned>(
     ciphertext: &[u8],
     identities: &[&dyn age::Identity],
-) -> Result<(Header, Vec<u8>), Error> {
+) -> Result<(H, Vec<u8>), Error> {
     let decryptor = age::Decryptor::new_buffered(ciphertext)?;
     let mut reader = decryptor.decrypt(identities.iter().copied())?;
     let mut payload = Vec::new();
@@ -107,7 +111,7 @@ pub fn next_header(old: Option<&Header>, plaintext_changed: bool, current: &Reci
         }
     };
     Header {
-        v: 1,
+        v: VERSION,
         recipients: current.clone(),
         exposed_to,
     }
@@ -223,7 +227,7 @@ mod tests {
     fn decode_payload_rejects_missing_newline() {
         let payload = br#"{"v":1,"recipients":{}}"#;
         assert!(matches!(
-            decode_payload(payload),
+            decode_payload::<Header>(payload),
             Err(Error::HeaderMissingNewline)
         ));
     }
@@ -231,14 +235,17 @@ mod tests {
     #[test]
     fn decode_payload_rejects_unknown_fields() {
         let payload = b"{\"v\":1,\"recipients\":{},\"bogus\":true}\nbody";
-        assert!(matches!(decode_payload(payload), Err(Error::HeaderJson(_))));
+        assert!(matches!(
+            decode_payload::<Header>(payload),
+            Err(Error::HeaderJson(_))
+        ));
     }
 
     #[test]
     fn decode_payload_rejects_unsupported_version() {
         let payload = b"{\"v\":2,\"recipients\":{}}\nbody";
         assert!(matches!(
-            decode_payload(payload),
+            decode_payload::<Header>(payload),
             Err(Error::UnsupportedVersion(2))
         ));
     }
@@ -248,7 +255,7 @@ mod tests {
         // The version check must win over `deny_unknown_fields` (see `VersionProbe`).
         let payload = b"{\"v\":2,\"recipients\":{},\"x\":1}\nbody";
         assert!(matches!(
-            decode_payload(payload),
+            decode_payload::<Header>(payload),
             Err(Error::UnsupportedVersion(2))
         ));
     }
@@ -262,7 +269,7 @@ mod tests {
         };
         let body = b"arbitrary\x00binary\r\n";
         let payload = encode_payload(&header, body).unwrap();
-        let (decoded_header, decoded_body) = decode_payload(&payload).unwrap();
+        let (decoded_header, decoded_body) = decode_payload::<Header>(&payload).unwrap();
         assert_eq!(decoded_header, header);
         assert_eq!(decoded_body, body);
     }
@@ -414,12 +421,12 @@ mod tests {
 
         for identity in [&alice, &bob] {
             let (decoded_header, decoded_body) =
-                decrypt(&ciphertext, &[identity as &dyn age::Identity]).unwrap();
+                decrypt::<Header>(&ciphertext, &[identity as &dyn age::Identity]).unwrap();
             assert_eq!(decoded_header, header);
             assert_eq!(decoded_body, body);
         }
 
-        let err = decrypt(&ciphertext, &[&mallory as &dyn age::Identity]).unwrap_err();
+        let err = decrypt::<Header>(&ciphertext, &[&mallory as &dyn age::Identity]).unwrap_err();
         assert!(matches!(
             err,
             Error::Decrypt(age::DecryptError::NoMatchingKeys)

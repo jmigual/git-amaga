@@ -465,8 +465,11 @@ fn readd_deleted_secret_requires_force() {
     let identities = git_amaga_core::identity::load_identity_file(&identity_path).unwrap();
     let id_refs: Vec<&dyn age::Identity> =
         identities.iter().map(|i| i as &dyn age::Identity).collect();
-    let (forced_header, _) =
-        git_amaga_core::secret::decrypt(&std::fs::read(&cipher_path).unwrap(), &id_refs).unwrap();
+    let (forced_header, _) = git_amaga_core::secret::decrypt::<git_amaga_core::secret::Header>(
+        &std::fs::read(&cipher_path).unwrap(),
+        &id_refs,
+    )
+    .unwrap();
     assert!(
         forced_header.exposed_to.is_empty(),
         "add --force drops exposure history"
@@ -475,8 +478,11 @@ fn readd_deleted_secret_requires_force() {
     repo.git(&["checkout", "HEAD~1", "--", "secret.env.amaga"])
         .assert_success();
     repo.run(&["seal", "secret.env"]).assert_success();
-    let (restored_header, _) =
-        git_amaga_core::secret::decrypt(&std::fs::read(&cipher_path).unwrap(), &id_refs).unwrap();
+    let (restored_header, _) = git_amaga_core::secret::decrypt::<git_amaga_core::secret::Header>(
+        &std::fs::read(&cipher_path).unwrap(),
+        &id_refs,
+    )
+    .unwrap();
     assert_eq!(
         restored_header.exposed_to.len(),
         1,
@@ -561,8 +567,11 @@ fn seal_force_warns_when_clearing_exposed_to() {
     let identities = git_amaga_core::identity::load_identity_file(&identity_path).unwrap();
     let id_refs: Vec<&dyn age::Identity> =
         identities.iter().map(|i| i as &dyn age::Identity).collect();
-    let (sealed_header, body) =
-        git_amaga_core::secret::decrypt(&std::fs::read(&cipher_path).unwrap(), &id_refs).unwrap();
+    let (sealed_header, body) = git_amaga_core::secret::decrypt::<git_amaga_core::secret::Header>(
+        &std::fs::read(&cipher_path).unwrap(),
+        &id_refs,
+    )
+    .unwrap();
     assert!(sealed_header.exposed_to.is_empty());
     assert_eq!(body, b"v1");
 }
