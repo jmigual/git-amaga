@@ -108,40 +108,46 @@ fn main() -> ExitCode {
 }
 
 fn run(command: Command) -> Result<ExitCode, Error> {
+    let dir = std::path::absolute(".")?;
+    let dir = dir.as_path();
     match command {
         Command::Keygen { path } => {
-            let public = git_amaga_core::cmd_keygen(path.as_deref())?;
+            let public = git_amaga_core::cmd_keygen(dir, path.as_deref())?;
             println!("{public}");
             eprintln!(
                 "to join a repository, send this to a member: git-amaga user add <name> {public}"
             );
         }
         Command::Init { name, keys } => {
-            print_gpg_key(&name, git_amaga_core::cmd_init(&name, &keys)?);
+            print_gpg_key(&name, git_amaga_core::cmd_init(dir, &name, &keys)?);
         }
         Command::Add { force, paths } => {
-            print_outcome("added", git_amaga_core::cmd_add(force, &paths)?);
+            print_outcome("added", git_amaga_core::cmd_add(dir, force, &paths)?);
         }
         Command::Seal { force, paths } => {
-            print_outcome("sealed", git_amaga_core::cmd_seal(force, &paths)?);
+            print_outcome("sealed", git_amaga_core::cmd_seal(dir, force, &paths)?);
         }
         Command::Open { force, paths } => {
-            print_outcome("opened", git_amaga_core::cmd_open(force, &paths)?);
+            print_outcome("opened", git_amaga_core::cmd_open(dir, force, &paths)?);
         }
-        Command::Close { paths } => print_outcome("closed", git_amaga_core::cmd_close(&paths)?),
-        Command::Remove { paths } => print_outcome("removed", git_amaga_core::cmd_remove(&paths)?),
+        Command::Close { paths } => {
+            print_outcome("closed", git_amaga_core::cmd_close(dir, &paths)?)
+        }
+        Command::Remove { paths } => {
+            print_outcome("removed", git_amaga_core::cmd_remove(dir, &paths)?)
+        }
         Command::User {
             command: UserCommand::Add { name, keys },
         } => {
-            let (gpg, written) = git_amaga_core::cmd_user_add(&name, &keys)?;
+            let (gpg, written) = git_amaga_core::cmd_user_add(dir, &name, &keys)?;
             print_gpg_key(&name, gpg);
             print_reencrypted(&written);
         }
         Command::User {
             command: UserCommand::Remove { name },
-        } => print_reencrypted(&git_amaga_core::cmd_user_remove(&name)?),
-        Command::Rotate => print_reencrypted(&git_amaga_core::cmd_rotate()?),
-        Command::Status => return Ok(print_status(&git_amaga_core::cmd_status()?)),
+        } => print_reencrypted(&git_amaga_core::cmd_user_remove(dir, &name)?),
+        Command::Rotate => print_reencrypted(&git_amaga_core::cmd_rotate(dir)?),
+        Command::Status => return Ok(print_status(&git_amaga_core::cmd_status(dir)?)),
     }
     Ok(ExitCode::SUCCESS)
 }

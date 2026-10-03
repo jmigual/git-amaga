@@ -1,5 +1,7 @@
-//! The commands of git-amaga as functions: they act on the repository containing the current
-//! directory and never print (ADR-0014).
+//! The commands of git-amaga as functions: each takes the directory it runs in (as if it were the
+//! current directory), acts on the repository containing it and never prints (ADR-0014).
+//! As with `git -C`, git's own environment (`GIT_DIR`, `GIT_WORK_TREE`) takes precedence over
+//! `dir`; library callers control it through their process environment.
 
 mod audit;
 mod commands;

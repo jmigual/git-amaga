@@ -550,24 +550,26 @@ Install and CI:
 
 ### 14.2 Core API
 
-`lib.rs` gets a one-line crate doc: commands act on the repository containing the current
-directory and never print. Public modules: `error`, `gpg`, `identity`, `secret`, `users`. Private
+`lib.rs` gets a one-line crate doc: each command takes the directory it runs in, acts on the
+repository containing it and never prints. Public modules: `error`, `gpg`, `identity`, `secret`, `users`. Private
 modules: `audit`, `commands`, `context`, `git`, `keyring`, `membership`, `outcome`, `paths`,
 `remove`. Root re-exports: `Error`, `keyring::GpgKey`, the `outcome` types, and every `cmd_*`.
 
 ```text
-cmd_keygen(path: Option<&Path>)           -> Result<age::x25519::Recipient, Error>
-cmd_init(name: &str, keys: &[String])     -> Result<Option<GpgKey>, Error>
-cmd_add(force: bool, paths: &[String])    -> Result<Outcome, Error>   changed: `.amaga` paths
-cmd_seal(force: bool, paths: &[String])   -> Result<Outcome, Error>   changed: `.amaga` paths
-cmd_open(force: bool, paths: &[String])   -> Result<Outcome, Error>   changed: plaintext paths
-cmd_close(paths: &[String])               -> Result<Outcome, Error>   changed: plaintext paths
-cmd_remove(paths: &[String])              -> Result<Outcome, Error>   changed: `.amaga` paths
-cmd_rotate()                              -> Result<Vec<Reencrypted>, Error>
-cmd_user_add(name: &str, keys: &[String]) -> Result<(Option<GpgKey>, Vec<Reencrypted>), Error>
-cmd_user_remove(name: &str)               -> Result<Vec<Reencrypted>, Error>
-cmd_status()                              -> Result<StatusReport, Error>
+cmd_keygen(dir, path: Option<&Path>)           -> Result<age::x25519::Recipient, Error>
+cmd_init(dir, name: &str, keys: &[String])     -> Result<Option<GpgKey>, Error>
+cmd_add(dir, force: bool, paths: &[String])    -> Result<Outcome, Error>   changed: `.amaga` paths
+cmd_seal(dir, force: bool, paths: &[String])   -> Result<Outcome, Error>   changed: `.amaga` paths
+cmd_open(dir, force: bool, paths: &[String])   -> Result<Outcome, Error>   changed: plaintext paths
+cmd_close(dir, paths: &[String])               -> Result<Outcome, Error>   changed: plaintext paths
+cmd_remove(dir, paths: &[String])              -> Result<Outcome, Error>   changed: `.amaga` paths
+cmd_rotate(dir)                                -> Result<Vec<Reencrypted>, Error>
+cmd_user_add(dir, name: &str, keys: &[String]) -> Result<(Option<GpgKey>, Vec<Reencrypted>), Error>
+cmd_user_remove(dir, name: &str)               -> Result<Vec<Reencrypted>, Error>
+cmd_status(dir)                                -> Result<StatusReport, Error>
 ```
+
+`dir: &Path` is the directory the command runs in, exactly replacing the process cwd.
 
 `outcome.rs` (illustrative; every pub item gets a one-line doc):
 
@@ -598,9 +600,11 @@ Internal changes (no new behaviour):
 - Delete `GpgKey::summary` (its format moves to the CLI) and `Error::StatusProblems` (no caller
   left in the core). `identity::member_summary` stays, because `Error::NotAMember` uses it.
 
-Repository discovery stays on the process cwd, which drives git, `show_prefix`, relative `KEY`
-files and the `keygen` path. The CLI then behaves the same by construction; a `repo: &Path`
-parameter would have to reach all four (ADR-0014).
+`dir` drives git (`current_dir`), `show_prefix`, relative `KEY` files, the `keygen` path and a
+relative `amaga.identity` config value. For an absolute `dir` the core never reads the process
+cwd (ADR-0014). Git's own environment (`GIT_DIR`, `GIT_WORK_TREE`) takes precedence over `dir`,
+as with `git -C`. An unusable `dir` (missing, or not a directory) is `Error::IoPath` naming it,
+raised before anything is written. The CLI passes its cwd, so it behaves as before.
 
 ### 14.3 Rendering contract
 

@@ -1,27 +1,30 @@
 //! Runs `git` as a subprocess, never through a shell (plan 10.2).
 
+use std::io;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output};
 
 use crate::error::Error;
 
-fn command(args: &[&str]) -> Command {
-    let mut cmd = Command::new("git");
-    cmd.args(args);
-    cmd
+// Runs `git` in `dir`. An unusable `dir` is an `Error::IoPath` naming it, not a bare spawn error.
+fn output(dir: &Path, args: &[&str]) -> Result<Output, Error> {
+    let io_error = |source| Error::IoPath {
+        path: dir.display().to_string(),
+        source,
+    };
+    if !dir.metadata().map_err(io_error)?.is_dir() {
+        return Err(io_error(io::ErrorKind::NotADirectory.into()));
+    }
+    Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .map_err(Error::Io)
 }
 
-/// Runs `git`, returning trimmed stdout; a non-zero exit is [`Error::Git`].
-pub fn run(args: &[&str]) -> Result<String, Error> {
-    stdout_of(&mut command(args))
-}
-
-fn run_in(root: &Path, args: &[&str]) -> Result<String, Error> {
-    stdout_of(command(args).current_dir(root))
-}
-
-fn stdout_of(cmd: &mut Command) -> Result<String, Error> {
-    let output = cmd.output().map_err(Error::Io)?;
+// Runs `git` in `dir`, returning trimmed stdout; a non-zero exit is `Error::Git`.
+fn run_in(dir: &Path, args: &[&str]) -> Result<String, Error> {
+    let output = output(dir, args)?;
     if !output.status.success() {
         return Err(Error::Git(
             String::from_utf8_lossy(&output.stderr).trim().to_string(),
@@ -34,10 +37,7 @@ fn stdout_of(cmd: &mut Command) -> Result<String, Error> {
 
 // Exit 0 is true, exit 1 is false, anything else is an error.
 fn succeeds_in(root: &Path, args: &[&str]) -> Result<bool, Error> {
-    let output = command(args)
-        .current_dir(root)
-        .output()
-        .map_err(Error::Io)?;
+    let output = output(root, args)?;
     match output.status.code() {
         Some(0) => Ok(true),
         Some(1) => Ok(false),
@@ -48,8 +48,8 @@ fn succeeds_in(root: &Path, args: &[&str]) -> Result<bool, Error> {
 }
 
 // Exit code 1 (`git config --get` for an unset key) becomes `Ok(None)`.
-fn run_optional(args: &[&str]) -> Result<Option<String>, Error> {
-    let output = command(args).output().map_err(Error::Io)?;
+fn run_optional(dir: &Path, args: &[&str]) -> Result<Option<String>, Error> {
+    let output = output(dir, args)?;
     if output.status.code() == Some(1) {
         return Ok(None);
     }
@@ -65,11 +65,9 @@ fn run_optional(args: &[&str]) -> Result<Option<String>, Error> {
     ))
 }
 
-/// [`Error::NotAGitRepo`] when the current directory is outside a Git repository.
-pub fn toplevel() -> Result<PathBuf, Error> {
-    let output = command(&["rev-parse", "--show-toplevel"])
-        .output()
-        .map_err(Error::Io)?;
+/// [`Error::NotAGitRepo`] when `dir` is outside a Git repository.
+pub fn toplevel(dir: &Path) -> Result<PathBuf, Error> {
+    let output = output(dir, &["rev-parse", "--show-toplevel"])?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         if is_not_a_git_repo_error(&stderr) {
@@ -89,28 +87,32 @@ fn is_not_a_git_repo_error(stderr: &str) -> bool {
     stderr.to_ascii_lowercase().contains("not a git repository")
 }
 
-/// The current directory relative to the repository root, with a trailing slash; empty at the root.
-pub fn show_prefix() -> Result<String, Error> {
-    run(&["rev-parse", "--show-prefix"])
+/// `dir` relative to the repository root, with a trailing slash; empty at the root.
+pub fn show_prefix(dir: &Path) -> Result<String, Error> {
+    run_in(dir, &["rev-parse", "--show-prefix"])
 }
 
 /// Absolute path of a per-worktree file under `.git/` (plan 5.5).
-pub fn git_path(name: &str) -> Result<PathBuf, Error> {
-    run(&["rev-parse", "--path-format=absolute", "--git-path", name]).map(PathBuf::from)
+pub fn git_path(dir: &Path, name: &str) -> Result<PathBuf, Error> {
+    run_in(
+        dir,
+        &["rev-parse", "--path-format=absolute", "--git-path", name],
+    )
+    .map(PathBuf::from)
 }
 
 /// `None` when unset.
-pub fn config_get_global(key: &str) -> Result<Option<String>, Error> {
-    run_optional(&["config", "--global", "--get", key])
+pub fn config_get_global(dir: &Path, key: &str) -> Result<Option<String>, Error> {
+    run_optional(dir, &["config", "--global", "--get", key])
 }
 
-pub fn config_set_global(key: &str, value: &str) -> Result<(), Error> {
-    run(&["config", "--global", key, value]).map(|_| ())
+pub fn config_set_global(dir: &Path, key: &str, value: &str) -> Result<(), Error> {
+    run_in(dir, &["config", "--global", key, value]).map(|_| ())
 }
 
 /// Reads across all scopes, with `~` expansion (plan 5.5).
-pub fn config_get_path(key: &str) -> Result<Option<String>, Error> {
-    run_optional(&["config", "--type=path", "--get", key])
+pub fn config_get_path(dir: &Path, key: &str) -> Result<Option<String>, Error> {
+    run_optional(dir, &["config", "--type=path", "--get", key])
 }
 
 /// Every `*.amaga` path git knows (tracked or not), sorted and deduplicated.

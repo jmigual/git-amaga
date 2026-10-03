@@ -16,12 +16,13 @@ pub enum KeyKind {
     GpgSpec,
 }
 
-/// Plan 7 rules 1-3: `age1…`, then an existing `.asc` file, else a gpg key spec.
-pub fn classify(key: &str) -> KeyKind {
+/// Plan 7 rules 1-3: `age1…`, then an existing `.asc` file (relative to `dir`), else a gpg key
+/// spec.
+pub fn classify(dir: &Path, key: &str) -> KeyKind {
     let path = Path::new(key);
     if key.starts_with("age1") {
         KeyKind::Age
-    } else if path.extension().is_some_and(|e| e == "asc") && path.is_file() {
+    } else if path.extension().is_some_and(|e| e == "asc") && dir.join(path).is_file() {
         KeyKind::AscFile
     } else {
         KeyKind::GpgSpec
@@ -48,12 +49,12 @@ pub struct ResolvedKeys {
 
 /// Resolves every `KEY`; at most one OpenPGP key (file or lookup) is allowed (plan 5.1, 7).
 /// OpenPGP keys are validated and checked for expiry before anything is written.
-pub fn resolve(keys: &[String]) -> Result<ResolvedKeys, Error> {
+pub fn resolve(dir: &Path, keys: &[String]) -> Result<ResolvedKeys, Error> {
     let mut age_keys = Vec::new();
     let mut seen_age = BTreeSet::new();
     let mut gpg_key = None;
     for key in keys {
-        let kind = classify(key);
+        let kind = classify(dir, key);
         if kind == KeyKind::Age {
             let recipient: age::x25519::Recipient = key
                 .parse()
@@ -67,7 +68,7 @@ pub fn resolve(keys: &[String]) -> Result<ResolvedKeys, Error> {
             return Err(Error::MultipleGpgKeys);
         }
         let armored = if kind == KeyKind::AscFile {
-            fs::read_to_string(key).map_err(|source| Error::IoPath {
+            fs::read_to_string(dir.join(key)).map_err(|source| Error::IoPath {
                 path: key.clone(),
                 source,
             })?
@@ -241,7 +242,7 @@ fpr:::::::::4444444444444444444444444444444444444444:\n";
 
     #[test]
     fn classify_age_recipient() {
-        assert_eq!(classify("age1abc"), KeyKind::Age);
+        assert_eq!(classify(Path::new("."), "age1abc"), KeyKind::Age);
     }
 
     #[test]
@@ -252,16 +253,25 @@ fpr:::::::::4444444444444444444444444444444444444444:\n";
         fs::write(&asc, "").unwrap();
         fs::write(&txt, "").unwrap();
 
-        assert_eq!(classify(asc.to_str().unwrap()), KeyKind::AscFile);
-        assert_eq!(classify(txt.to_str().unwrap()), KeyKind::GpgSpec);
+        assert_eq!(
+            classify(dir.path(), asc.to_str().unwrap()),
+            KeyKind::AscFile
+        );
+        assert_eq!(
+            classify(dir.path(), txt.to_str().unwrap()),
+            KeyKind::GpgSpec
+        );
         let missing = dir.path().join("missing.asc");
-        assert_eq!(classify(missing.to_str().unwrap()), KeyKind::GpgSpec);
+        assert_eq!(
+            classify(dir.path(), missing.to_str().unwrap()),
+            KeyKind::GpgSpec
+        );
     }
 
     #[test]
     fn classify_ids_and_emails_as_gpg_specs() {
         for spec in ["alice@example.org", "0xDEADBEEF", "Alice Example"] {
-            assert_eq!(classify(spec), KeyKind::GpgSpec, "{spec}");
+            assert_eq!(classify(Path::new("."), spec), KeyKind::GpgSpec, "{spec}");
         }
     }
 
@@ -380,8 +390,11 @@ fpr:::::::::4444444444444444444444444444444444444444:\n";
         fs::write(&asc, armored).unwrap();
         let age = age::x25519::Identity::generate().to_public().to_string();
 
-        let resolved =
-            resolve(&[age.clone(), asc.to_str().unwrap().to_string(), age.clone()]).unwrap();
+        let resolved = resolve(
+            dir.path(),
+            &[age.clone(), asc.to_str().unwrap().to_string(), age.clone()],
+        )
+        .unwrap();
 
         let age_keys: Vec<String> = resolved.age_keys.iter().map(|k| k.to_string()).collect();
         assert_eq!(age_keys, [age]);
@@ -398,7 +411,7 @@ fpr:::::::::4444444444444444444444444444444444444444:\n";
         fs::write(&asc, include_str!("../tests/fixtures/valid_cv25519.asc")).unwrap();
         let path = asc.to_str().unwrap().to_string();
 
-        let result = resolve(&[path.clone(), path]);
+        let result = resolve(dir.path(), &[path.clone(), path]);
 
         assert!(matches!(result, Err(Error::MultipleGpgKeys)));
     }

@@ -23,10 +23,11 @@ fn default_identity_path_under(home: &Path) -> PathBuf {
 }
 
 /// `amaga.identity` from git config (any scope), else the default path if that file exists.
-pub fn configured_identity_path() -> Result<Option<PathBuf>, Error> {
-    let configured = git::config_get_path("amaga.identity")?;
+pub fn configured_identity_path(dir: &Path) -> Result<Option<PathBuf>, Error> {
+    let configured = git::config_get_path(dir, "amaga.identity")?;
     let default = default_identity_path()?;
-    Ok(resolve_configured_identity_path(configured, &default))
+    // A relative configured path is relative to `dir`.
+    Ok(resolve_configured_identity_path(configured, &default).map(|path| dir.join(path)))
 }
 
 fn resolve_configured_identity_path(
@@ -60,26 +61,29 @@ pub fn load_identity_file(path: &Path) -> Result<Vec<x25519::Identity>, Error> {
         .collect()
 }
 
-/// Writes a new identity to `path` (default path if `None`), refusing to overwrite, and sets the
-/// global `amaga.identity` if unset.
-pub fn keygen(path: Option<&Path>) -> Result<(PathBuf, x25519::Recipient), Error> {
-    let (path, public) = write_identity(path)?;
+/// Writes a new identity to `path` (default path if `None`; a relative `path` resolves against
+/// `dir`), refusing to overwrite, and sets the global `amaga.identity` if unset.
+pub fn keygen(dir: &Path, path: Option<&Path>) -> Result<(PathBuf, x25519::Recipient), Error> {
+    // Read first: an unusable `dir` must fail before anything is written.
+    let configured = git::config_get_global(dir, "amaga.identity")?;
+    let (path, public) = write_identity(dir, path)?;
 
-    if git::config_get_global("amaga.identity")?.is_none() {
-        git::config_set_global("amaga.identity", &path.to_string_lossy())?;
+    if configured.is_none() {
+        git::config_set_global(dir, "amaga.identity", &path.to_string_lossy())?;
     }
 
     Ok((path, public))
 }
 
 // Split from `keygen` so tests run without touching git config.
-fn write_identity(path: Option<&Path>) -> Result<(PathBuf, x25519::Recipient), Error> {
+fn write_identity(dir: &Path, path: Option<&Path>) -> Result<(PathBuf, x25519::Recipient), Error> {
     let path = match path {
-        Some(p) => p.to_path_buf(),
+        Some(p) => dir.join(p),
         None => default_identity_path()?,
     };
     // Lexical absolutization (not `canonicalize`, plan section 7): `amaga.identity` must resolve
-    // the same way regardless of the cwd a later command runs from.
+    // the same way regardless of the cwd a later command runs from. This reads the cwd only for
+    // a relative `dir`, which is itself relative to it.
     let path = std::path::absolute(&path).map_err(|source| Error::IoPath {
         path: path.display().to_string(),
         source,
@@ -362,7 +366,7 @@ mod tests {
         let path = dir.path().join("identity.txt");
         fs::write(&path, "existing").unwrap();
 
-        let err = write_identity(Some(&path)).unwrap_err();
+        let err = write_identity(dir.path(), Some(&path)).unwrap_err();
         assert!(matches!(err, Error::IdentityExists(_)));
     }
 
@@ -374,7 +378,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("identity.txt");
 
-        let (written_path, public) = write_identity(Some(&path)).unwrap();
+        let (written_path, public) = write_identity(dir.path(), Some(&path)).unwrap();
         assert_eq!(written_path, path);
 
         let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;

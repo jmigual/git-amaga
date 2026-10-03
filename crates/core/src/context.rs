@@ -18,39 +18,39 @@ pub(crate) struct Context {
 
 impl Context {
     // Refuses while any `*.amaga` is unmerged (plan 7).
-    pub(crate) fn load() -> Result<Self, Error> {
-        Self::load_refusing_unmerged(None)
+    pub(crate) fn load(dir: &Path) -> Result<Self, Error> {
+        Self::load_refusing_unmerged(dir, None)
     }
 
     // Like `load`, but member `name`'s own files may be invalid (`user remove`, plan 7).
-    pub(crate) fn load_for_removal(name: &str) -> Result<Self, Error> {
-        Self::load_refusing_unmerged(Some(name))
+    pub(crate) fn load_for_removal(dir: &Path, name: &str) -> Result<Self, Error> {
+        Self::load_refusing_unmerged(dir, Some(name))
     }
 
-    fn load_refusing_unmerged(tolerated: Option<&str>) -> Result<Self, Error> {
-        let root = git::toplevel()?;
+    fn load_refusing_unmerged(dir: &Path, tolerated: Option<&str>) -> Result<Self, Error> {
+        let root = git::toplevel(dir)?;
         let unmerged = git::unmerged_secrets(&root)?;
         if !unmerged.is_empty() {
             return Err(Error::UnmergedAmagaFiles(unmerged.join(", ")));
         }
-        Self::load_in(root, tolerated)
+        Self::load_in(dir, root, tolerated)
     }
 
     // For `status`, which lists the unmerged files instead of refusing.
-    pub(crate) fn load_allowing_unmerged() -> Result<Self, Error> {
-        Self::load_in(git::toplevel()?, None)
+    pub(crate) fn load_allowing_unmerged(dir: &Path) -> Result<Self, Error> {
+        Self::load_in(dir, git::toplevel(dir)?, None)
     }
 
-    fn load_in(root: PathBuf, tolerated: Option<&str>) -> Result<Self, Error> {
+    fn load_in(dir: &Path, root: PathBuf, tolerated: Option<&str>) -> Result<Self, Error> {
         let members = users::load_tolerating(&root.join(".amaga/users"), tolerated)?;
-        let age_identities = match identity::configured_identity_path()? {
+        let age_identities = match identity::configured_identity_path(dir)? {
             Some(path) => identity::load_identity_file(&path)?,
             None => Vec::new(),
         };
         let (actor, gpg_fprs) = identity::find_actor(&members, &age_identities, gpg::is_held)?;
-        let base_path = git::git_path("amaga-base")?;
+        let base_path = git::git_path(dir, "amaga-base")?;
         Ok(Self {
-            prefix: git::show_prefix()?,
+            prefix: git::show_prefix(dir)?,
             base: secret::load_base(&base_path)?,
             base_path,
             root,

@@ -16,25 +16,25 @@ const GITATTRIBUTES_LINES: [&str; 3] = [
 ];
 
 /// `git-amaga keygen [PATH]` (plan 7).
-pub fn cmd_keygen(path: Option<&Path>) -> Result<age::x25519::Recipient, Error> {
-    let (_path, public) = identity::keygen(path)?;
+pub fn cmd_keygen(dir: &Path, path: Option<&Path>) -> Result<age::x25519::Recipient, Error> {
+    let (_path, public) = identity::keygen(dir, path)?;
     Ok(public)
 }
 
 /// `git-amaga init <name> [KEY…]` (plan 7): returns the member's GPG key, if any.
-pub fn cmd_init(name: &str, keys: &[String]) -> Result<Option<GpgKey>, Error> {
+pub fn cmd_init(dir: &Path, name: &str, keys: &[String]) -> Result<Option<GpgKey>, Error> {
     if !users::valid_name(name) {
         return Err(Error::InvalidMemberName(name.to_string()));
     }
 
-    let root = git::toplevel()?;
+    let root = git::toplevel(dir)?;
     let amaga_dir = root.join(".amaga");
     if amaga_dir.exists() {
         return Err(Error::AlreadyInitialized);
     }
 
     let resolved = if keys.is_empty() {
-        let identity_path = identity::configured_identity_path()?.ok_or(Error::NoIdentity)?;
+        let identity_path = identity::configured_identity_path(dir)?.ok_or(Error::NoIdentity)?;
         let identities = identity::load_identity_file(&identity_path)?;
         if identities.is_empty() {
             return Err(Error::NoIdentity);
@@ -44,7 +44,7 @@ pub fn cmd_init(name: &str, keys: &[String]) -> Result<Option<GpgKey>, Error> {
             gpg: None,
         }
     } else {
-        keyring::resolve(keys)?
+        keyring::resolve(dir, keys)?
     };
 
     // Idempotent steps first: a failure here must not leave a half-initialized `.amaga/` that a
@@ -73,8 +73,8 @@ pub fn cmd_init(name: &str, keys: &[String]) -> Result<Option<GpgKey>, Error> {
 }
 
 /// `git-amaga add [--force] <path>…` (plan 7).
-pub fn cmd_add(force: bool, args: &[String]) -> Result<Outcome, Error> {
-    let mut ctx = Context::load()?;
+pub fn cmd_add(dir: &Path, force: bool, args: &[String]) -> Result<Outcome, Error> {
+    let mut ctx = Context::load(dir)?;
     let current = users::recipients(&ctx.members);
     let mut outcome = Outcome::default();
 
@@ -121,8 +121,8 @@ pub fn cmd_add(force: bool, args: &[String]) -> Result<Outcome, Error> {
 }
 
 /// `git-amaga seal [--force] [<path>…]` (plan 7).
-pub fn cmd_seal(force: bool, args: &[String]) -> Result<Outcome, Error> {
-    let mut ctx = Context::load()?;
+pub fn cmd_seal(dir: &Path, force: bool, args: &[String]) -> Result<Outcome, Error> {
+    let mut ctx = Context::load(dir)?;
     let current = users::recipients(&ctx.members);
     let mut outcome = Outcome::default();
 
@@ -169,8 +169,8 @@ pub fn cmd_seal(force: bool, args: &[String]) -> Result<Outcome, Error> {
 }
 
 /// `git-amaga open [--force] [<path>…]` (plan 7).
-pub fn cmd_open(force: bool, args: &[String]) -> Result<Outcome, Error> {
-    let mut ctx = Context::load()?;
+pub fn cmd_open(dir: &Path, force: bool, args: &[String]) -> Result<Outcome, Error> {
+    let mut ctx = Context::load(dir)?;
     let mut outcome = Outcome::default();
 
     for sp in secret_paths_for(&ctx, args, false, &mut outcome.warnings)? {
@@ -206,8 +206,8 @@ pub fn cmd_open(force: bool, args: &[String]) -> Result<Outcome, Error> {
 }
 
 /// `git-amaga close [<path>…]` (plan 7).
-pub fn cmd_close(args: &[String]) -> Result<Outcome, Error> {
-    let mut ctx = Context::load()?;
+pub fn cmd_close(dir: &Path, args: &[String]) -> Result<Outcome, Error> {
+    let mut ctx = Context::load(dir)?;
     let mut outcome = Outcome::default();
 
     for sp in secret_paths_for(&ctx, args, true, &mut outcome.warnings)? {
@@ -235,8 +235,8 @@ pub fn cmd_close(args: &[String]) -> Result<Outcome, Error> {
 const UNMERGED: &str = "unmerged; resolve the conflict and `git add` the file";
 
 /// `git-amaga status` (plan 7.2): problems first; the caller exits 1 if `error_count` > 0.
-pub fn cmd_status() -> Result<StatusReport, Error> {
-    let ctx = Context::load_allowing_unmerged()?;
+pub fn cmd_status(dir: &Path) -> Result<StatusReport, Error> {
+    let ctx = Context::load_allowing_unmerged(dir)?;
     let unmerged = git::unmerged_secrets(&ctx.root)?;
     let current = users::recipients(&ctx.members);
 

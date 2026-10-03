@@ -47,8 +47,8 @@ pub(crate) fn reencrypt_all(
 }
 
 /// `git-amaga rotate` (plan 7): re-encrypts everything; also finishes an interrupted run.
-pub fn cmd_rotate() -> Result<Vec<Reencrypted>, Error> {
-    let mut ctx = Context::load()?;
+pub fn cmd_rotate(dir: &Path) -> Result<Vec<Reencrypted>, Error> {
+    let mut ctx = Context::load(dir)?;
     let written = reencrypt_all(&mut ctx, |_| Ok(()))?;
     ctx.audit_event("rotated", None, None)?;
     Ok(written)
@@ -57,18 +57,19 @@ pub fn cmd_rotate() -> Result<Vec<Reencrypted>, Error> {
 /// `git-amaga user add <name> <KEY>…` (plan 7): validates the keys, then re-encrypts everything.
 /// Returns the new member's GPG key, if any, and the rewritten secrets.
 pub fn cmd_user_add(
+    dir: &Path,
     name: &str,
     keys: &[String],
 ) -> Result<(Option<GpgKey>, Vec<Reencrypted>), Error> {
     if !users::valid_name(name) {
         return Err(Error::InvalidMemberName(name.to_string()));
     }
-    let mut ctx = Context::load()?;
+    let mut ctx = Context::load(dir)?;
     let users_dir = ctx.root.join(".amaga/users");
     if member_files(&users_dir, name).next().is_some() {
         return Err(Error::UserExists(name.to_string()));
     }
-    let resolved = keyring::resolve(keys)?;
+    let resolved = keyring::resolve(dir, keys)?;
     // Checked before anything is written; decrypting does not depend on the member list.
     ctx.members
         .insert(name.to_string(), users::member_from_keys(&resolved));
@@ -86,11 +87,11 @@ pub fn cmd_user_add(
 }
 
 /// `git-amaga user remove <name>` (plan 7): the member's own files need not be valid.
-pub fn cmd_user_remove(name: &str) -> Result<Vec<Reencrypted>, Error> {
+pub fn cmd_user_remove(dir: &Path, name: &str) -> Result<Vec<Reencrypted>, Error> {
     if !users::valid_name(name) {
         return Err(Error::InvalidMemberName(name.to_string()));
     }
-    let mut ctx = Context::load_for_removal(name)?;
+    let mut ctx = Context::load_for_removal(dir, name)?;
     let files: Vec<PathBuf> = member_files(&ctx.root.join(".amaga/users"), name).collect();
     if files.is_empty() {
         return Err(Error::UserNotFound(name.to_string()));

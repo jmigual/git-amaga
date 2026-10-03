@@ -2,6 +2,7 @@
 
 use std::collections::BTreeSet;
 use std::fs;
+use std::path::Path;
 
 use crate::context::{Context, read_plaintext, read_repo_file, secret_paths_for};
 use crate::outcome::Outcome;
@@ -10,12 +11,12 @@ use crate::{Error, secret};
 /// `git-amaga remove <path>…` (plan 7): deletes the `.amaga` file only. The plaintext and its
 /// ignore entry stay (ADR-0011), so the plaintext must be open and in sync: it is then the copy
 /// the user keeps, even if the `.amaga` was never committed.
-pub fn cmd_remove(args: &[String]) -> Result<Outcome, Error> {
+pub fn cmd_remove(dir: &Path, args: &[String]) -> Result<Outcome, Error> {
     // `secret_paths_for` treats no paths as "every secret".
     if args.is_empty() {
         return Err(Error::NoPaths);
     }
-    let mut ctx = Context::load()?;
+    let mut ctx = Context::load(dir)?;
     let mut outcome = Outcome::default();
 
     // Everything is checked up front, so one bad path removes nothing.
@@ -55,6 +56,9 @@ mod tests {
 
     #[test]
     fn no_paths_is_refused_before_anything_is_loaded() {
-        assert!(matches!(cmd_remove(&[]), Err(Error::NoPaths)));
+        assert!(matches!(
+            cmd_remove(Path::new("."), &[]),
+            Err(Error::NoPaths)
+        ));
     }
 }

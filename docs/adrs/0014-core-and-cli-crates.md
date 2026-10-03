@@ -18,7 +18,11 @@ cannot use a command without it writing to the terminal.
 - Status problems are data (`StatusReport::error_count`), not an `Error`; the CLI exits 1.
 - Wording of problems stays in the core (`Error` and `Warning` `Display`, status messages);
   the CLI owns progress lines, the `error:`/`warning:` prefixes, the stream and the exit code.
-- Commands keep resolving the repository from the process's current directory, like git.
+- Every command takes `dir: &Path` as its first parameter and runs as if `dir` were the
+  current directory: it drives git, the path prefix, relative `KEY` files and the `keygen` path.
+  A relative `amaga.identity` config value resolves against `dir` too. For an absolute `dir` the
+  core never reads the process cwd. Git's own environment (`GIT_DIR`, `GIT_WORK_TREE`) still
+  takes precedence over `dir`, as with `git -C`.
 - The integration tests stay in the CLI crate as the output regression net; only their crate
   path (`git_amaga::` → `git_amaga_core::`) and fixture paths change.
 
@@ -30,11 +34,11 @@ cannot use a command without it writing to the terminal.
   Rerunning is safe (ADR-0007), and `git status` shows what changed.
 - `git`, `paths`, `audit`, `commands`, `membership` become private: the public surface is the
   command functions, their result types, `Error`, and `secret`, `gpg`, `identity`, `users`.
-- The core needs the process cwd; a caller that works on several repositories must set it.
+- A caller that works on several repositories passes each directory; no `chdir` is needed.
 
 ## Alternatives considered
 - One package with a lib and a bin (today): the library still prints.
 - A progress callback (`FnMut(Event)`) per command: keeps partial output on failure, but adds an
   event type and a callback to every signature for a case rerunning already covers.
-- A `repo: &Path` argument on every command: the cwd also drives the path prefix, relative
-  `KEY` files and the `keygen` path, so threading it through is a separate change.
+- The process cwd as the only input (the first version of this ADR): a caller with several
+  repositories had to `chdir`, which is process-global.
