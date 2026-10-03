@@ -26,6 +26,7 @@ cannot use a command without it writing to the terminal.
 - A library caller gets results without terminal output, and the CLI output is unchanged.
 - Results arrive when a command finishes. When a multi-file command fails part-way, the lines
   for files already written (and earlier warnings) are no longer shown; only the error is.
+  On success, a command's warnings print before its result lines instead of interleaved with them.
   Rerunning is safe (ADR-0007), and `git status` shows what changed.
 - `git`, `paths`, `audit`, `commands`, `membership` become private: the public surface is the
   command functions, their result types, `Error`, and `secret`, `gpg`, `identity`, `users`.

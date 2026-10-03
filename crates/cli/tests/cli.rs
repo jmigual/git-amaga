@@ -1279,8 +1279,13 @@ fn commands_without_paths_skip_invalid_managed_paths() {
     std::fs::create_dir(repo.path().join("foo")).unwrap();
     std::fs::write(repo.path().join("foo/.amaga"), &ciphertext).unwrap();
 
-    repo.run(&["open", "--force"]).assert_success();
-    repo.run(&["seal"]).assert_success();
+    let skipped = "warning: skipping 'secret.env.amaga.amaga'";
+    for args in [&["open", "--force"][..], &["seal"], &["status"]] {
+        let output = repo.run(args);
+        output.assert_success();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(skipped), "{args:?} got {stderr:?}");
+    }
 
     assert_eq!(
         std::fs::read(repo.path().join("secret.env.amaga")).unwrap(),
@@ -1361,6 +1366,11 @@ fn assert_status_error(repo: &Repo, token: &str) {
     assert!(
         error_line.is_some_and(|l| l.contains(token)),
         "expected an ERROR line with {token:?}, got {stdout:?}"
+    );
+    let stderr = String::from_utf8_lossy(&status.stderr);
+    assert!(
+        stderr.contains("status found problems with"),
+        "got {stderr:?}"
     );
 }
 

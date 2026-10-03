@@ -29,6 +29,7 @@ pub fn classify(key: &str) -> KeyKind {
 }
 
 /// A validated OpenPGP key ready to be stored as `<name>.asc`.
+#[derive(Debug)]
 pub struct GpgKey {
     /// The armored public key as it is stored in `<name>.asc`.
     pub armored: String,
