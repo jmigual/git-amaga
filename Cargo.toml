@@ -15,10 +15,10 @@ age = "0.12.1"
 age-core = "0.12.0"
 clap = { version = "4.6.7", features = ["derive"] }
 pgp = { version = "0.20.0", default-features = false }
-rand = "0.8"
+rand = "0.10"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
-sha2 = "0.10"
+sha2 = "0.11"
 tempfile = "3.27.0"
 thiserror = "2.0.21"
 
