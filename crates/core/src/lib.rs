@@ -6,7 +6,10 @@
 mod audit;
 mod commands;
 mod context;
+mod dismiss;
+pub mod epoch;
 pub mod error;
+mod failure;
 mod git;
 pub mod gpg;
 pub mod identity;
@@ -16,11 +19,14 @@ mod outcome;
 mod paths;
 mod remove;
 pub mod secret;
+mod status;
 pub mod users;
 
-pub use commands::{cmd_add, cmd_close, cmd_init, cmd_keygen, cmd_open, cmd_seal, cmd_status};
+pub use commands::{cmd_add, cmd_close, cmd_init, cmd_keygen, cmd_open, cmd_seal};
+pub use dismiss::cmd_dismiss;
 pub use error::Error;
 pub use keyring::GpgKey;
 pub use membership::{cmd_rotate, cmd_user_add, cmd_user_remove};
 pub use outcome::{Level, Outcome, Reencrypted, SecretStatus, StatusReport, Warning};
 pub use remove::cmd_remove;
+pub use status::cmd_status;

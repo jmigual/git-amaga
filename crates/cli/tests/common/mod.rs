@@ -6,6 +6,11 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::str::FromStr;
+
+use age::x25519;
+use git_amaga_core::epoch::{self, Epoch};
+use git_amaga_core::secret::{self, Header};
 
 /// A throwaway repository with its own `GIT_CONFIG_GLOBAL`, `HOME`/`USERPROFILE` and
 /// `GNUPGHOME`, so child processes never touch the developer's real config, home or keyring (on
@@ -167,6 +172,61 @@ pub fn repo_with_alice() -> (Repo, PathBuf) {
         .assert_success();
     repo.run(&["init", "alice"]).assert_success();
     (repo, identity_path)
+}
+
+/// The id of the current epoch (`.amaga/current-epoch`).
+pub fn current_epoch_id(repo: &Repo) -> String {
+    epoch::read_pointer(repo.path())
+        .expect("read current-epoch")
+        .to_string()
+}
+
+/// Unwraps the current epoch with `identity`.
+pub fn current_epoch(repo: &Repo, identity: &x25519::Identity) -> Epoch {
+    let id = current_epoch_id(repo);
+    let bytes = std::fs::read(repo.path().join(epoch::file_path(&id))).expect("read epoch file");
+    epoch::unwrap(&id, &bytes, &[identity as &dyn age::Identity]).expect("unwrap current epoch")
+}
+
+/// Encrypts `header` and `body` to the current epoch, as a teammate's commit would. Needs only
+/// the public key in `current-epoch`.
+pub fn encrypt_to_current_epoch(repo: &Repo, header: &Header, body: &[u8]) -> Vec<u8> {
+    let recipient = x25519::Recipient::from_str(&current_epoch_id(repo)).expect("epoch id");
+    secret::encrypt(header, body, &[&recipient as &dyn age::Recipient]).expect("encrypt")
+}
+
+/// Decrypts a secret as `identity` can: through any epoch file it can unwrap. Fails with
+/// `NoMatchingKeys` when it can unwrap none that opens the secret.
+pub fn decrypt_as(
+    repo: &Repo,
+    ciphertext: &[u8],
+    identity: &x25519::Identity,
+) -> Result<(Header, Vec<u8>), git_amaga_core::Error> {
+    for id in epoch::list(repo.path()).expect("list epochs") {
+        let bytes = std::fs::read(repo.path().join(epoch::file_path(&id))).expect("read epoch");
+        let Ok(epoch) = epoch::unwrap(&id, &bytes, &[identity as &dyn age::Identity]) else {
+            continue;
+        };
+        if let Ok(found) = secret::decrypt(ciphertext, &[epoch.identity() as &dyn age::Identity]) {
+            return Ok(found);
+        }
+    }
+    Err(git_amaga_core::Error::Decrypt(
+        age::DecryptError::NoMatchingKeys,
+    ))
+}
+
+/// The first identity of the file `repo_with_alice` wrote.
+pub fn load_identity(identity_path: &Path) -> x25519::Identity {
+    let mut identities =
+        git_amaga_core::identity::load_identity_file(identity_path).expect("identity");
+    identities.swap_remove(0)
+}
+
+/// The header and body of `path`, read with the identity file `repo_with_alice` wrote.
+pub fn decrypt_file(repo: &Repo, identity_path: &Path, path: &str) -> (Header, Vec<u8>) {
+    let ciphertext = std::fs::read(repo.path().join(path)).expect("read secret");
+    decrypt_as(repo, &ciphertext, &load_identity(identity_path)).expect("decrypt secret")
 }
 
 #[cfg(unix)]

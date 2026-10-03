@@ -4,13 +4,15 @@ Rust CLI that stores whole secret files in Git as explicit `*.amaga` age files n
 plaintext. Members hold age keys or GPG keys (a custom `pgp` age stanza).
 
 ## Where to look
-- `plan.md`: the v1 spec (formats, commands, tests, implementation steps). Read the section you need.
+- `docs/adrs/plan.md`: the v1 spec (formats, commands, tests, implementation steps). Read the section you need.
 - `docs/adrs/README.md`: decision index. Read it first; open only the relevant ADRs.
 - Workspace (ADR-0014): `crates/core` is package `git-amaga-core` (the library) and `crates/cli`
   is package `git-amaga` (the binary). The core never prints; the CLI owns output and exit codes.
 - CLI: `crates/cli/src/main.rs` clap, dispatch and rendering of the core's results.
 - Core, under `crates/core/src/`: `lib.rs` module list and re-exports · `commands.rs` one `cmd_*`
-  per subcommand · `membership.rs` `rotate` and `user add`/`user remove` · `remove.rs` `remove` ·
+  per subcommand · `status.rs` `status` · `dismiss.rs` `dismiss` · `epoch.rs` epoch files,
+  `current-epoch`, wrap/unwrap · `membership.rs` `rotate`, `user add` (re-wrap) and `user remove` ·
+  `remove.rs` `remove` ·
   `outcome.rs` the result types (`Outcome`, `Warning`, `StatusReport`, …) · `context.rs`
   per-command `Context` and file helpers · `secret.rs` header,
   age encrypt/decrypt, `next_header`, `plaintext_state`, base file · `gpg.rs` `.asc` validation,

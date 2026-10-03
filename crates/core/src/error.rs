@@ -173,9 +173,16 @@ pub enum Error {
     #[error("'{0}' could not be ignored (check for a conflicting negation rule in .gitignore)")]
     PlaintextNotIgnored(String),
 
-    /// Names the `.amaga` file and, for a gpg failure, the member.
-    #[error("{path}{}: {source}", .member.as_ref().map(|m| format!(" (member {m})")).unwrap_or_default())]
+    #[error("{path}: {source}")]
     SecretUndecryptable {
+        path: String,
+        #[source]
+        source: Box<Error>,
+    },
+
+    /// Names the epoch file and, for a gpg failure, the member.
+    #[error("{path}{}: {source}", .member.as_ref().map(|m| format!(" (member {m})")).unwrap_or_default())]
+    EpochUndecryptable {
         path: String,
         member: Option<String>,
         #[source]
@@ -229,4 +236,26 @@ pub enum Error {
         "'{0}' must be open and in sync before its `.amaga` is removed (state: {1:?}); run `open` (or `seal`) first so you keep a copy"
     )]
     RemoveRefused(String, PlaintextState),
+
+    #[error(
+        ".amaga/current-epoch is missing (repository written by git-amaga 0.1.0, or `init` was interrupted); open the secrets with 0.1.0 and run `init` anew, or delete `.amaga/` and rerun `init`"
+    )]
+    NoEpoch,
+
+    #[error("invalid epoch: {0}")]
+    EpochInvalid(String),
+
+    #[error("`.amaga/users` differs from the current epoch; run `git-amaga rotate` first")]
+    EpochStale,
+
+    #[error(
+        "unmerged epoch files must be resolved first: {0}\nrun `git checkout --ours -- <paths> && git add <paths>`, then `git-amaga rotate`"
+    )]
+    UnmergedEpoch(String),
+
+    #[error("nothing to dismiss: name at least one path or `--user`")]
+    DismissNoTarget,
+
+    #[error("'{0}' is not exposed in any of the selected secrets")]
+    NotExposed(String),
 }

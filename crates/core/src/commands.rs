@@ -1,16 +1,18 @@
-use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
 
 use crate::context::{
-    Context, ensure_ignored, read_plaintext, read_repo_file, secret_paths_for, write_repo_file,
+    Context, ensure_ignored, read_plaintext, read_repo_file, secret_paths_for, write_epoch,
+    write_repo_file,
 };
+use crate::epoch::{self, Epoch};
 use crate::keyring::{GpgKey, ResolvedKeys};
-use crate::outcome::{Level, Outcome, SecretStatus, StatusReport, Warning};
+use crate::outcome::{Outcome, Warning};
 use crate::{Error, audit, git, identity, keyring, paths, secret, users};
 
-const GITATTRIBUTES_LINES: [&str; 3] = [
+const GITATTRIBUTES_LINES: [&str; 4] = [
     "*.amaga binary",
+    ".amaga/epochs/* binary",
     ".amaga/audit.jsonl merge=union",
     ".gitignore merge=union",
 ];
@@ -56,6 +58,11 @@ pub fn cmd_init(dir: &Path, name: &str, keys: &[String]) -> Result<Option<GpgKey
     fs::create_dir_all(&users_dir)?;
     users::write_member(&users_dir, name, &resolved)?;
 
+    let members = users::Members::from([(name.to_string(), users::member_from_keys(&resolved))]);
+    let first_epoch = Epoch::generate(users::recipients(&members));
+    write_epoch(&root, &members, &first_epoch)?;
+    epoch::write_pointer(&root, &first_epoch.id())?;
+
     let gpg_info = resolved
         .gpg
         .as_ref()
@@ -75,7 +82,7 @@ pub fn cmd_init(dir: &Path, name: &str, keys: &[String]) -> Result<Option<GpgKey
 /// `git-amaga add [--force] <path>…` (plan 7).
 pub fn cmd_add(dir: &Path, force: bool, args: &[String]) -> Result<Outcome, Error> {
     let mut ctx = Context::load(dir)?;
-    let current = users::recipients(&ctx.members);
+    ctx.require_up_to_date()?;
     let mut outcome = Outcome::default();
 
     for arg in args {
@@ -110,7 +117,7 @@ pub fn cmd_add(dir: &Path, force: bool, args: &[String]) -> Result<Outcome, Erro
 
         ensure_ignored(&ctx.root, &sp.plaintext)?;
         let body = read_repo_file(&ctx.root, &sp.plaintext)?;
-        let header = secret::next_header(None, false, &current);
+        let header = secret::next_header(None, false, &ctx.current_epoch()?.members);
         let ciphertext = ctx.encrypt(&header, &body)?;
         write_repo_file(&ctx.root, &sp.ciphertext, &ciphertext, None)?;
         ctx.set_base(&sp.plaintext, &body)?;
@@ -123,12 +130,12 @@ pub fn cmd_add(dir: &Path, force: bool, args: &[String]) -> Result<Outcome, Erro
 /// `git-amaga seal [--force] [<path>…]` (plan 7).
 pub fn cmd_seal(dir: &Path, force: bool, args: &[String]) -> Result<Outcome, Error> {
     let mut ctx = Context::load(dir)?;
-    let current = users::recipients(&ctx.members);
+    ctx.require_up_to_date()?;
     let mut outcome = Outcome::default();
 
     for sp in secret_paths_for(&ctx, args, true, &mut outcome.warnings)? {
         let ciphertext = read_repo_file(&ctx.root, &sp.ciphertext)?;
-        let (old_header, old_body) = ctx.decrypt(&sp.ciphertext, &ciphertext)?;
+        let (old_header, old_body, old_epoch) = ctx.decrypt(&sp.ciphertext, &ciphertext)?;
         ensure_ignored(&ctx.root, &sp.plaintext)?;
         let Some(local) = read_plaintext(&ctx.root, &sp.plaintext)? else {
             continue;
@@ -158,7 +165,11 @@ pub fn cmd_seal(dir: &Path, force: bool, args: &[String]) -> Result<Outcome, Err
             }
         }
 
-        let new_header = secret::next_header(Some(&old_header), true, &current);
+        let new_header = secret::next_header(
+            Some((&old_header, &old_epoch.members)),
+            true,
+            &ctx.current_epoch()?.members,
+        );
         let new_ciphertext = ctx.encrypt(&new_header, &local)?;
         write_repo_file(&ctx.root, &sp.ciphertext, &new_ciphertext, None)?;
         ctx.set_base(&sp.plaintext, &local)?;
@@ -175,7 +186,7 @@ pub fn cmd_open(dir: &Path, force: bool, args: &[String]) -> Result<Outcome, Err
 
     for sp in secret_paths_for(&ctx, args, false, &mut outcome.warnings)? {
         let ciphertext = read_repo_file(&ctx.root, &sp.ciphertext)?;
-        let (_header, body) = ctx.decrypt(&sp.ciphertext, &ciphertext)?;
+        let (_header, body, _epoch) = ctx.decrypt(&sp.ciphertext, &ciphertext)?;
         if git::is_tracked(&ctx.root, &sp.plaintext)? {
             return Err(Error::PlaintextTracked(sp.plaintext));
         }
@@ -215,7 +226,7 @@ pub fn cmd_close(dir: &Path, args: &[String]) -> Result<Outcome, Error> {
             continue;
         };
         let ciphertext = read_repo_file(&ctx.root, &sp.ciphertext)?;
-        let (_header, body) = ctx.decrypt(&sp.ciphertext, &ciphertext)?;
+        let (_header, body, _epoch) = ctx.decrypt(&sp.ciphertext, &ciphertext)?;
 
         let state =
             secret::plaintext_state(Some(&local), &body, ctx.base.get(&sp.plaintext).copied());
@@ -230,147 +241,4 @@ pub fn cmd_close(dir: &Path, args: &[String]) -> Result<Outcome, Error> {
         outcome.changed.push(sp.plaintext);
     }
     Ok(outcome)
-}
-
-const UNMERGED: &str = "unmerged; resolve the conflict and `git add` the file";
-
-/// `git-amaga status` (plan 7.2): problems first; the caller exits 1 if `error_count` > 0.
-pub fn cmd_status(dir: &Path) -> Result<StatusReport, Error> {
-    let ctx = Context::load_allowing_unmerged(dir)?;
-    let unmerged = git::unmerged_secrets(&ctx.root)?;
-    let current = users::recipients(&ctx.members);
-
-    let mut warnings = Vec::new();
-    let mut statuses = Vec::new();
-    let secrets = secret_paths_for(&ctx, &[], false, &mut warnings)?;
-    for sp in &secrets {
-        statuses.push(secret_status(&ctx, sp, &unmerged, &current)?);
-    }
-    // Unmerged files that are not listed above (deleted from the worktree, or invalid paths).
-    for path in unmerged
-        .iter()
-        .filter(|p| !secrets.iter().any(|s| &s.ciphertext == *p))
-    {
-        statuses.push(SecretStatus {
-            level: Level::Error,
-            path: path.clone(),
-            messages: vec![UNMERGED.into()],
-        });
-    }
-    statuses.sort_by_key(|status| status.level);
-    Ok(StatusReport {
-        members: identity::member_summary(&ctx.members, false),
-        secrets: statuses,
-        warnings,
-    })
-}
-
-// The messages of one secret. Undecryptable secrets report no state.
-fn secret_status(
-    ctx: &Context,
-    sp: &paths::SecretPath,
-    unmerged: &[String],
-    current: &secret::Recipients,
-) -> Result<SecretStatus, Error> {
-    let mut errors = Vec::new();
-    let mut warnings = Vec::new();
-    let mut ok = "in sync";
-    let plaintext = &sp.plaintext;
-
-    if !git::text_is_unset(&ctx.root, &sp.ciphertext)? {
-        errors.push("`text` attribute is not unset; add `*.amaga binary` to .gitattributes".into());
-    }
-    if git::is_tracked(&ctx.root, plaintext)? {
-        let fix = format!("run `git rm --cached -- {plaintext}`");
-        errors.push(format!(
-            "CRITICAL plaintext '{plaintext}' is tracked; {fix}"
-        ));
-    }
-    if !git::is_ignored(&ctx.root, plaintext)? {
-        let fix = "run `git-amaga seal` or `open`, or add it to .gitignore";
-        errors.push(format!(
-            "CRITICAL plaintext '{plaintext}' is not ignored; {fix}"
-        ));
-    }
-
-    if unmerged.contains(&sp.ciphertext) {
-        errors.push(UNMERGED.into());
-    } else {
-        let decrypted = read_repo_file(&ctx.root, &sp.ciphertext)
-            .and_then(|ciphertext| ctx.decrypt(&sp.ciphertext, &ciphertext));
-        match decrypted {
-            Err(e) => errors.push(without_path(e)),
-            Ok((header, body)) => {
-                if key_set(&header.recipients) != key_set(current) {
-                    errors.push("stale recipients; run git-amaga rotate".into());
-                }
-                if !header.exposed_to.is_empty() {
-                    let names: Vec<&str> = header.exposed_to.keys().map(String::as_str).collect();
-                    warnings.push(format!("NEEDS ROTATION: exposed to {}", names.join(", ")));
-                }
-                match read_plaintext(&ctx.root, plaintext) {
-                    Err(e) => errors.push(e.to_string()),
-                    Ok(local) => {
-                        let base = ctx.base.get(plaintext).copied();
-                        let state = secret::plaintext_state(local.as_deref(), &body, base);
-                        if state == secret::PlaintextState::Closed {
-                            ok = "closed";
-                        }
-                        errors.extend(state_problem(plaintext, state));
-                    }
-                }
-            }
-        }
-    }
-
-    let level = match (errors.is_empty(), warnings.is_empty()) {
-        (false, _) => Level::Error,
-        (true, false) => Level::Warn,
-        (true, true) => Level::Ok,
-    };
-    errors.extend(warnings);
-    if errors.is_empty() {
-        errors.push(ok.into());
-    }
-    Ok(SecretStatus {
-        level,
-        path: sp.ciphertext.clone(),
-        messages: errors,
-    })
-}
-
-// The status line already starts with the secret's path; drop the copy inside the error.
-fn without_path(e: Error) -> String {
-    match e {
-        Error::SecretUndecryptable {
-            member: Some(member),
-            source,
-            ..
-        } => format!("member {member}: {source}"),
-        Error::SecretUndecryptable { source, .. } => source.to_string(),
-        Error::IoPath { source, .. } => source.to_string(),
-        Error::NotARegularFile(_) => "not a regular file".into(),
-        e => e.to_string(),
-    }
-}
-
-fn state_problem(plaintext: &str, state: secret::PlaintextState) -> Option<String> {
-    let (what, fix) = match state {
-        secret::PlaintextState::Closed | secret::PlaintextState::InSync => return None,
-        secret::PlaintextState::Modified => ("has local edits", "run `git-amaga seal`"),
-        secret::PlaintextState::Outdated => (
-            "is outdated",
-            "`git-amaga open` replaces it, `seal --force` keeps it",
-        ),
-        secret::PlaintextState::Conflict => (
-            "conflicts with the repository",
-            "`seal --force` keeps yours, `open --force` takes theirs",
-        ),
-    };
-    Some(format!("'{plaintext}' {what}; {fix}"))
-}
-
-// Stale means a different set of keys; member names are only labels (plan 5.2).
-fn key_set(recipients: &secret::Recipients) -> BTreeSet<&str> {
-    recipients.values().flatten().map(String::as_str).collect()
 }

@@ -9,15 +9,15 @@ credentials rotated after someone lost access. Members hold either an age key or
 **Runtime dependencies:** the `git` executable. Members who decrypt with a GPG key also need `gpg`
 (2.1+, with gpg-agent). Nobody needs the `age` CLI, and age-only members never need `gpg`.
 
-**Decision records:** the decisions below are summarised as ADRs in [`docs/adrs/README.md`](docs/adrs/README.md).
+**Decision records:** the decisions below are summarised as ADRs in [`README.md`](README.md).
 
 ## 1. Changes from the original plan
 
 | # | Change | Reason |
 |---|--------|--------|
-| 1 | Each secret is one `age` file encrypted directly to all current recipients. Dropped epochs, `current_epoch`, `key.age`, HKDF, XChaCha20-Poly1305 and the custom binary container. | Removes a hand-built crypto composition and a whole class of "mixed epoch" states. Membership changes still rewrite every secret, as before. Trade-offs are covered in section 4. |
-| 2 | Replaced `content_generation` / `last_exposure_*` with one rule: every write records the recipient set. A rewrite that drops recipients without changing the plaintext adds them to `exposed_to`. A plaintext change clears `exposed_to`. | Gives the same results for the original scenarios. It also handles cases the original missed: secrets merged in from a branch that still include a removed user, interrupted removals, and hand-edited membership. |
-| 3 | Dropped the transaction journal and the `recover` command. Every secret is decrypted first, then membership is changed, then secrets are rewritten. If the run is interrupted, `status` reports "stale recipients" and running `rotate` again finishes the job. | `rotate` is idempotent, and Git already keeps the previous state. No local journal is needed. |
+| 1 | Each secret is a standard `age` file encrypted to the current **epoch**'s X25519 public key. An epoch's secret key is itself an age file, `.amaga/epochs/<public key>.age`, encrypted to every member key; `.amaga/current-epoch` names the current epoch (ADR-0015, superseding per-file age, ADR-0003). Dropped HKDF, XChaCha20-Poly1305 and the custom binary container of the original epoch design. | Standard age only, with no hand-built crypto composition. One gpg call per command instead of one per secret, and `user add` rewrites one file instead of every secret. Trade-offs are covered in section 4. |
+| 2 | Replaced `content_generation` / `last_exposure_*` with one rule: every epoch records the member key set it is wrapped to. Rewriting a secret into an epoch that lacks some keys of its old epoch, without changing the plaintext, adds those keys to `exposed_to`. A plaintext change clears `exposed_to`. | Gives the same results for the original scenarios. It also handles cases the original missed: secrets merged in from a branch that still include a removed user, interrupted removals, and hand-edited membership. |
+| 3 | Dropped the transaction journal and the `recover` command. Every secret is decrypted first, then membership is changed, the new epoch is written, secrets are rewritten and `.amaga/current-epoch` moves last. If the run is interrupted, `status` reports "stale recipients" and running `rotate` again finishes the job. | `rotate` is idempotent, and Git already keeps the previous state. No local journal is needed. |
 | 4 | Audit log is now plain append-only JSONL with `merge=union`. Dropped `seq`, the hash chain, `audit verify` and `audit show`. | The hash chain breaks on any two branches that both append (both lines get `seq` N+1 with the same `prev_hash`). Git commits already provide tamper evidence relative to a known head. Union merge verified with git 2.x. |
 | 5 | Dropped the local `.git/amaga/config.toml` and `actor_user_id`. The identity path comes from `git config amaga.identity`. The actor is the member whose public key matches the loaded identity. | `.git` is a file in worktrees and submodules. Git config is the native mechanism and can be overridden with `git -c`. |
 | 6 | Added `keygen`, which generates an X25519 identity in-process. | Without it, users would need `age-keygen` installed, and the binary would not be self-contained. |
@@ -30,26 +30,31 @@ credentials rotated after someone lost access. Members hold either an age key or
 | 13 | `add` warns if the plaintext path already appears in Git history, and refuses without `--force` if `<path>.amaga` does. | The first warning prevents a false sense of safety for values that are already public. The refusal stops a delete-then-re-add from silently dropping `exposed_to`. One `git rev-list` call each. |
 | 14 | Specified the release build: static musl binary on Linux, `+crt-static` on Windows MSVC. | This is what "self-contained" means in practice. |
 | 15 | Removed duplicated rule lists (invariants, definition of done, guidance, error list). Each rule now appears once, next to the behaviour it governs. | Shorter, and nothing can drift out of sync. |
-| 16 | GPG members: each secret stays one age file, and a GPG member gets an extra `pgp` stanza holding the age file key encrypted to their OpenPGP key (5.2.1). Encryption is in-process with rPGP; decryption runs `gpg --decrypt`. | Requested: the user's own keys are GPG (smartcards via gpg-agent), with age as an option. One file format and one set of rules; `age -d` keeps working for age members; age-only members never need gpg. Considered: a separate `.gpg` file per secret (two formats, two exposure states) and OpenPGP as the outer format (loses the age escape hatch). |
+| 16 | GPG members: each epoch file stays one age file, and a GPG member gets an extra `pgp` stanza holding the age file key encrypted to their OpenPGP key (5.2.1). Encryption is in-process with rPGP; decryption runs `gpg --decrypt`. | Requested: the user's own keys are GPG (smartcards via gpg-agent), with age as an option. One file format and one set of rules; `age -d` keeps working for age members; age-only members never need gpg. Considered: a separate `.gpg` file per secret (two formats, two exposure states) and OpenPGP as the outer format (loses the age escape hatch). |
 | 17 | A GPG key is identified by its **encryption subkey** fingerprint (`pgp:<FPR>`), not the primary. | Replacing a lost card's subkey is then a key change: secrets go stale and `rotate` flags exposure, exactly as for a removed age key. Extending expiry keeps the fingerprint, so it changes nothing. |
 | 18 | GPG key expiry is checked only at `init`/`user add`. Structure, signatures and revocation are checked on every load. | Loading stays deterministic (no clock), and an expired key still decrypts in gpg. See decision 9. |
 | 19 | A `KEY` can be a GPG key ID, fingerprint or email: the tool looks it up in the local keyring and exports it export-minimal (7.4). `keygen` prints the `user add` line for the new age key. | Requested: users should not type `gpg`/`age` commands, and the tool then always stores the right export format. ADR-0013. |
+| 20 | Added `dismiss [--user <name>]… [<path>…]`: removes members from `exposed_to` without a plaintext change and audits `exposure.dismissed` (ADR-0016). | Requested: a removed member's keys can be known to be destroyed, and a routine key swap (decision 5) should not leave flags that only a content change clears. |
+| 21 | Format version 2 (secret and epoch headers `"v":2`). Repositories and secrets written by 0.1.0 fail with an error; there is no migration. | The project has no users yet. |
 
 ## 2. Open decisions for the user
 
 Defaults are already chosen in this plan. Each item below can be flipped.
 
-1. **Per-file age instead of epoch keys.** Choose epochs instead only if you need "only members can produce valid ciphertext". That property does not hold against repository writers anyway (section 4).
+1. **`user add` reuses the current epoch (ADR-0015).** The newcomer can read every version committed under that epoch, back to the last `rotate` or `user remove`. Run `rotate` before `user add` to prevent that. The alternative, a new epoch per `user add`, rewrites every secret.
 2. **SSH `ssh-ed25519` recipients are deferred.** age's `ssh` feature adds `aes`, `cbc` and `bcrypt-pbkdf`, and decrypts `ssh-rsa` identities in-process. `rsa 0.9` is already in the tree via `pgp`, but only for public-key encryption and signature verification. RUSTSEC-2023-0071 (Marvin) is a timing attack on RSA *private-key* operations, which this tool never performs (gpg does GPG decryption). `ssh-rsa` identities would change that.
 3. **Release targets:** `x86_64-unknown-linux-musl` and `x86_64-pc-windows-msvc`. Possible additions: macOS (aarch64/x86_64) and aarch64 Linux.
 4. **`status` exit code:** "needs rotation" alone exits 0. It is a known, tracked condition and could last weeks. Everything else that `status` flags exits 1.
-5. **Changing an existing member's key:** edit `.amaga/users/<name>.txt` or replace `<name>.asc`, then run `rotate`. Removing any key marks secrets exposed to that member, which is conservative: correct for a lost device, noisy for a routine swap. The alternative is a `user key add/remove` subcommand that can skip marking. The same rule means a removed user who is later re-added stays in `exposed_to` until each file's content changes.
+5. **Changing an existing member's key:** edit `.amaga/users/<name>.txt` or replace `<name>.asc`, then run `rotate`. Removing any key marks secrets exposed to that member, which is conservative: correct for a lost device, noisy for a routine swap. When the old key is known to be safe, `dismiss --user <name>` clears the flags (ADR-0016). The same rule means a removed user who is later re-added stays in `exposed_to` until each file's content changes or the flag is dismissed.
 6. **Audit log as a separate file vs `git log` only.** Kept because the goal names it. It is informational (unsigned, editable) and is not a security control.
 7. **Dropping `audit verify` and the hash chain.** Both were in the original scope. The chain cannot survive two branches that both append (change 4), and a writer who can rewrite history can recompute it anyway. Restoring it means either forbidding parallel security changes or adding a merge-repair command.
-8. **`open` vs `unlock`.** You called the decrypt-all command `unlock`. The plan keeps `open` because it pairs with `seal`/`close`. Renaming it, or adding a clap alias, is one line.
+8. **`open` vs `unlock`.** The commands stay `open`/`seal`, which pair with `close`; `unlock` and `lock` are visible clap aliases of `open` and `seal`.
 9. **Expired GPG keys (change 18).** By default, a key that expires after `user add` is still encrypted to. The alternative is to refuse, as `gpg -e` does. That blocks every `seal` and `rotate` for the whole team until the member re-exports an extended key. It also makes loading depend on the clock.
 10. **Confirming a looked-up GPG key (change 19).** By default the tool prints the fingerprint and user ID it used and does not prompt. The alternative is a yes/no prompt before writing, which blocks scripting. The printed line, the audit event and the committed `.asc` diff are the review points.
 11. **Fetching GPG keys from the network.** By default the lookup reads only the local keyring. Fetching from a keyserver or WKD (`gpg --locate-keys`) is deferred (section 13): the key would still need out-of-band verification, which the user does by importing it first.
+12. **Bare `dismiss` is refused.** At least one path or `--user` is required, so one mistyped command cannot clear all tracking. The alternative is "no arguments means everything", as for `open`.
+13. **Old epoch files are kept forever.** A secret merged from an older branch, or left by an interrupted run, stays readable. Pruning is deferred (section 13); each file is a few hundred bytes per member.
+14. **Writes while the epoch is stale.** `add`, `seal`, `user add` and `dismiss` refuse whenever the current epoch's key set differs from `.amaga/users`, even when members were only added. Allowing the additions-only case would save one `rotate`, at the cost of a second rule.
 
 ## 3. Principles and scope
 
@@ -67,34 +72,44 @@ Out of scope for v1: per-file ACLs, rotating external credentials, a key server/
 
 **Guarantees**
 - People who can read the repository without a member identity cannot decrypt current secrets.
-- After `user remove X`, every secret in the working tree is re-encrypted without X's keys.
-- A newly added member cannot decrypt ciphertext from history before they were added. It was never encrypted to them.
-- Modified ciphertext fails authentication (age payload AEAD and header MAC).
-- Every secret that a removed key could have read is flagged until its content changes.
+- After `user remove X`, every secret in the working tree is re-encrypted to a new epoch whose key is not wrapped to X.
+- A newly added member cannot decrypt ciphertext from epochs that ended before they were added (decision 1).
+- Modified ciphertext fails authentication (age payload AEAD and header MAC), for secrets and epoch files alike.
+- Every secret that a removed key could have read, through an epoch wrapped to that key, is flagged until its content changes or the flag is dismissed.
 - Plaintext that is tracked or not ignored is reported as critical.
 
 **Limitations (README and `--help`)**
-- A removed user keeps any plaintext they saw, and can still decrypt historical commits from when they were a member. Only rotating the external credential fixes that. The tool can only flag it.
-- age has no sender authentication. Anyone with write access can replace user files or forge ciphertext. Use branch protection, review and signed commits. The original design had the same exposure via `users/` and `key.age`.
-- A compromised member identity exposes everything that member can read.
-- The audit log is informational. Its integrity is whatever Git history gives you.
+- A removed user keeps any plaintext they saw, and can still decrypt historical commits from epochs they were in. Only rotating the external credential fixes that. The tool can only flag it.
+- A member added by `user add` can decrypt every version committed under the current epoch, including versions from before they joined (decision 1).
+- age has no sender authentication. Anyone with write access can replace user files, epoch files or `current-epoch`, or forge ciphertext. Use branch protection, review and signed commits. The original design had the same exposure via `users/` and `key.age`.
+- A compromised member identity exposes everything that member can read. A leaked epoch secret key exposes every secret version under that epoch; `rotate` moves to a new one.
+- The audit log is informational. Its integrity is whatever Git history gives you. `dismiss` is a human assertion recorded there, not a check.
 - GPG keys come only from the committed `.asc` files. `init`/`user add` may export a key from the local public keyring (7.4), but loading never reads the keyring, and the tool never contacts a keyserver. A revocation or a new subkey takes effect when the member commits a re-exported `.asc` and someone runs `rotate`.
 - A GPG key that expires after `user add` is still encrypted to (decision 9).
-- GPG decryption trusts the `gpg` on PATH and its agent. It costs one `gpg` call per secret: `open`, `status` and `rotate` on N secrets mean N calls. The agent caches the PIN, but a card set to touch-always needs one touch per file.
-- Manual escape hatch: age members can use `age -d`. GPG members cannot decrypt without the tool, because the age CLI cannot take a file key that gpg has unwrapped.
+- GPG decryption trusts the `gpg` on PATH and its agent. It costs one `gpg` call per command (the current epoch), plus one per older epoch while a secret is still under it. A card set to touch-always needs one touch per command.
+- Manual escape hatch for age members, two `age -d` commands (the epoch key goes to a private temporary file outside the repository, so it cannot be committed; delete it afterwards):
 
-**Per-file age vs epoch keys (decision 1)**
+  ```sh
+  k=$(mktemp)
+  age -d -i ~/.config/git-amaga/identity.txt ".amaga/epochs/$(cat .amaga/current-epoch).age" | tail -n +2 > "$k"
+  age -d -i "$k" secrets/prod.env.amaga | tail -n +2 > secrets/prod.env
+  rm "$k"
+  ```
 
-Per-file age loses three things:
-- Forgery resistance. Moot here: writers are not trusted anyway.
-- Recipient-set visibility without decrypting. X25519 stanzas are anonymous, so the set is recorded inside the encrypted header and `status` needs an identity. (`pgp` stanzas name their subkey, but that fingerprint is already public in `.amaga/users`.)
-- About 100 bytes per recipient per file.
+  `tail` drops the one-line JSON header of each payload. A secret under an older epoch needs that epoch's file instead. GPG members cannot decrypt without the tool, because the age CLI cannot take a file key that gpg has unwrapped.
 
-Per-file age gains:
-- No custom container, KDF or AEAD composition.
-- No epoch directory or current-epoch pointer.
-- No mixed-epoch state.
-- Interoperability: `age -d -i key.txt f.amaga | tail -n +2` recovers the plaintext for age members.
+**Epoch keys vs per-file age (decision 1, ADR-0015)**
+
+Epoch keys gain:
+- One gpg call (one card touch) per command instead of one per secret.
+- `user add` rewrites one epoch file instead of every secret.
+- Secrets are one X25519 stanza each, whatever the team size.
+
+Epoch keys lose:
+- History privacy from newcomers under the current epoch (decision 1).
+- A two-step escape hatch instead of one `age -d`.
+- Two more kinds of file (`.amaga/epochs/`, `.amaga/current-epoch`); the directory grows by one file per `rotate`/`user remove`.
+- Recipient-set visibility without decrypting is still missing: X25519 stanzas are anonymous, so the member set is recorded inside the encrypted epoch payload, and a secret's epoch is found by trying keys.
 
 ## 5. On-disk formats
 
@@ -103,8 +118,10 @@ repo/
 ├── .amaga/
 │   ├── users/alice.txt          # age recipients file: "age1…" per line, '#' comments, blank lines ok
 │   ├── users/bob.asc            # one armored OpenPGP public key (gpg --export --armor --export-options export-minimal)
+│   ├── epochs/age1….age         # one per epoch: its secret key, age-encrypted to every member (5.6); never deleted
+│   ├── current-epoch            # one line: the current epoch's public key
 │   └── audit.jsonl              # append-only, merge=union
-├── .gitattributes               # "*.amaga binary", ".amaga/audit.jsonl merge=union", ".gitignore merge=union"
+├── .gitattributes               # "*.amaga binary", ".amaga/audit.jsonl merge=union", ".gitignore merge=union", ".amaga/epochs/* binary"
 ├── .gitignore                   # managed block, see 5.4
 └── secrets/prod.env.amaga       # tracked ciphertext; secrets/prod.env is ignored plaintext
 ```
@@ -125,23 +142,26 @@ repo/
   - a member with zero keys;
   - the same key string, or the same OpenPGP primary fingerprint, appearing twice anywhere across all users;
   - no user files at all.
-- The set of user files *is* the current membership. There is no other pointer.
+- The set of user files *is* the current membership. The current epoch records which of these keys it is wrapped to (5.6); when the two differ, the epoch is stale.
 
 ### 5.2 Secret file (`*.amaga`)
 
-A standard binary age file encrypted to every member key: X25519 stanzas for `.txt` keys, `pgp` stanzas (5.2.1) for `.asc` keys. The decrypted payload is:
+A standard binary age file encrypted to exactly one recipient: the current epoch's X25519 public key (5.6). The decrypted payload is:
 
 ```text
-{"v":1,"recipients":{"alice":["age1…"],"bob":["pgp:97509ABD…"]},"exposed_to":{"charlie":["age1…"]}}\n
+{"v":2,"exposed_to":{"charlie":["age1…"]}}\n
 <body: the plaintext bytes, arbitrary binary>
 ```
 
 - The header is one compact JSON line (serde_json never emits a raw newline).
-- Parse rules: split at the first `\n`, use `deny_unknown_fields`, `v` must be `1` or it is an error and the file is not modified. `exposed_to` is omitted when empty.
-- Both maps are `BTreeMap<String, BTreeSet<String>>` (user name → key strings, 5.1).
-- "Stale": the header's key set differs from the current key set. Compare keys only; names are just labels.
+- Parse rules: split at the first `\n`, use `deny_unknown_fields`, `v` must be `2` or it is an error (`UnsupportedVersion`; 0.1.0 secrets have `v` 1) and the file is not modified. `exposed_to` is omitted when empty, so a new secret's header is `{"v":2}`.
+- `exposed_to` is a `BTreeMap<String, BTreeSet<String>>` (user name → key strings, 5.1).
+- The header does not name the epoch: a secret is under the epoch whose key decrypts it (5.6).
+- "Stale": the secret is under a non-current epoch, or the current epoch is not up to date (5.6). Compare keys only; names are just labels.
 
 ### 5.2.1 `pgp` stanza
+
+Used in epoch files only (5.6); a secret has a single X25519 stanza.
 
 ```text
 -> pgp <FPR>
@@ -166,6 +186,7 @@ One JSON object per line, written by the tool and never parsed by it:
   - `user.added` / `user.removed` (with `user`)
   - `rotated`
   - `secret.added` / `secret.updated` / `secret.removed` (with `path`)
+  - `exposure.dismissed` (with `path` and `user`), one per secret and member (`dismiss`, ADR-0016)
 - `init` and `user.added` also carry `gpg_fpr` (primary fingerprint) and `gpg_uid` (first user ID) when the member has an `.asc`, read from the validated key whether it came from a file or from the keyring (7.4).
 - `secret.updated` means the plaintext changed. It is never written for a re-encryption.
 - Time is UTC RFC 3339, from `SystemTime`, using a ~15-line days-to-civil conversion with a unit test. This avoids a dependency for one formatter.
@@ -191,27 +212,48 @@ One JSON object per line, written by the tool and never parsed by it:
 - **age identity:** `git config --type=path amaga.identity` (any scope, `~` expanded) holds the path to an age identity file. If it is unset, use the `keygen` default path when that file exists. Only `AGE-SECRET-KEY-1…` lines are accepted, and the file may contain several. Parse each line with `x25519::Identity::from_str`, so the public keys are available for matching the actor.
 - **GPG identity:** probed only when no age identity matches a member, so age users never start gpg. For each `.asc` member, run `gpg --list-secret-keys --with-colons <PRIMARY-FPR>`. Exit 0 means held, card stubs included; any other exit means not held (verified: exit 2 for a public-only key and for an unknown key). If spawning fails with `NotFound`, gpg is absent and every GPG member is skipped silently.
 - **Actor:** the member matching an age identity, or else the first held GPG member by name. If there is none, the error is `NotAMember`. It lists each member with its key kinds and the remediation: `keygen` and have a member run `user add`, set `amaga.identity`, or import your GPG secret key / insert your card. It adds "gpg not found on PATH" when `.asc` members exist and gpg was absent.
-- **Decryption identities:** age identities first, then one `GpgIdentity` for the held members. age takes the first identity that claims any stanza (`find_map` over identities in `Decryptor::decrypt`), so gpg runs only when no age identity matches.
+- **Decryption identities:** age identities first, then one `GpgIdentity` for the held members. They unwrap epoch files only (5.6); secrets are decrypted in-process with the epoch's identity. age takes the first identity that claims any stanza (`find_map` over identities in `Decryptor::decrypt`), so gpg runs only when no age identity matches.
 - **Base hashes:** stored at `$(git rev-parse --path-format=absolute --git-path amaga-base)`. Verified: in a linked worktree this resolves to `.git/worktrees/<wt>/amaga-base`, i.e. per worktree.
 - Base file format: lines of `<sha256-hex> <repo-relative-path>`, rewritten atomically. It records the SHA-256 of the body the local plaintext was last synchronised with.
 
+### 5.6 Epochs (ADR-0015)
+
+- An epoch is a key pair from `x25519::Identity::generate()`. Its id is its public key string (`age1…`, lowercase bech32, so safe on case-insensitive filesystems and unique across branches).
+- **Epoch file** `.amaga/epochs/<age1…>.age`: a standard binary age file encrypted to every member key, X25519 stanzas for `.txt` keys and `pgp` stanzas (5.2.1) for `.asc` keys. Payload:
+
+  ```text
+  {"v":2,"members":{"alice":["age1…"],"bob":["pgp:97509ABD…"]}}\n
+  AGE-SECRET-KEY-1…\n
+  ```
+
+  - Header rules as in 5.2. `members` is the `Recipients` map (5.1) of the keys the file is wrapped to. It is the exposure record (6.1); names are labels.
+  - Body: exactly one `AGE-SECRET-KEY-1…` line (`\r` stripped). Its public key must equal the file name, otherwise `EpochInvalid`.
+  - Written by `init`, `rotate` and `user remove`; rewritten in place (same key, members plus one) only by `user add`. Never deleted (decision 13).
+- **Pointer** `.amaga/current-epoch`: one line, the current epoch's public key (`\r` stripped). Missing → `NoEpoch` (a 0.1.0 repository, or an interrupted `init`). Unparsable, or naming a missing epoch file → `EpochInvalid`.
+- Names in `.amaga/epochs/` other than `<age1…>.age` are ignored, for example an `.amaga-tmp` left by an interrupted write.
+- **Unwrapping** uses the member identities (5.5). The current epoch is unwrapped at most once per command, the first time the command needs it; a failure aborts the command with `EpochUndecryptable`, naming the epoch file and, for a gpg failure, the member. A secret the current epoch cannot decrypt (`NoMatchingKeys`) is tried against the other epoch files in name order, each unwrapped at most once per command; epochs without a stanza for the actor fail without spawning gpg. If none decrypts it, that secret fails.
+- **Up to date:** the current epoch's member key set equals the key set of `.amaga/users`. Otherwise the epoch is stale.
+- `.gitattributes` gets `.amaga/epochs/* binary` for the same reason as `*.amaga binary` (change 8). `current-epoch` stays text, so a conflict on it is visible in diffs.
+
 ## 6. Core rules (pure functions, unit-tested)
 
-### 6.1 Exposure rule: `next_header(old: Option<&Header>, plaintext_changed: bool, current: &Recipients) -> Header`
+### 6.1 Exposure rule: `next_header(old: Option<(&Header, &Recipients)>, plaintext_changed: bool, new_members: &Recipients) -> Header`
+
+`old` pairs the file's current header with the `members` of the epoch that decrypted it; `new_members` are the `members` of the epoch the file is written to (5.6).
 
 ```text
-recipients = current
 exposed_to = if old is None or plaintext_changed: {}
-             else: old.exposed_to ∪ { (user, key) in old.recipients | key ∉ keys(current) }
+             else: old.header.exposed_to ∪ { (user, key) in old.members | key ∉ keys(new_members) }
 ```
 
-Every ciphertext write goes through this function. Consequences:
+Every secret write goes through this function (`dismiss` then removes the dismissed names, ADR-0016). Consequences:
 
 - `user remove` flags every existing secret.
-- `rotate` / `user add` change nothing.
+- `rotate` changes nothing; `user add` rewrites no secret.
 - An edited and sealed file is cleared.
 - A secret added after a removal is never flagged.
-- A file merged in from a branch that still lists the removed user gets flagged on the next `rotate`.
+- A file merged in from a branch, still under an epoch wrapped to the removed user, gets flagged on the next `rotate`.
+- Rewriting under the same epoch (e.g. `dismiss` of an up-to-date secret) adds nothing.
 
 ### 6.2 Plaintext state: `plaintext_state(P: Option<&[u8]>, C: &[u8], B: Option<Hash>) -> State`
 
@@ -237,13 +279,16 @@ Path handling:
 - The managed secret list is `git ls-files -z --cached --others --exclude-standard -- '*.amaga'`, deduplicated (an unmerged path appears once per stage) and filtered to files that exist. In no-argument mode, listed paths that fail the validation above are skipped with a warning on stderr.
 - For `seal`, `open` and `close`, an explicit path whose `<path>.amaga` does not exist is refused (not a managed secret; use `add`).
 - Every command except `status` refuses while `git ls-files -u -- '*.amaga'` is non-empty. `status` lists the unmerged files.
+- Every command that loads the repository, `status` included, refuses while `git ls-files -u -- .amaga/current-epoch .amaga/epochs` is non-empty: `UnmergedEpoch`, listing the paths, with the hint `git checkout --ours -- <paths> && git add <paths>`, then `git-amaga rotate` (section 8).
 
 Every ciphertext, plaintext and base-file write goes through one helper:
 1. Write `<path>.amaga-tmp`. On Unix, plaintext temp files are created with mode `0600`.
 2. `sync_all`.
 3. `std::fs::rename` (replaces the target on Windows too).
 
-Commands that need an identity load it once (5.5), and the actor comes from it. Encryption never needs gpg or any identity beyond that.
+Commands that need an identity load it once (5.5), and the actor comes from it. Encrypting a secret needs only the public key in `current-epoch`, and wrapping an epoch only the member keys; neither needs gpg. Decryption unwraps epochs as in 5.6.
+
+**Stale guard:** `add`, `seal`, `user add` and `dismiss` first require the current epoch to be up to date (5.6), else `EpochStale` ("`.amaga/users` differs from the current epoch; run `git-amaga rotate` first"). This unwraps the current epoch. It keeps new content away from a key that was removed by hand (ADR-0012) and keeps `user add` from re-wrapping an epoch that a removed key can still open.
 
 `KEY` arguments (`init`, `user add`) are classified in this order (ADR-0013):
 1. Starts with `age1`: an age recipient.
@@ -255,28 +300,31 @@ At most one OpenPGP key (file or lookup) is allowed per member. It must pass 5.1
 | Command | Behaviour |
 |---------|-----------|
 | `keygen [PATH]` | Generate `x25519::Identity`. Default path is `home_dir()/.config/git-amaga/identity.txt`. Refuse to overwrite. Write `# public key: age1…` followed by the secret key (0600 on Unix). If `amaga.identity` is unset in global config, set it. Print the public key on stdout (kept alone so scripts can capture it), then on stderr: `to join a repository, send this to a member: git-amaga user add <name> age1…` with the real key. |
-| `init <name> [KEY…]` | Requires a Git repo and no `.amaga/`. With no `KEY`, use the configured age identity's public keys (error if there is none). `KEY`s follow the rules above, so `init alice alice@example.org` works with a key in the local keyring. Writes `users/<name>.txt` and/or `users/<name>.asc`, `.gitattributes` lines, the `.gitignore` block, and the audit `init` event. |
-| `add [--force] <path>…` | Path must be a regular file (not a symlink), inside the repo, and not tracked (`git ls-files --error-unmatch`). If tracked, print the `git rm --cached -- <path>` remediation and stop; never run it. Refuse if `<path>.amaga` already exists. Warn if the plaintext path appears in history (`git rev-list -n1 --all -- <path>`). If `<path>.amaga` appears in history, refuse unless `--force`, and point to `git checkout <rev> -- <path>.amaga` followed by `seal` to keep its exposure state; `--force` says that exposure history is dropped. Run the ensure-ignored step. Encrypt with `next_header(None, …)`. Record the base. Audit `secret.added`. |
-| `seal [--force] [<path>…]` | No paths means every secret whose plaintext exists. Run the ensure-ignored step. Decide by plaintext state: `InSync` → no-op (ciphertext bytes untouched; the base is re-recorded when it differs). `Modified` → encrypt with `plaintext_changed = true`, record base, audit `secret.updated`. `Outdated` / `Conflict` → refuse unless `--force`. When `--force` clears a non-empty `exposed_to`, warn that the needs-rotation flag is being cleared and that the local copy may hold the old value. |
+| `init <name> [KEY…]` | Requires a Git repo and no `.amaga/`. With no `KEY`, use the configured age identity's public keys (error if there is none). `KEY`s follow the rules above, so `init alice alice@example.org` works with a key in the local keyring. Writes the `.gitattributes` lines and the `.gitignore` block (idempotent), then `users/<name>.txt` and/or `users/<name>.asc`, the first epoch file wrapped to that member, `current-epoch`, and the audit `init` event. An interruption after `users/` leaves `NoEpoch`; nothing is committed yet, so delete `.amaga/` and rerun. |
+| `add [--force] <path>…` | Path must be a regular file (not a symlink), inside the repo, and not tracked (`git ls-files --error-unmatch`). If tracked, print the `git rm --cached -- <path>` remediation and stop; never run it. Refuse if `<path>.amaga` already exists. Warn if the plaintext path appears in history (`git rev-list -n1 --all -- <path>`). If `<path>.amaga` appears in history, refuse unless `--force`, and point to `git checkout <rev> -- <path>.amaga` followed by `seal` to keep its exposure state; `--force` says that exposure history is dropped. Stale guard. Run the ensure-ignored step. Encrypt to the current epoch with `next_header(None, …)`. Record the base. Audit `secret.added`. |
+| `seal [--force] [<path>…]` | No paths means every secret whose plaintext exists. Stale guard. Run the ensure-ignored step. Decide by plaintext state: `InSync` → no-op (ciphertext bytes untouched, even under an older epoch; the base is re-recorded when it differs). `Modified` → encrypt to the current epoch with `plaintext_changed = true`, record base, audit `secret.updated`. `Outdated` / `Conflict` → refuse unless `--force`. When `--force` clears a non-empty `exposed_to`, warn that the needs-rotation flag is being cleared and that the local copy may hold the old value. |
 | `open [--force] [<path>…]` | No paths means all. Decrypt and authenticate fully, refuse if the plaintext path is tracked in the index (same remediation as `add`), then run the ensure-ignored step, before writing anything. `Closed` / `Outdated` → write the plaintext. `InSync` → no-op, except the base is re-recorded when it differs. `Modified` / `Conflict` → refuse unless `--force`. Record base. |
 | `close [<path>…]` | Delete the plaintext only when `InSync`. Drop the base entry. |
 | `remove <path>…` | Needs at least one path; duplicates are removed. Refuse unless every plaintext exists and is `InSync` (so the user keeps a copy; `open` or `seal` first), checked for all paths before anything is deleted. Delete the `.amaga` file and the base entry. Leave the plaintext and its ignore entry alone. Audit `secret.removed`. If the `.amaga` cannot be read or decrypted (corrupt, not encrypted to you, symlink), the error says to drop it with `git rm <path>.amaga`. |
-| `user add <name> <KEY>…` | Refuse if `users/<name>.txt` or `.asc` exists (key changes: decision 5). Resolve `KEY`s with the same code as `init` (age key, `.asc` file, or keyring lookup). Validate (5.1 + add-time expiry) before re-encrypting. Re-encrypt all (7.1). |
+| `user add <name> <KEY>…` | Refuse if `users/<name>.txt` or `.asc` exists (key changes: decision 5). Resolve `KEY`s with the same code as `init` (age key, `.asc` file, or keyring lookup). Validate (5.1 + add-time expiry). Stale guard. Then, in this order: write the member file, audit `user.added`, re-wrap the current epoch (same key) to every member including the newcomer, atomically. No secret is rewritten (decision 1). Interrupted after the member file: the epoch is stale and `rotate` finishes the job without flagging anyone. |
 | `user remove <name>` | Must exist and must not be the last user. The files being removed are not validated, so a revoked or broken key can still be removed. Re-encrypt all (7.1). |
-| `rotate` | Re-encrypt all with fresh age file keys. Audit `rotated`. This is also the recovery command. |
+| `rotate` | Re-encrypt all to a new epoch (7.1). Audit `rotated`. This is also the recovery command. |
+| `dismiss [--user <name>]… [<path>…]` | ADR-0016. Refuse with `DismissNoTarget` when neither a path nor `--user` is given. No paths means every secret; no `--user` means every member in each secret's `exposed_to`. Stale guard. Decrypt every selected secret first (abort before writing if any fails). A `--user` found in no selected secret's `exposed_to` is `NotExposed`; nothing is written. For each secret with something to dismiss: `next_header(Some((old, old members)), false, current members)`, remove the dismissed names, encrypt to the current epoch, write atomically, audit `exposure.dismissed` per name. Other secrets are untouched. Plaintext and base are never touched. Prints `dismissed <path>`. |
 | `status` | See 7.2. |
 
-### 7.1 Re-encrypt all (shared by `rotate`, `user add`, `user remove`)
+### 7.1 Re-encrypt all (shared by `rotate` and `user remove`)
 
-1. Read and decrypt **every** secret into memory. If any fails, abort before writing anything and list the files that failed.
-2. `user add/remove` only: write or delete the user file and append the audit event.
-3. Load the current recipients from `.amaga/users`.
-4. For each secret, write `encrypt(next_header(Some(old), false, current), body)` atomically.
+1. Read and decrypt **every** secret into memory, under whichever epoch the actor holds (5.6), keeping the `members` of the epoch that decrypted each one. If any fails, abort before writing anything and list the files that failed.
+2. `user remove` only: delete the user files and append the audit event.
+3. Load the current members from `.amaga/users`. Generate a new epoch and write its file, wrapped to them, with `members` = their key set.
+4. For each secret, write `encrypt_to(new epoch, next_header(Some((old, old members)), false, new members), body)` atomically.
+5. Write `current-epoch` = the new epoch.
 
-If a run is interrupted after step 2:
-- The membership change is already on disk.
-- Some secrets are stale; `status` reports them.
-- Rerunning `rotate` completes the work, and exposure marking is still correct because it comes from each file's own header.
+If a run is interrupted:
+- After step 2: the membership change is on disk and the epoch is stale.
+- After step 3: an epoch file exists that nothing points to. It is kept (decision 13).
+- During step 4: some secrets are under the new epoch, which is not current, so they are stale.
+- In every case `status` reports stale secrets and rerunning `rotate` completes the work. Exposure marking is still correct, because it comes from each file's own header and the members of the epoch that decrypted it.
 - If the actor removed themselves, they are no longer a member and get `NotAMember`. Another member reruns `rotate`.
 
 There is no clean-tree precondition. Unsealed local edits are unaffected, because re-encryption uses the ciphertext payload and plaintext hashes do not change.
@@ -285,15 +333,15 @@ Ceiling: all secrets are held in memory at once. Stream per file if anyone store
 
 ### 7.2 `status`
 
-Requires an identity. Prints the members, then one line per secret. Problems first.
+Requires an identity and unwraps the current epoch (a failure is an error, exit 1). Prints the members, then one line per secret. Problems first.
 
 **Errors (exit 1):**
 - Invalid user files.
 - `.amaga` paths that `git check-attr text` does not report as `unset`.
-- A secret that fails to decrypt (no matching key, tampered, unknown `v`).
+- A secret that fails to decrypt (no epoch the actor holds opens it, tampered, unknown `v`).
 - Unmerged `.amaga` files.
 - **Critical:** plaintext tracked (`git ls-files`), or any managed plaintext path not ignored (`check-ignore --no-index`), checked whether or not the plaintext exists.
-- Stale recipients. Hint: `run git-amaga rotate`.
+- Stale recipients: the secret is under a non-current epoch, or the current epoch is not up to date (5.6). Message `stale recipients; run git-amaga rotate`.
 - Plaintext state `Modified`, `Outdated` or `Conflict`, each with its action.
 
 **Warning (exit 0):** `NEEDS ROTATION: exposed to charlie`, taken from `exposed_to`.
@@ -302,9 +350,10 @@ Usage errors exit 2 (clap's default).
 
 ### 7.3 Running gpg
 
+- Used only to unwrap an epoch file (5.6), so at most once per epoch per command.
 - Decrypt: `gpg --quiet --max-output 16 --decrypt`. The stanza body goes to stdin, which must be closed before waiting. Capture stdout and stderr. `--max-output` bounds the output (verified: gpg exits 2 when it is exceeded).
 - Do **not** pass `--batch` or `--pinentry-mode`. gpg-agent must be able to run pinentry for the PIN or for an "insert card" prompt. Piping gpg's stdin and stderr does not affect pinentry.
-- On non-zero exit, or output that is not 16 bytes: `GpgError { fpr, stderr }`, reported per secret with the member's name. Pass gpg's stderr through verbatim (for example `decryption failed: No secret key`, or `Operation cancelled` when the card prompt is dismissed), followed by the fixed hint "is the card inserted, and can gpg-agent show a PIN prompt (`export GPG_TTY=$(tty)`)?". Do not parse gpg's messages.
+- On non-zero exit, or output that is not 16 bytes: `GpgError { fpr, stderr }`, reported with the epoch file and the member's name. Pass gpg's stderr through verbatim (for example `decryption failed: No secret key`, or `Operation cancelled` when the card prompt is dismissed), followed by the fixed hint "is the card inserted, and can gpg-agent show a PIN prompt (`export GPG_TTY=$(tty)`)?". Do not parse gpg's messages.
 - `gpg` is resolved on PATH; the program name is not configurable (section 13).
 
 ### 7.4 Looking up a GPG key (`KEY` rule 3)
@@ -322,17 +371,24 @@ No `--batch`/pinentry concerns: neither call touches secret keys. Nothing is fet
 ## 8. Branches and merges
 
 - `*.amaga` files are `binary`, so concurrent edits produce a normal conflict with "ours" left in the working tree and no markers. To resolve: `git checkout --ours|--theirs -- f.amaga && git add f.amaga` (verified: `checkout --theirs` alone leaves the path unmerged), then `git-amaga open --force f` and edit / `seal`. The three-way check makes the stale-plaintext case visible.
-- Concurrent membership changes touch different files under `.amaga/users/` and normally merge cleanly. After the merge, `status` reports secrets as stale until someone runs `rotate`.
-- Secrets that exist only on a branch which predates a removal still list the removed user. After the merge they are reported as **stale**, and `rotate` flags them `exposed_to` that user. This is correct whenever that branch was pushed while the user had access.
+- Epoch files are named by their public key, so epochs created on two branches never collide, and none is ever deleted. A secret that arrives under any of them stays readable by that epoch's members.
+- **Secrets added on a branch under an older epoch:** after the merge they are under a non-current epoch. `status` reports them stale, and `rotate` re-encrypts them and flags every key of their epoch that the new epoch lacks. This is correct whenever that branch was pushed while those keys had access.
+- **Two branches that each `rotate` or `user remove`:** both moved `current-epoch` (a text conflict), and both rewrote every secret (binary conflicts). Every command refuses until the epoch paths are resolved (7). Take either side of `current-epoch`, and either side of each secret, `git add` them, then `rotate`. Exposure stays correct: each file keeps its own `exposed_to`, and both epochs' member sets are on disk.
+- **A member added on a branch** (`user add`) rewrites the current epoch file. If the other side did not touch that file, the merge is clean. If the other side moved `current-epoch` (a `rotate` or `user remove`), the result is stale (the newcomer is in `.amaga/users` but not in the current epoch) and `rotate` fixes it. If both sides ran `user add`, the epoch file conflicts: take either side, `git add`, then `rotate`. The side not taken loses its newcomer from that epoch's recorded `members`; that newcomer is not flagged for secrets still under that epoch if later removed. `rotate` right after the merge leaves no secret under it.
+- **A member who is not in an old epoch** (added after it ended) cannot decrypt secrets still under it. `open`/`status` report the failure for those files, and their `rotate` aborts before writing (7.1). Any member of that epoch runs `rotate`; after that the newcomer reads everything.
+- Concurrent edits to `.amaga/users/` touch different files and normally merge cleanly. After the merge the epoch is stale until someone runs `rotate`.
 - `.gitignore` and `audit.jsonl` merge by union (verified). Lines from both sides are kept, ordered by side rather than by time. If a hosting platform's merge ignores `merge=union`, resolve the conflict by keeping both sides' lines.
 - A sealed but uncommitted `.amaga` file discarded with `git checkout`/`reset` makes the plaintext `Outdated`. The plaintext is then the only copy of that content: `seal --force` it rather than `open` (README).
 
 ## 9. Removal workflow (README)
 
 1. Revoke the person's repository access at the hosting provider.
-2. `git-amaga user remove charlie`, review `git status`, and commit everything in one commit.
+2. `git-amaga user remove charlie`, review `git status` (the user file, a new `.amaga/epochs/` file, `current-epoch` and every secret), and commit everything in one commit.
 3. `git-amaga status` lists every secret marked `NEEDS ROTATION`.
 4. Rotate each real credential, edit the plaintext, `seal`, and commit, until nothing is flagged.
+5. If charlie's keys are known to be destroyed, or a secret needs no rotation, `git-amaga dismiss --user charlie [<path>…]` clears the flag instead of step 4, and commit. The audit log records who dismissed it.
+
+Adding a member without giving them the history of the current epoch: `git-amaga rotate`, then `user add` (decision 1).
 
 ## 10. Rust implementation
 
@@ -390,9 +446,11 @@ strip = true
 ## 11. Tests
 
 **Unit tests** (beside the code):
-- `next_header`: every row of 6.1, including a re-added user and a rename where the same key now sits under a new name.
+- `next_header`: every row of 6.1, including a re-added user, a rename where the same key now sits under a new name, and a rewrite under the same epoch (adds nothing).
 - `plaintext_state`: every row of 6.2.
-- Header parsing rejects missing `\n`, unknown fields, and `v != 1`.
+- Header parsing rejects missing `\n`, unknown fields (including 0.1.0's `recipients`), and `v != 2` (a 0.1.0 header gives `UnsupportedVersion(1)`).
+- Epochs (5.6): generate, wrap to two X25519 members and unwrap with each, `members` preserved; a third identity gets `NoMatchingKeys`; a body whose public key differs from the file name, or with zero or two key lines, is `EpochInvalid`; the pointer parses with CRLF, garbage is `EpochInvalid`, a missing pointer is `NoEpoch`; listing ignores names that are not `<age1…>.age`; an epoch wrapped to X25519 + `pgp` unwraps with the x25519 identity alone.
+- `dismiss` selection: no `--user` dismisses every name; named users are removed only where present; a secret under an older epoch keeps the exposure its epoch change adds for names not dismissed.
 - Users parsing: comments, CRLF, duplicate key across users, invalid names.
 - `.gitignore` entry insertion (existing block, no block) and escaping.
 - Path normalisation and rejection (`\`, `.git/`, `.amaga/`, `.amaga`/`.amaga-tmp` names).
@@ -430,15 +488,15 @@ Each test below must fail against an implementation lacking the behaviour:
 9. `close_refuses_unsealed`
 10. `status_flags_force_added_plaintext`
 11. `tampered_ciphertext_fails_and_writes_nothing`
-12. `user_add_new_member_decrypts_current_not_history`
+12. `user_add_rewraps_epoch_only`: after `user add bob`, every `.amaga` is byte-identical and only `users/bob.txt`, the current epoch file and `audit.jsonl` changed; bob opens the secret and can decrypt its committed version from the same epoch (decision 1).
 13. `user_remove_locks_out_and_flags_all`
 14. `seal_change_clears_only_that_file`
 15. `secret_added_after_removal_not_flagged`
 16. `rotate_preserves_exposure`
-17. `interrupted_remove_reported_stale_and_rotate_completes`: delete a user file by hand, then check that `status` exits 1 and that `rotate` flags exposure.
+17. `interrupted_remove_reported_stale_and_rotate_completes`: delete a user file by hand, then check that `status` exits 1, that `seal` of an edited plaintext refuses with the rotate hint and writes nothing, and that `rotate` flags exposure.
 18. `works_in_linked_worktree`: `.git` is a file, and the base file is per worktree.
 19. `merged_branch_secret_flagged_after_removal`: a branch adds a secret before a removal on main; after the merge, `status` reports it stale and `rotate` flags it.
-20. `user_remove_with_undecryptable_secret_changes_nothing`: `users/` and `audit.jsonl` are untouched.
+20. `user_remove_with_undecryptable_secret_changes_nothing`: `users/`, `.amaga/epochs/`, `current-epoch` and `audit.jsonl` are untouched.
 21. `renamed_secret_plaintext_stays_ignored`: `git mv a.env.amaga b.env.amaga`, then `open b.env` leaves `b.env` ignored.
 22. `remove_keeps_teammates_plaintext_ignored`: a second clone pulls the `remove` and its plaintext is still ignored.
 23. `readd_deleted_secret_requires_force`: without `--force` it refuses; restoring the old ciphertext and running `seal` keeps `exposed_to`.
@@ -461,7 +519,28 @@ Keyring lookup (7.4). The gpg ones generate keys in the short temp `GNUPGHOME` a
 37. `keygen_prints_user_add_line`: stdout is the public key alone; stderr contains `git-amaga user add <name> <that key>`.
 38. `gpg_lookup_without_gpg_errors` (Unix only): PATH holding only a `git` symlink (as in 29); `init alice alice@example.invalid` exits 1 with the gpg-not-found error.
 
+Epoch keys (ADR-0015). Helpers that read a header unwrap the current epoch through `git_amaga_core::epoch`; "X cannot decrypt" now means X cannot unwrap the epoch.
+
+39. `rotate_before_user_add_hides_history`: commit a secret, `rotate`, `user add carol`; carol decrypts the current version but not the one committed before the `rotate`.
+40. `branch_secret_under_old_epoch_after_user_remove`: a branch adds a secret; main runs `user remove bob`; after the merge alice can `open` it, `status` reports it stale, and `rotate` flags bob.
+41. `parallel_rotations_conflict_on_current_epoch`: with no secrets, main and a branch each `rotate`; the branch then `add`s a secret. After the merge every command, `status` included, exits 1 naming `.amaga/current-epoch`. After `git checkout --ours` + `git add` of it, `status` reports the secret stale, `rotate` succeeds and `status` exits 0.
+42. `member_added_on_branch_and_removal_on_main`: the branch runs `user add carol`, main `user remove bob`; the merge is clean; `status` exits 1 and `add` refuses with the rotate hint; after `rotate` carol opens every secret, bob is flagged and carol is not.
+43. `member_not_in_old_epoch_cannot_read_its_secrets`: a branch adds a secret; main runs `rotate`, then `user add carol`; after the merge carol's `open` of that secret and her `rotate` exit 1 and write nothing; after alice's `rotate` carol opens it.
+44. `interrupted_user_add_finished_by_rotate`: write `users/carol.txt` by hand; `status` exits 1; `add`, `seal`, `user add dave` and `dismiss --user x` refuse with the rotate hint; after `rotate` carol opens every secret and nothing is flagged.
+45. `one_gpg_decrypt_per_command` (gpg, Unix only): a GPG member and three secrets; PATH holds a `gpg` wrapper that logs its arguments and runs the real gpg; `open` and `status` each log exactly one `--decrypt`.
+46. `epoch_and_secret_are_plain_age`: with the `age` crate only, decrypt the current epoch file with alice's identity, drop the first line, parse the rest as an identity, decrypt a secret with it and drop its first line: the plaintext comes out (the escape hatch in section 4).
+47. `tampered_epoch_file_fails_and_writes_nothing`: flip the last byte of the current epoch file; `open` and `rotate` exit 1 naming that file; nothing is written.
+48. `repository_without_current_epoch_errors`: delete `.amaga/current-epoch`; `status` exits 1 and stderr names `current-epoch`.
+
+Dismiss (ADR-0016):
+
+49. `dismiss_clears_selected_user_and_paths`: members alice, bob, carol, two secrets; remove bob and carol; `dismiss --user bob a.env` leaves a flagged for carol only and b for both; stdout is `dismissed a.env.amaga`; `status` still shows the plaintext `in sync`; the audit log gains one `exposure.dismissed` line (path `a.env`, user `bob`) and no `secret.updated`.
+50. `dismiss_refuses_without_target_or_unknown_user`: bare `dismiss` and `dismiss --user nobody` exit 1; every `.amaga` and `audit.jsonl` are unchanged.
+51. `dismiss_user_across_all_secrets`: `dismiss --user bob` clears bob everywhere; rerunning it exits 1 (`NotExposed`) and writes nothing.
+
 ## 12. Implementation steps
+
+These are the v0.1.0 steps, kept as history (per-file age). Epoch keys and `dismiss` are built by section 15.
 
 Each step is one coder worktree. It contains one to three commits, and each commit builds, passes
 `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` and `cargo test`. Steps merge in
@@ -488,7 +567,7 @@ the ordering above.
 
 ## 13. Deferred
 
-SSH recipients · `user key` subcommands · backup copy of a plaintext before `open` overwrites it · pre-commit hook that blocks tracked plaintext · `git diff` textconv for decrypted diffs · `--stage` · signed audit/commits integration · per-secret ACLs · passphrase-protected age identities / age plugins (`age-plugin-yubikey`; YubiKeys already work as GPG cards) · honouring `gpg.program` · warning before a GPG key expires · encrypting to an OpenPGP primary key that has no encryption subkey · one gpg call for many files · fetching GPG keys from a keyserver/WKD (`gpg --locate-keys`) at `init`/`user add` · macOS/aarch64 release targets.
+SSH recipients · pruning old epoch files (decision 13) · backup copy of a plaintext before `open` overwrites it · pre-commit hook that blocks tracked plaintext · `git diff` textconv for decrypted diffs · `--stage` · signed audit/commits integration · per-secret ACLs · passphrase-protected age identities / age plugins (`age-plugin-yubikey`; YubiKeys already work as GPG cards) · honouring `gpg.program` · warning before a GPG key expires · encrypting to an OpenPGP primary key that has no encryption subkey · fetching GPG keys from a keyserver/WKD (`gpg --locate-keys`) at `init`/`user add` · macOS/aarch64 release targets.
 
 ## 14. Workspace split (ADR-0014)
 
@@ -516,7 +595,7 @@ members = ["crates/core", "crates/cli"]
 resolver = "3"
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT"
@@ -551,8 +630,8 @@ Install and CI:
 ### 14.2 Core API
 
 `lib.rs` gets a one-line crate doc: each command takes the directory it runs in, acts on the
-repository containing it and never prints. Public modules: `error`, `gpg`, `identity`, `secret`, `users`. Private
-modules: `audit`, `commands`, `context`, `git`, `keyring`, `membership`, `outcome`, `paths`,
+repository containing it and never prints. Public modules: `epoch` (section 15), `error`, `gpg`, `identity`, `secret`, `users`. Private
+modules: `audit`, `commands`, `context`, `dismiss` and `status` (section 15), `git`, `keyring`, `membership`, `outcome`, `paths`,
 `remove`. Root re-exports: `Error`, `keyring::GpgKey`, the `outcome` types, and every `cmd_*`.
 
 ```text
@@ -564,8 +643,9 @@ cmd_open(dir, force: bool, paths: &[String])   -> Result<Outcome, Error>   chang
 cmd_close(dir, paths: &[String])               -> Result<Outcome, Error>   changed: plaintext paths
 cmd_remove(dir, paths: &[String])              -> Result<Outcome, Error>   changed: `.amaga` paths
 cmd_rotate(dir)                                -> Result<Vec<Reencrypted>, Error>
-cmd_user_add(dir, name: &str, keys: &[String]) -> Result<(Option<GpgKey>, Vec<Reencrypted>), Error>
+cmd_user_add(dir, name: &str, keys: &[String]) -> Result<Option<GpgKey>, Error>   no secret is rewritten (section 15)
 cmd_user_remove(dir, name: &str)               -> Result<Vec<Reencrypted>, Error>
+cmd_dismiss(dir, users: &[String], paths: &[String]) -> Result<Outcome, Error>  changed: `.amaga` paths (section 15)
 cmd_status(dir)                                -> Result<StatusReport, Error>
 ```
 
@@ -614,10 +694,11 @@ first, then its lines.
 | Command | stdout | stderr |
 |---------|--------|--------|
 | keygen | `{public}` | `to join a repository, send this to a member: git-amaga user add <name> {public}` |
-| init, user add | `{name}: GPG key {fpr} "{uid}"` first, if the member has a GPG key | |
+| init, user add | `{name}: GPG key {fpr} "{uid}"`, if the member has a GPG key (`user add` prints nothing else) | |
 | add / seal / remove | `added` / `sealed` / `removed {path}` per changed path | `warning: {w}` per warning |
 | open / close | `opened` / `closed {path}` | `warning: {w}` |
-| rotate, user add, user remove | `re-encrypted {path}`, or `re-encrypted {path} (NEEDS ROTATION: exposed to {a, b})` | |
+| rotate, user remove | `re-encrypted {path}`, or `re-encrypted {path} (NEEDS ROTATION: exposed to {a, b})` | |
+| dismiss | `dismissed {path}` per changed `.amaga` path | |
 | status | `members: {members}`, then `{ERROR\|WARN\|ok} {path}: {messages joined by "; "}` | `warning: {w}`; if n > 0, `error: status found problems with {n} secret(s)` and exit 1 |
 | any error | | `error: {e}`, exit 1 (clap usage errors unchanged, exit 2) |
 
@@ -651,3 +732,151 @@ files it already wrote (ADR-0014).
 
 Out of scope: publishing to crates.io (needs a `version` on the path dependency and a free crate
 name), a `repo: &Path` API, and a progress callback.
+
+## 15. Epoch keys and dismiss: implementation steps
+
+ADR-0015 and ADR-0016. One coder worktree on `epoch-keys`; the commits below land in order.
+Every commit passes the checks of 14.4 (`cargo fmt --check` · `cargo clippy --workspace
+--all-targets -- -D warnings` · `cargo test --workspace` · `GIT_DIR=/nonexistent cargo test
+--workspace`). "Fails before" means the named test fails, or does not compile, on the previous
+commit. A commit adds only the `Error` variants it uses. Public API changes are marked **API**.
+
+Commit 3 is the format switch. Every reader and writer of secrets changes together, so it cannot
+be split further without a commit in which `add` and `open` disagree on the format.
+
+### 15.1 `core: move status into its own module`
+
+- Files: `crates/core/src/commands.rs`, new `crates/core/src/status.rs`, `crates/core/src/lib.rs`.
+- Change: move `cmd_status`, `secret_status`, `without_path`, `state_problem`, `key_set` and
+  `UNMERGED` verbatim; `lib.rs` re-exports `cmd_status` from `status`. No behaviour change.
+  Needed because `commands.rs` (376 lines) would pass ~400 with the epoch work (`CLAUDE.md`).
+- Tests: none new. Acceptance: checks green with an unchanged test count;
+  `git diff --color-moved=zebra` shows only moved lines plus `use`/`mod` lines.
+
+### 15.2 `secret: payload helpers generic over the header type`
+
+- Files: `crates/core/src/secret.rs`.
+- Change: `encode_payload`, `decode_payload`, `encrypt` and `decrypt` take any
+  `H: Serialize` / `DeserializeOwned` header; the version check compares against a new
+  `pub const VERSION: u8 = 1` used by `Header`. **API** (source compatible for `Header` callers).
+- Tests: none new. Acceptance: checks green, no test edited.
+
+### 15.3 `core: epoch file format (ADR-0015)`
+
+- Files: new `crates/core/src/epoch.rs` (public module), `crates/core/src/lib.rs`,
+  `crates/core/src/error.rs` (`NoEpoch`, `EpochInvalid(String)`). **API**: new `epoch` module.
+- Change (illustrative names): `Epoch { members: Recipients, … }` holding the
+  `x25519::Identity`; `generate(members) -> Epoch`; `id()` (public key string);
+  `wrap(&Epoch, &[&dyn age::Recipient]) -> Vec<u8>` writing the 5.6 payload with
+  `"v": secret::VERSION`; `unwrap(id, ciphertext, &[&dyn age::Identity]) -> Epoch`, checking the
+  key line and that its public key equals `id`; `file_path(id)`; `read_pointer(root)`,
+  `write_pointer(root, id)`; `list(root)` (sorted ids, other names ignored). Nothing calls it yet.
+  Keep it under ~200 lines without tests.
+- Tests (fail before: the module does not exist): the epoch unit tests of section 11.
+
+### 15.4 `core: secrets are encrypted to the current epoch (format 2)`
+
+- Files: `crates/core/src/{secret,context,commands,status,membership,remove,error}.rs`,
+  `crates/cli/tests/{cli,membership}.rs`, `crates/cli/tests/common/mod.rs`,
+  `crates/core/tests/directory.rs` if it needs a helper.
+- Change:
+  - `secret.rs`: `VERSION = 2`; `Header` loses `recipients` (**API**); `next_header` takes
+    `old: Option<(&Header, &Recipients)>` and `new_members` (6.1, **API**).
+  - `context.rs`: `load` reads `current-epoch` (5.6). A per-command cache unwraps each epoch at
+    most once (success or failure). `decrypt` tries the current epoch, then the others (5.6),
+    and returns the header, the body and the decrypting epoch. `encrypt` encrypts to the
+    current epoch's public key. The old member-recipient list becomes the helper used to wrap
+    epochs. `failing_member` also names the member for `EpochUndecryptable` (new variant in
+    `error.rs`).
+  - `commands.rs`: `init` writes the first epoch and `current-epoch` after the user file and
+    adds `.amaga/epochs/* binary` to `GITATTRIBUTES_LINES`. `add`/`seal` use the new
+    `next_header`.
+  - `status.rs`: unwraps the current epoch up front; stale = under a non-current epoch or
+    current epoch not up to date (7.2).
+  - `membership.rs`: `reencrypt_all` follows 7.1 (new epoch, secrets, pointer last). `user add`
+    still goes through it in this commit (new epoch per add) until 15.6.
+  - `remove.rs`: the new `decrypt` return type.
+- Test helpers: `common` gains readers for the current epoch (via `git_amaga_core::epoch`) and an
+  "encrypt a secret to the current epoch" helper, replacing direct `secret::encrypt` to alice in
+  `rotate_ciphertext`, `readd_deleted_secret_requires_force`,
+  `seal_force_warns_when_clearing_exposed_to` and `status_warns_about_exposure_with_exit_zero`.
+  `header_of`/`decrypt_with` in `membership.rs` unwrap the epoch. A member written by hand gets
+  access only after `rotate`: `write_member` runs `rotate`, as do
+  `age_member_seals_for_gpg_member_without_gpg` and `status_stale_compares_key_sets_not_names`
+  after their hand-written file. `status_reports_stale_recipients` makes a secret stale by
+  restoring its pre-`rotate` ciphertext with `git checkout`. `keygen_then_init_creates_state`
+  also asserts the new `.gitattributes` line, an epoch file and `current-epoch`. Test 16 also
+  asserts a new epoch file and a changed `current-epoch`. Test 20 also asserts `.amaga/epochs/`
+  and `current-epoch` are untouched.
+- Tests that fail before and pass after: 45, 46, 47, 48; `secret.rs` unit tests for `v` 2, a
+  rejected 0.1.0 header and the 6.1 rows with epoch member sets. Tests 40 and 43 are regression
+  guards: 0.1.0 behaved the same, and the epoch design must keep it. Every other existing test
+  passes after the helper changes above.
+
+### 15.5 `core: add and seal refuse while the epoch is stale`
+
+- Files: `crates/core/src/{context,commands,error}.rs` (`EpochStale`),
+  `crates/cli/tests/{cli,membership}.rs`.
+- Change: `Context::require_up_to_date()` (unwraps the current epoch, compares key sets) called
+  first by `add` and `seal` (7, stale guard).
+- Tests that fail before and pass after: 17 (the `seal` refusal), 44 (the `add`/`seal` part).
+
+### 15.6 `core: user add re-wraps the current epoch`
+
+- Files: `crates/core/src/membership.rs`, `crates/cli/src/main.rs`,
+  `crates/cli/tests/membership.rs`.
+- Change: `cmd_user_add` no longer calls `reencrypt_all`: checks as today, stale guard, then
+  member file, audit `user.added`, re-wrap the current epoch to all members (7). Returns
+  `Option<GpgKey>` (**API**); the CLI prints only the GPG key line.
+- Tests that fail before and pass after: 12 (rewritten), 42, 44 (the `user add dave` part).
+  Test 39 is a regression guard for decision 1 and also passes before.
+
+### 15.7 `core: refuse while an epoch path is unmerged`
+
+- Files: `crates/core/src/{git,context,error}.rs` (`UnmergedEpoch`), `crates/cli/tests/cli.rs`.
+- Change: generalise `git::unmerged_secrets` into `unmerged_paths`, which takes pathspecs (callers pass `*.amaga`), and
+  make `Context` loading refuse when `.amaga/current-epoch` or `.amaga/epochs` is unmerged, for
+  every command including `status` (7).
+- Tests that fail before and pass after: 41 (asserts the `git checkout --ours` hint, which the
+  `EpochInvalid` error from parsing conflict markers does not contain).
+
+### 15.8 `core: dismiss exposure (ADR-0016)`
+
+- Files: new `crates/core/src/dismiss.rs`, `crates/core/src/lib.rs` (re-export `cmd_dismiss`,
+  **API**), `crates/core/src/error.rs` (`DismissNoTarget`, `NotExposed(String)`).
+- Change: `cmd_dismiss(dir, users, paths) -> Result<Outcome, Error>` as in the command table
+  (7): target check before loading, stale guard, decrypt all, `NotExposed` check, then per secret
+  `next_header` minus the dismissed names, write, audit `exposure.dismissed` per name. The
+  selection is a small pure function, unit-tested.
+- Tests that fail before and pass after: `dismiss.rs` unit tests (section 11), and
+  `no_target_is_refused_before_anything_is_loaded` (as in `remove.rs`).
+
+### 15.9 `cli: dismiss subcommand`
+
+- Files: `crates/cli/src/main.rs`, `crates/cli/tests/membership.rs` (or a new
+  `crates/cli/tests/dismiss.rs`).
+- Change: `Dismiss { #[arg(long = "user", value_name = "NAME")] users: Vec<String>, paths:
+  Vec<String> }`, doc "Clear NEEDS ROTATION without changing the plaintext"; output per 14.3.
+- Tests that fail before and pass after: 49, 50, 51, and the `dismiss` part of 44.
+
+### 15.10 `docs: README for epoch keys and dismiss`
+
+- Files: `README.md`.
+- Change: "How it works" (epochs, `current-epoch`, format 2; 0.1.0 repositories are not
+  readable: open secrets with 0.1.0, then `init` anew), the two-command escape hatch (section 4),
+  team workflow (`user add` re-wraps; `rotate` first to keep history private), command
+  reference (`user add`, `rotate`, new `dismiss` row), GPG notes (one gpg call per command),
+  removal workflow step 5 (section 9), branches (`current-epoch` conflicts, section 8), and the
+  security model bullets that changed (new members and history, one gpg call per command,
+  merged branch secrets).
+- Acceptance: the README no longer says that `user add` re-encrypts every secret, that gpg runs
+  once per secret, or that a new member cannot decrypt any history; every command in its
+  reference appears in `git-amaga --help`.
+
+### 15.11 `docs: CLAUDE.md module map`
+
+- Files: `CLAUDE.md`.
+- Change: add `epoch.rs` (epoch files, `current-epoch`, wrap/unwrap), `status.rs` (`status`)
+  and `dismiss.rs` (`dismiss`) to the core module list; `membership.rs` becomes "`rotate`,
+  `user add` (re-wrap) and `user remove`".
+- Acceptance: every path named in `CLAUDE.md` exists (`ls` each).

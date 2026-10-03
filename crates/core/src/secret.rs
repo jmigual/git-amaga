@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read, Write};
 use std::path::Path;
 
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -20,18 +21,20 @@ pub fn hash(data: &[u8]) -> Hash {
     Sha256::digest(data).into()
 }
 
+/// The format version of secret and epoch headers (plan 5.2, 5.6).
+pub const VERSION: u8 = 2;
+
 /// The JSON header stored as the first line of a decrypted secret payload (plan 5.2).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Header {
     pub v: u8,
-    pub recipients: Recipients,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub exposed_to: Recipients,
 }
 
 /// Serializes `header` as one compact JSON line followed by `body` (plan 5.2).
-pub fn encode_payload(header: &Header, body: &[u8]) -> Result<Vec<u8>, Error> {
+pub fn encode_payload<H: Serialize>(header: &H, body: &[u8]) -> Result<Vec<u8>, Error> {
     let mut payload = serde_json::to_vec(header)?;
     payload.push(b'\n');
     payload.extend_from_slice(body);
@@ -46,22 +49,22 @@ struct VersionProbe {
 }
 
 /// Splits a decrypted payload into its header and body (plan 5.2 parse rules).
-pub fn decode_payload(payload: &[u8]) -> Result<(Header, Vec<u8>), Error> {
+pub fn decode_payload<H: DeserializeOwned>(payload: &[u8]) -> Result<(H, Vec<u8>), Error> {
     let newline = payload
         .iter()
         .position(|&b| b == b'\n')
         .ok_or(Error::HeaderMissingNewline)?;
     let header_bytes = &payload[..newline];
     let probe: VersionProbe = serde_json::from_slice(header_bytes)?;
-    if probe.v != 1 {
+    if probe.v != VERSION {
         return Err(Error::UnsupportedVersion(probe.v));
     }
-    let header: Header = serde_json::from_slice(header_bytes)?;
+    let header: H = serde_json::from_slice(header_bytes)?;
     Ok((header, payload[newline + 1..].to_vec()))
 }
 
-pub fn encrypt(
-    header: &Header,
+pub fn encrypt<H: Serialize>(
+    header: &H,
     body: &[u8],
     recipients: &[&dyn age::Recipient],
 ) -> Result<Vec<u8>, Error> {
@@ -74,10 +77,10 @@ pub fn encrypt(
     Ok(ciphertext)
 }
 
-pub fn decrypt(
+pub fn decrypt<H: DeserializeOwned>(
     ciphertext: &[u8],
     identities: &[&dyn age::Identity],
-) -> Result<(Header, Vec<u8>), Error> {
+) -> Result<(H, Vec<u8>), Error> {
     let decryptor = age::Decryptor::new_buffered(ciphertext)?;
     let mut reader = decryptor.decrypt(identities.iter().copied())?;
     let mut payload = Vec::new();
@@ -85,30 +88,35 @@ pub fn decrypt(
     decode_payload(&payload)
 }
 
-/// The exposure rule (plan 6.1): every ciphertext write goes through this function.
-pub fn next_header(old: Option<&Header>, plaintext_changed: bool, current: &Recipients) -> Header {
+/// The exposure rule (plan 6.1): every ciphertext write goes through this function. `old` pairs
+/// the file's header with the `members` of the epoch that decrypted it; `new_members` are those of
+/// the epoch it is written to.
+pub fn next_header(
+    old: Option<(&Header, &Recipients)>,
+    plaintext_changed: bool,
+    new_members: &Recipients,
+) -> Header {
     let exposed_to = match old {
         None => Recipients::new(),
         Some(_) if plaintext_changed => Recipients::new(),
-        Some(old) => {
-            let current_keys: BTreeSet<&String> = current.values().flatten().collect();
+        Some((old, old_members)) => {
+            let new_keys: BTreeSet<&String> = new_members.values().flatten().collect();
             let mut exposed_to = old.exposed_to.clone();
-            for (user, keys) in &old.recipients {
-                let stale: BTreeSet<String> = keys
+            for (user, keys) in old_members {
+                let lost: BTreeSet<String> = keys
                     .iter()
-                    .filter(|key| !current_keys.contains(key))
+                    .filter(|key| !new_keys.contains(key))
                     .cloned()
                     .collect();
-                if !stale.is_empty() {
-                    exposed_to.entry(user.clone()).or_default().extend(stale);
+                if !lost.is_empty() {
+                    exposed_to.entry(user.clone()).or_default().extend(lost);
                 }
             }
             exposed_to
         }
     };
     Header {
-        v: 1,
-        recipients: current.clone(),
+        v: VERSION,
         exposed_to,
     }
 }
@@ -221,127 +229,136 @@ mod tests {
 
     #[test]
     fn decode_payload_rejects_missing_newline() {
-        let payload = br#"{"v":1,"recipients":{}}"#;
+        let payload = br#"{"v":2}"#;
         assert!(matches!(
-            decode_payload(payload),
+            decode_payload::<Header>(payload),
             Err(Error::HeaderMissingNewline)
         ));
     }
 
     #[test]
     fn decode_payload_rejects_unknown_fields() {
-        let payload = b"{\"v\":1,\"recipients\":{},\"bogus\":true}\nbody";
-        assert!(matches!(decode_payload(payload), Err(Error::HeaderJson(_))));
+        // Including 0.1.0's `recipients`.
+        for payload in [
+            &b"{\"v\":2,\"bogus\":true}\nbody"[..],
+            &b"{\"v\":2,\"recipients\":{}}\nbody"[..],
+        ] {
+            assert!(matches!(
+                decode_payload::<Header>(payload),
+                Err(Error::HeaderJson(_))
+            ));
+        }
     }
 
     #[test]
-    fn decode_payload_rejects_unsupported_version() {
-        let payload = b"{\"v\":2,\"recipients\":{}}\nbody";
+    fn decode_payload_rejects_a_0_1_0_header() {
+        let payload = b"{\"v\":1,\"recipients\":{}}\nbody";
         assert!(matches!(
-            decode_payload(payload),
-            Err(Error::UnsupportedVersion(2))
+            decode_payload::<Header>(payload),
+            Err(Error::UnsupportedVersion(1))
         ));
     }
 
     #[test]
     fn decode_payload_reports_unsupported_version_before_unknown_fields() {
         // The version check must win over `deny_unknown_fields` (see `VersionProbe`).
-        let payload = b"{\"v\":2,\"recipients\":{},\"x\":1}\nbody";
+        let payload = b"{\"v\":3,\"x\":1}\nbody";
         assert!(matches!(
-            decode_payload(payload),
-            Err(Error::UnsupportedVersion(2))
+            decode_payload::<Header>(payload),
+            Err(Error::UnsupportedVersion(3))
         ));
+    }
+
+    #[test]
+    fn a_new_secret_header_is_just_the_version() {
+        let header = next_header(None, false, &Recipients::new());
+        let payload = encode_payload(&header, b"").unwrap();
+        assert_eq!(payload, b"{\"v\":2}\n");
     }
 
     #[test]
     fn encode_decode_payload_round_trip() {
         let header = Header {
-            v: 1,
-            recipients: recipients(&[("alice", &["age1alice"])]),
-            exposed_to: Recipients::new(),
+            v: VERSION,
+            exposed_to: recipients(&[("charlie", &["age1charlie"])]),
         };
         let body = b"arbitrary\x00binary\r\n";
         let payload = encode_payload(&header, body).unwrap();
-        let (decoded_header, decoded_body) = decode_payload(&payload).unwrap();
+        let (decoded_header, decoded_body) = decode_payload::<Header>(&payload).unwrap();
         assert_eq!(decoded_header, header);
         assert_eq!(decoded_body, body);
     }
 
     // --- next_header (plan 6.1) ---
 
+    fn header_with(exposed_to: Recipients) -> Header {
+        Header {
+            v: VERSION,
+            exposed_to,
+        }
+    }
+
     #[test]
     fn next_header_new_secret_has_no_exposure() {
         let current = recipients(&[("alice", &["age1alice"])]);
-        let header = next_header(None, false, &current);
-        assert_eq!(header.recipients, current);
-        assert!(header.exposed_to.is_empty());
+        assert!(next_header(None, false, &current).exposed_to.is_empty());
     }
 
     #[test]
     fn next_header_user_remove_flags_secret() {
-        let old = Header {
-            v: 1,
-            recipients: recipients(&[("alice", &["age1alice"]), ("bob", &["age1bob"])]),
-            exposed_to: Recipients::new(),
-        };
-        let current = recipients(&[("alice", &["age1alice"])]);
-        let header = next_header(Some(&old), false, &current);
-        assert_eq!(header.exposed_to, recipients(&[("bob", &["age1bob"])]));
+        let old_members = recipients(&[("alice", &["age1alice"]), ("bob", &["age1bob"])]);
+        let new_members = recipients(&[("alice", &["age1alice"])]);
+        let old = header_with(Recipients::new());
+        let got = next_header(Some((&old, &old_members)), false, &new_members);
+        assert_eq!(got.exposed_to, recipients(&[("bob", &["age1bob"])]));
     }
 
     #[test]
     fn next_header_rotate_or_user_add_changes_nothing() {
-        let old = Header {
-            v: 1,
-            recipients: recipients(&[("alice", &["age1alice"])]),
-            exposed_to: Recipients::new(),
-        };
-        let current = recipients(&[("alice", &["age1alice"]), ("bob", &["age1bob"])]);
-        let header = next_header(Some(&old), false, &current);
-        assert!(header.exposed_to.is_empty());
+        let old_members = recipients(&[("alice", &["age1alice"])]);
+        let new_members = recipients(&[("alice", &["age1alice"]), ("bob", &["age1bob"])]);
+        let old = header_with(Recipients::new());
+        let got = next_header(Some((&old, &old_members)), false, &new_members);
+        assert!(got.exposed_to.is_empty());
+    }
+
+    #[test]
+    fn next_header_rewrite_under_the_same_epoch_adds_nothing() {
+        let members = recipients(&[("alice", &["age1alice"]), ("bob", &["age1bob"])]);
+        let old = header_with(recipients(&[("charlie", &["age1charlie"])]));
+        let got = next_header(Some((&old, &members)), false, &members);
+        assert_eq!(got, old);
     }
 
     #[test]
     fn next_header_plaintext_change_clears_exposure() {
-        let old = Header {
-            v: 1,
-            recipients: recipients(&[("alice", &["age1alice"]), ("bob", &["age1bob"])]),
-            exposed_to: recipients(&[("charlie", &["age1charlie"])]),
-        };
-        let current = recipients(&[("alice", &["age1alice"])]);
-        let header = next_header(Some(&old), true, &current);
-        assert!(header.exposed_to.is_empty());
+        let old_members = recipients(&[("alice", &["age1alice"]), ("bob", &["age1bob"])]);
+        let new_members = recipients(&[("alice", &["age1alice"])]);
+        let old = header_with(recipients(&[("charlie", &["age1charlie"])]));
+        let got = next_header(Some((&old, &old_members)), true, &new_members);
+        assert!(got.exposed_to.is_empty());
     }
 
     #[test]
     fn next_header_readded_user_stays_exposed_until_content_changes() {
         // charlie was removed (flagged), then re-added: exposure is carried forward because
         // only a plaintext change clears it (decision 5).
-        let old = Header {
-            v: 1,
-            recipients: recipients(&[("alice", &["age1alice"])]),
-            exposed_to: recipients(&[("charlie", &["age1charlie"])]),
-        };
-        let current = recipients(&[("alice", &["age1alice"]), ("charlie", &["age1charlie"])]);
-        let header = next_header(Some(&old), false, &current);
-        assert_eq!(
-            header.exposed_to,
-            recipients(&[("charlie", &["age1charlie"])])
-        );
+        let old_members = recipients(&[("alice", &["age1alice"])]);
+        let new_members = recipients(&[("alice", &["age1alice"]), ("charlie", &["age1charlie"])]);
+        let old = header_with(recipients(&[("charlie", &["age1charlie"])]));
+        let got = next_header(Some((&old, &old_members)), false, &new_members);
+        assert_eq!(got.exposed_to, old.exposed_to);
     }
 
     #[test]
     fn next_header_rename_with_same_key_is_not_flagged() {
         // The same key now sits under a new user name: keys are compared, not names, so it is
         // not stale.
-        let old = Header {
-            v: 1,
-            recipients: recipients(&[("alice", &["age1shared"])]),
-            exposed_to: Recipients::new(),
-        };
-        let current = recipients(&[("alice2", &["age1shared"])]);
-        let header = next_header(Some(&old), false, &current);
-        assert!(header.exposed_to.is_empty());
+        let old_members = recipients(&[("alice", &["age1shared"])]);
+        let new_members = recipients(&[("alice2", &["age1shared"])]);
+        let old = header_with(Recipients::new());
+        let got = next_header(Some((&old, &old_members)), false, &new_members);
+        assert!(got.exposed_to.is_empty());
     }
 
     // --- plaintext_state (plan 6.2) ---
@@ -401,11 +418,7 @@ mod tests {
         let bob = age::x25519::Identity::generate();
         let mallory = age::x25519::Identity::generate();
 
-        let header = Header {
-            v: 1,
-            recipients: recipients(&[("alice", &["a"]), ("bob", &["b"])]),
-            exposed_to: Recipients::new(),
-        };
+        let header = header_with(recipients(&[("charlie", &["age1charlie"])]));
         let body = b"super secret";
         let alice_pub = alice.to_public();
         let bob_pub = bob.to_public();
@@ -414,12 +427,12 @@ mod tests {
 
         for identity in [&alice, &bob] {
             let (decoded_header, decoded_body) =
-                decrypt(&ciphertext, &[identity as &dyn age::Identity]).unwrap();
+                decrypt::<Header>(&ciphertext, &[identity as &dyn age::Identity]).unwrap();
             assert_eq!(decoded_header, header);
             assert_eq!(decoded_body, body);
         }
 
-        let err = decrypt(&ciphertext, &[&mallory as &dyn age::Identity]).unwrap_err();
+        let err = decrypt::<Header>(&ciphertext, &[&mallory as &dyn age::Identity]).unwrap_err();
         assert!(matches!(
             err,
             Error::Decrypt(age::DecryptError::NoMatchingKeys)

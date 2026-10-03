@@ -1,6 +1,6 @@
 # ADR-0003: One age file per secret instead of epoch keys
 
-**Status:** Accepted (plan.md §2 decision 1 can flip it)
+**Status:** Superseded by ADR-0015
 
 ## Context
 The original design wrapped a per-epoch symmetric key (`key.age`, HKDF, XChaCha20-Poly1305,

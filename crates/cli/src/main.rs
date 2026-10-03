@@ -45,6 +45,7 @@ enum Command {
         paths: Vec<String>,
     },
     /// Re-encrypt local plaintext edits.
+    #[command(visible_alias = "lock")]
     Seal {
         /// Seal an `Outdated`/`Conflict` plaintext, overwriting the repository version.
         #[arg(long)]
@@ -53,6 +54,7 @@ enum Command {
         paths: Vec<String>,
     },
     /// Decrypt secrets to local plaintext.
+    #[command(visible_alias = "unlock")]
     Open {
         /// Discard local edits and take the repository version.
         #[arg(long)]
@@ -61,6 +63,7 @@ enum Command {
         paths: Vec<String>,
     },
     /// Delete local plaintext once it is sealed.
+    #[command(visible_alias = "shred")]
     Close {
         /// Plaintext or `.amaga` paths to close (default: every secret whose plaintext exists).
         paths: Vec<String>,
@@ -71,20 +74,28 @@ enum Command {
         #[arg(required = true)]
         paths: Vec<String>,
     },
-    /// Add or remove a member and re-encrypt every secret.
+    /// Add a member, or remove one and re-encrypt every secret.
     User {
         #[command(subcommand)]
         command: UserCommand,
     },
     /// Re-encrypt every secret with fresh keys; also finishes an interrupted removal.
     Rotate,
+    /// Clear NEEDS ROTATION without changing the plaintext.
+    Dismiss {
+        /// Members to dismiss (default: every member flagged in the selected secrets).
+        #[arg(long = "user", value_name = "NAME")]
+        users: Vec<String>,
+        /// Plaintext or `.amaga` paths (default: every secret).
+        paths: Vec<String>,
+    },
     /// Show the members and the state and problems of every secret.
     Status,
 }
 
 #[derive(Subcommand)]
 enum UserCommand {
-    /// Add a member and re-encrypt every secret to them.
+    /// Add a member: re-wrap the current epoch key to them (no secret is rewritten).
     Add {
         /// The new member's name.
         name: String,
@@ -143,14 +154,16 @@ fn run(dir: Option<PathBuf>, command: Command) -> Result<ExitCode, Error> {
         Command::User {
             command: UserCommand::Add { name, keys },
         } => {
-            let (gpg, written) = git_amaga_core::cmd_user_add(dir, &name, &keys)?;
-            print_gpg_key(&name, gpg);
-            print_reencrypted(&written);
+            print_gpg_key(&name, git_amaga_core::cmd_user_add(dir, &name, &keys)?);
         }
         Command::User {
             command: UserCommand::Remove { name },
         } => print_reencrypted(&git_amaga_core::cmd_user_remove(dir, &name)?),
         Command::Rotate => print_reencrypted(&git_amaga_core::cmd_rotate(dir)?),
+        Command::Dismiss { users, paths } => print_outcome(
+            "dismissed",
+            git_amaga_core::cmd_dismiss(dir, &users, &paths)?,
+        ),
         Command::Status => return Ok(print_status(&git_amaga_core::cmd_status(dir)?)),
     }
     Ok(ExitCode::SUCCESS)
