@@ -78,7 +78,7 @@ enum Command {
         #[arg(required = true)]
         paths: Vec<String>,
     },
-    /// Add a member, or remove one and re-encrypt every secret.
+    /// Add a member to partitions, or remove one and re-encrypt the partitions you are in.
     User {
         #[command(subcommand)]
         command: UserCommand,
