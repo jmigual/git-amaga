@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
-use git_amaga_core::{Error, GpgKey, Level, Outcome, Rotation, StatusReport, Warning};
+use git_amaga_core::{Error, GpgKey, Imported, Level, Outcome, Rotation, StatusReport, Warning};
 
 #[derive(Parser)]
 #[command(
@@ -101,6 +101,13 @@ enum Command {
         users: Vec<String>,
         /// Plaintext or `.amaga` paths (default: every secret).
         paths: Vec<String>,
+    },
+    /// Migrate an unlocked git-crypt repository: its files become secrets and its key holders
+    /// members.
+    ImportGitCrypt {
+        /// Name the member for a key holder's fingerprint instead of deriving one.
+        #[arg(long = "name", value_name = "FPR=NAME")]
+        names: Vec<String>,
     },
     /// Show the members and the state and problems of every secret.
     Status,
@@ -245,6 +252,9 @@ fn run(dir: Option<PathBuf>, command: Command) -> Result<ExitCode, Error> {
             "dismissed",
             git_amaga_core::cmd_dismiss(dir, &users, &paths)?,
         ),
+        Command::ImportGitCrypt { names } => {
+            print_imported(git_amaga_core::cmd_import_git_crypt(dir, &names)?)
+        }
         Command::Status => return Ok(print_status(&git_amaga_core::cmd_status(dir)?)),
     }
     Ok(ExitCode::SUCCESS)
@@ -260,6 +270,16 @@ fn print_outcome(verb: &str, outcome: Outcome) {
     print_warnings(&outcome.warnings);
     for path in &outcome.changed {
         println!("{verb} {path}");
+    }
+}
+
+fn print_imported(imported: Imported) {
+    print_warnings(&imported.warnings);
+    for (name, key) in &imported.members {
+        println!("{name}: GPG key {} \"{}\"", key.fpr, key.uid);
+    }
+    for path in &imported.changed {
+        println!("imported {path}");
     }
 }
 

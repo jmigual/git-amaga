@@ -770,8 +770,8 @@ Install and CI:
 
 `lib.rs` gets a one-line crate doc: each command takes the directory it runs in, acts on the
 repository containing it and never prints. Public modules: `epoch` (section 15), `error`, `gpg`, `identity`, `partition` (section 16), `secret`, `users`. Private
-modules: `audit`, `commands`, `context`, `dismiss` and `status` (section 15), `files` and `import` (section 16), `git`, `keyring`, `membership`, `outcome`, `paths`,
-`remove`, `selection`. Root re-exports: `Error`, `keyring::GpgKey`, the `outcome` types, and every `cmd_*`.
+modules: `audit`, `commands`, `context`, `dismiss` and `status` (section 15), `files` and `import` (section 16), `git`, `gitcrypt` (pure `import-git-crypt` helpers), `keyring`, `membership`, `outcome`, `partition_commands`
+(the `partition` commands), `paths`, `remove`, `selection`. Root re-exports: `Error`, `keyring::GpgKey`, the `outcome` types, and every `cmd_*`.
 
 ```text
 cmd_keygen(dir, path: Option<&Path>)           -> Result<age::x25519::Recipient, Error>

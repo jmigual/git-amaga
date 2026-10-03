@@ -291,6 +291,31 @@ pub enum Error {
     #[error("'{0}' has no valid partition label (expected exactly one `amaga-partition` stanza)")]
     PartitionLabelInvalid(String),
 
+    #[error(
+        "this repository already has secrets; `import-git-crypt` only runs before the first `add`"
+    )]
+    ImportNotFresh,
+
+    #[error("no tracked file has a git-crypt `filter` attribute; nothing to import")]
+    NothingToImport,
+
+    #[error("these files are still git-crypt ciphertext (run `git-crypt unlock` first): {0}")]
+    GitCryptLocked(String),
+
+    #[error("these files have staged changes; commit or unstage them first: {0}")]
+    ImportStagedChanges(String),
+
+    #[error("'{0}' is not a key holder in .git-crypt/keys (expected `--name <FPR>=<name>`)")]
+    ImportUnknownFingerprint(String),
+
+    #[error("'{0}' is not named <40 hex digits>.gpg")]
+    ImportBadHolderName(String),
+
+    #[error(
+        "these paths still have a git-crypt filter after the import; remove it by hand (for example from .git/info/attributes): {0}"
+    )]
+    GitCryptAttributeRemains(String),
+
     #[error("nothing to dismiss: name at least one path or `--user`")]
     DismissNoTarget,
 

@@ -93,6 +93,23 @@ impl Repo {
         command.output().expect("spawn git-amaga")
     }
 
+    /// Runs another tool (such as `git-crypt`) in the repository with the same isolation, and
+    /// `extra_env` applied after it.
+    pub fn run_tool(
+        &self,
+        program: &str,
+        args: &[&str],
+        extra_env: &[(&str, &std::ffi::OsStr)],
+    ) -> Output {
+        let mut command = Command::new(program);
+        command.args(args);
+        self.isolate(&mut command, self.path());
+        for (key, value) in extra_env {
+            command.env(key, value);
+        }
+        command.output().expect("spawn tool")
+    }
+
     /// Commits everything except the identity file `repo_with_alice` writes into the repository.
     pub fn commit_all(&self, message: &str) {
         self.git(&["add", "-A", "--", ".", ":(exclude)identity.txt"])
@@ -294,6 +311,15 @@ pub fn find_on_path(name: &str) -> PathBuf {
             })
         })
         .unwrap_or_else(|| panic!("{name} not found on PATH"))
+}
+
+/// Whether `git-crypt` is installed; prints a skip notice if it is not.
+pub fn git_crypt_available(test_name: &str) -> bool {
+    let available = Command::new("git-crypt").arg("--version").output().is_ok();
+    if !available {
+        println!("skipping {test_name}: git-crypt not on PATH");
+    }
+    available
 }
 
 /// A throwaway `GNUPGHOME` for gpg tests; the agent is killed on drop. Pass the path to children

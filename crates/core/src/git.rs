@@ -164,6 +164,54 @@ pub fn managed_secrets(root: &Path) -> Result<Vec<String>, Error> {
     Ok(paths)
 }
 
+fn nul_separated(output: &str) -> Vec<String> {
+    output
+        .split('\0')
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// Every tracked path.
+pub fn tracked_files(root: &Path) -> Result<Vec<String>, Error> {
+    run_in(root, &["ls-files", "-z"]).map(|out| nul_separated(&out))
+}
+
+/// The tracked paths matching `pathspecs`.
+pub fn tracked_matching(root: &Path, pathspecs: &[&str]) -> Result<Vec<String>, Error> {
+    let mut args = vec!["ls-files", "-z", "--"];
+    args.extend(pathspecs);
+    run_in(root, &args).map(|out| nul_separated(&out))
+}
+
+/// The paths with staged changes.
+pub fn staged_paths(root: &Path) -> Result<Vec<String>, Error> {
+    run_in(root, &["diff", "--cached", "--name-only", "-z"]).map(|out| nul_separated(&out))
+}
+
+/// `git rm --cached` for `paths`: removes them from the index only (plan 7.5).
+pub fn rm_cached(root: &Path, paths: &[&str]) -> Result<(), Error> {
+    let args = [
+        "--literal-pathspecs",
+        "rm",
+        "--cached",
+        "-q",
+        "--pathspec-from-file=-",
+        "--pathspec-file-nul",
+    ];
+    let input: Vec<u8> = paths
+        .iter()
+        .flat_map(|p| format!("{p}\0").into_bytes())
+        .collect();
+    let output = output_with_stdin(root, &args, &input)?;
+    match output.status.success() {
+        true => Ok(()),
+        false => Err(Error::Git(
+            String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        )),
+    }
+}
+
 /// The unmerged paths matching `pathspecs`, sorted and deduplicated.
 pub fn unmerged_paths(root: &Path, pathspecs: &[&str]) -> Result<Vec<String>, Error> {
     // `-z`: without it git C-quotes non-ASCII paths.

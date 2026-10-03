@@ -3,6 +3,7 @@
 use std::fmt;
 
 use crate::Error;
+use crate::keyring::GpgKey;
 
 /// The result of `add`, `seal`, `open`, `close` and `remove`.
 #[derive(Debug, Default)]
@@ -29,6 +30,15 @@ pub enum Warning {
     },
     /// `rotate` or `user remove` left a partition alone because the actor is not in it.
     PartitionNotRotated(String),
+    /// A git-crypt key holder was not imported as a member.
+    KeySkipped {
+        /// The holder's fingerprint, or the file name that is not one.
+        fpr: String,
+        /// Why not.
+        error: Error,
+    },
+    /// Importing does not remove the old git-crypt ciphertext from history.
+    GitCryptHistory,
     /// A partition lists a name that is not in `.amaga/users`; it grants nothing.
     UnknownMember {
         /// The partition.
@@ -62,6 +72,13 @@ impl fmt::Display for Warning {
                 f,
                 "partition '{partition}' was not re-encrypted: you are not a member; a member must run `git-amaga rotate --partition {partition}`"
             ),
+            Self::KeySkipped { fpr, error } => {
+                write!(f, "git-crypt key holder {fpr} not imported: {error}")
+            }
+            Self::GitCryptHistory => write!(
+                f,
+                "every former git-crypt key holder, including anyone given an exported key, can still read the imported files in git history; treat those credentials as exposed"
+            ),
             Self::UnknownMember { partition, name } => write!(
                 f,
                 "partition '{partition}' lists '{name}', who is not in .amaga/users; it grants nothing"
@@ -77,6 +94,19 @@ pub struct Rotation {
     /// The secrets that were re-encrypted, in write order.
     pub written: Vec<Reencrypted>,
     /// Problems that did not stop the command.
+    pub warnings: Vec<Warning>,
+}
+
+/// The result of `import-git-crypt`.
+#[derive(Debug)]
+pub struct Imported {
+    /// The new members, with the GPG key each was exported from.
+    pub members: Vec<(String, GpgKey)>,
+    /// The partitions the import created.
+    pub created: Vec<String>,
+    /// The `.amaga` paths written.
+    pub changed: Vec<String>,
+    /// Problems that did not stop the import; the history warning is last.
     pub warnings: Vec<Warning>,
 }
 
