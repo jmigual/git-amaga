@@ -82,6 +82,7 @@ pub fn cmd_init(dir: &Path, name: &str, keys: &[String]) -> Result<Option<GpgKey
 /// `git-amaga add [--force] <path>…` (plan 7).
 pub fn cmd_add(dir: &Path, force: bool, args: &[String]) -> Result<Outcome, Error> {
     let mut ctx = Context::load(dir)?;
+    ctx.require_up_to_date()?;
     let mut outcome = Outcome::default();
 
     for arg in args {
@@ -129,6 +130,7 @@ pub fn cmd_add(dir: &Path, force: bool, args: &[String]) -> Result<Outcome, Erro
 /// `git-amaga seal [--force] [<path>…]` (plan 7).
 pub fn cmd_seal(dir: &Path, force: bool, args: &[String]) -> Result<Outcome, Error> {
     let mut ctx = Context::load(dir)?;
+    ctx.require_up_to_date()?;
     let mut outcome = Outcome::default();
 
     for sp in secret_paths_for(&ctx, args, true, &mut outcome.warnings)? {

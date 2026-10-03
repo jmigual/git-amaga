@@ -1,11 +1,10 @@
 //! `git-amaga status` (plan 7.2).
 
-use std::collections::BTreeSet;
 use std::path::Path;
 
 use crate::context::{Context, read_plaintext, read_repo_file, secret_paths_for};
 use crate::outcome::{Level, SecretStatus, StatusReport};
-use crate::{Error, git, identity, paths, secret, users};
+use crate::{Error, git, identity, paths, secret};
 
 const UNMERGED: &str = "unmerged; resolve the conflict and `git add` the file";
 
@@ -13,8 +12,7 @@ const UNMERGED: &str = "unmerged; resolve the conflict and `git add` the file";
 pub fn cmd_status(dir: &Path) -> Result<StatusReport, Error> {
     let ctx = Context::load_allowing_unmerged(dir)?;
     let unmerged = git::unmerged_secrets(&ctx.root)?;
-    let epoch = ctx.current_epoch()?;
-    let up_to_date = key_set(&epoch.members) == key_set(&users::recipients(&ctx.members));
+    let up_to_date = ctx.epoch_up_to_date()?;
 
     let mut warnings = Vec::new();
     let mut statuses = Vec::new();
@@ -139,9 +137,4 @@ fn state_problem(plaintext: &str, state: secret::PlaintextState) -> Option<Strin
         ),
     };
     Some(format!("'{plaintext}' {what}; {fix}"))
-}
-
-// Stale means a different set of keys; member names are only labels (plan 5.2).
-fn key_set(recipients: &secret::Recipients) -> BTreeSet<&str> {
-    recipients.values().flatten().map(String::as_str).collect()
 }

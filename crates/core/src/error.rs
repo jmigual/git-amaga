@@ -244,4 +244,7 @@ pub enum Error {
 
     #[error("invalid epoch: {0}")]
     EpochInvalid(String),
+
+    #[error("`.amaga/users` differs from the current epoch; run `git-amaga rotate` first")]
+    EpochStale,
 }

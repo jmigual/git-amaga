@@ -114,6 +114,20 @@ impl Context {
         }
     }
 
+    /// Whether the current epoch is wrapped to exactly the keys in `.amaga/users` (plan 5.6).
+    pub(crate) fn epoch_up_to_date(&self) -> Result<bool, Error> {
+        let epoch = self.current_epoch()?;
+        Ok(key_set(&epoch.members) == key_set(&users::recipients(&self.members)))
+    }
+
+    /// The guard of `add` and `seal`: [`Error::EpochStale`] unless up to date (plan 7).
+    pub(crate) fn require_up_to_date(&self) -> Result<(), Error> {
+        match self.epoch_up_to_date()? {
+            true => Ok(()),
+            false => Err(Error::EpochStale),
+        }
+    }
+
     /// The current epoch. A failure aborts the command (plan 5.6).
     pub(crate) fn current_epoch(&self) -> Result<Rc<Epoch>, Error> {
         self.epoch(&self.current.to_string())
@@ -219,6 +233,11 @@ impl Context {
             gpg,
         )
     }
+}
+
+// Stale means a different set of keys; member names are only labels (plan 5.2).
+fn key_set(recipients: &secret::Recipients) -> BTreeSet<&str> {
+    recipients.values().flatten().map(String::as_str).collect()
 }
 
 // `None`: the epoch's key does not open the file.

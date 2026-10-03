@@ -21,15 +21,21 @@ fn add_secret(repo: &Repo, name: &str, body: &[u8]) {
     repo.run(&["add", name]).assert_success();
 }
 
-/// Writes `.amaga/users/<name>.txt` by hand, as a merge or a teammate's commit would, and runs
-/// `rotate` so the new member can read the secrets (an epoch is wrapped only when it is written).
-fn write_member(repo: &Repo, name: &str) -> x25519::Identity {
+/// Writes `.amaga/users/<name>.txt` by hand, as a merge or a teammate's commit would. The
+/// current epoch is not wrapped to the new member until `rotate`.
+fn write_member_file(repo: &Repo, name: &str) -> x25519::Identity {
     let identity = x25519::Identity::generate();
     std::fs::write(
         repo.path().join(format!(".amaga/users/{name}.txt")),
         format!("{}\n", identity.to_public()),
     )
     .unwrap();
+    identity
+}
+
+/// Like [`write_member_file`], then runs `rotate` so the new member can read the secrets.
+fn write_member(repo: &Repo, name: &str) -> x25519::Identity {
+    let identity = write_member_file(repo, name);
     repo.run(&["rotate"]).assert_success();
     identity
 }
@@ -159,6 +165,17 @@ fn interrupted_remove_reported_stale_and_rotate_completes() {
     let status = repo.run(&["status"]);
     assert_eq!(status.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&status.stdout).contains("run git-amaga rotate"));
+
+    std::fs::write(repo.path().join("secret.env"), b"v2").unwrap();
+    let before = std::fs::read(repo.path().join("secret.env.amaga")).unwrap();
+    let seal = repo.run(&["seal", "secret.env"]);
+    seal.assert_failure();
+    assert!(stderr(&seal).contains("rotate"), "got {:?}", stderr(&seal));
+    assert_eq!(
+        std::fs::read(repo.path().join("secret.env.amaga")).unwrap(),
+        before
+    );
+    std::fs::write(repo.path().join("secret.env"), b"v1").unwrap();
 
     repo.run(&["rotate"]).assert_success();
     let status = repo.run(&["status"]);
@@ -732,5 +749,48 @@ fn member_not_in_old_epoch_cannot_read_its_secrets() {
     assert_eq!(
         std::fs::read(repo.path().join("feature.env")).unwrap(),
         b"f"
+    );
+}
+
+/// Test 44: a member file written by hand leaves the epoch stale: writes refuse with the rotate
+/// hint, and `rotate` finishes the job without flagging anyone.
+#[test]
+fn interrupted_user_add_finished_by_rotate() {
+    let (repo, identity_path) = repo_with_alice();
+    add_secret(&repo, "secret.env", b"v1");
+    let carol = write_member_file(&repo, "carol");
+
+    let status = repo.run(&["status"]);
+    assert_eq!(status.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&status.stdout).contains("run git-amaga rotate"));
+
+    let before = std::fs::read(repo.path().join("secret.env.amaga")).unwrap();
+    let before_audit = audit_events(&repo);
+    std::fs::write(repo.path().join("new.env"), b"n").unwrap();
+    std::fs::write(repo.path().join("secret.env"), b"v2").unwrap();
+    for args in [["add", "new.env"], ["seal", "secret.env"]] {
+        let refused = repo.run(&args);
+        refused.assert_failure();
+        assert!(
+            stderr(&refused).contains("rotate"),
+            "got {:?}",
+            stderr(&refused)
+        );
+    }
+    assert!(!repo.path().join("new.env.amaga").exists());
+    assert_eq!(
+        std::fs::read(repo.path().join("secret.env.amaga")).unwrap(),
+        before
+    );
+    assert_eq!(audit_events(&repo), before_audit);
+
+    std::fs::write(repo.path().join("secret.env"), b"v1").unwrap();
+    repo.run(&["rotate"]).assert_success();
+    let ciphertext = std::fs::read(repo.path().join("secret.env.amaga")).unwrap();
+    assert_eq!(decrypt_as(&repo, &ciphertext, &carol).unwrap().1, b"v1");
+    assert!(
+        header_of(&repo, &identity_path, "secret.env.amaga")
+            .exposed_to
+            .is_empty()
     );
 }
