@@ -5,7 +5,7 @@ use std::path::Path;
 use crate::context::{Context, Decrypted};
 use crate::files::{read_plaintext, read_repo_file};
 use crate::outcome::{Level, SecretStatus, StatusReport, Warning};
-use crate::partition::DEFAULT;
+use crate::partition::{self, DEFAULT};
 use crate::selection::all_secret_paths;
 use crate::{Error, git, identity, paths, secret, users};
 
@@ -93,6 +93,13 @@ fn secret_status(
             Err(e) => errors.push(without_path(e)),
             Ok((ciphertext, label)) => {
                 partition = label;
+                match partition::attribute(&ctx.root, plaintext) {
+                    Ok(Some(attr)) if attr != partition => errors.push(format!(
+                        "in partition {partition}, but .gitattributes says {attr}; run git-amaga partition move {attr} {plaintext}, or fix .gitattributes"
+                    )),
+                    Ok(_) => {}
+                    Err(e) => errors.push(e.to_string()),
+                }
                 match ctx.in_partition(&partition) {
                     Err(e) => errors.push(e.to_string()),
                     Ok(false) => ok = "not a member",

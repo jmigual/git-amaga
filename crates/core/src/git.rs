@@ -1,13 +1,13 @@
 //! Runs `git` as a subprocess, never through a shell (plan 10.2).
 
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 
 use crate::error::Error;
 
-// Runs `git` in `dir`. An unusable `dir` is an `Error::IoPath` naming it, not a bare spawn error.
-fn output(dir: &Path, args: &[&str]) -> Result<Output, Error> {
+// An unusable `dir` is an `Error::IoPath` naming it, not a bare spawn error.
+fn check_dir(dir: &Path) -> Result<(), Error> {
     let io_error = |source| Error::IoPath {
         path: dir.display().to_string(),
         source,
@@ -15,11 +15,36 @@ fn output(dir: &Path, args: &[&str]) -> Result<Output, Error> {
     if !dir.metadata().map_err(io_error)?.is_dir() {
         return Err(io_error(io::ErrorKind::NotADirectory.into()));
     }
+    Ok(())
+}
+
+// Runs `git` in `dir`.
+fn output(dir: &Path, args: &[&str]) -> Result<Output, Error> {
+    check_dir(dir)?;
     Command::new("git")
         .args(args)
         .current_dir(dir)
         .output()
         .map_err(Error::Io)
+}
+
+// Like `output`, with `input` on stdin.
+fn output_with_stdin(dir: &Path, args: &[&str], input: &[u8]) -> Result<Output, Error> {
+    check_dir(dir)?;
+    let mut child = Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let mut stdin = child.stdin.take().expect("stdin is piped");
+    // A thread, so a large input and a large output cannot block each other. A write error means
+    // git exited early, which its status reports.
+    std::thread::scope(|scope| {
+        scope.spawn(move || stdin.write_all(input));
+        child.wait_with_output().map_err(Error::Io)
+    })
 }
 
 // Runs `git` in `dir`, returning trimmed stdout; a non-zero exit is `Error::Git`.
@@ -191,9 +216,62 @@ pub fn text_is_unset(root: &Path, path: &str) -> Result<bool, Error> {
     Ok(run_in(root, &["check-attr", "text", "--", path])?.ends_with(": unset"))
 }
 
+/// `(path, attribute, value)` for each of `attrs` on each of `paths`, from `git check-attr`. The
+/// value is `unspecified`, `set`, `unset` or the attribute's value.
+pub fn check_attr(
+    root: &Path,
+    attrs: &[&str],
+    paths: &[&str],
+) -> Result<Vec<(String, String, String)>, Error> {
+    let mut args = vec!["check-attr", "-z", "--stdin"];
+    args.extend(attrs);
+    let input: Vec<u8> = paths
+        .iter()
+        .flat_map(|p| format!("{p}\0").into_bytes())
+        .collect();
+    let output = output_with_stdin(root, &args, &input)?;
+    if !output.status.success() {
+        return Err(Error::Git(
+            String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        ));
+    }
+    Ok(parse_check_attr(&String::from_utf8_lossy(&output.stdout)))
+}
+
+// `-z` output: `path NUL attribute NUL value NUL` per pair.
+fn parse_check_attr(output: &str) -> Vec<(String, String, String)> {
+    let fields: Vec<&str> = output.split('\0').filter(|s| !s.is_empty()).collect();
+    let (triples, _) = fields.as_chunks::<3>();
+    triples
+        .iter()
+        .map(|[path, attr, value]| (path.to_string(), attr.to_string(), value.to_string()))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn check_attr_output_is_one_triple_per_path_and_attribute() {
+        let output = "a.env\0amaga-partition\0production\0flag.txt\0amaga-partition\0set\0x\0amaga-partition\0unspecified\0";
+        let got = parse_check_attr(output);
+        let triple = |path: &str, value: &str| {
+            (
+                path.to_string(),
+                "amaga-partition".to_string(),
+                value.to_string(),
+            )
+        };
+        assert_eq!(
+            got,
+            [
+                triple("a.env", "production"),
+                triple("flag.txt", "set"),
+                triple("x", "unspecified"),
+            ]
+        );
+    }
 
     #[test]
     fn is_not_a_git_repo_error_matches_only_that_failure() {

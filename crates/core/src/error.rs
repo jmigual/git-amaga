@@ -261,6 +261,11 @@ pub enum Error {
     #[error("'{0}' is not a valid partition name (expected [a-z0-9][a-z0-9._-]{{0,63}})")]
     InvalidPartitionName(String),
 
+    #[error(
+        "'{0}': the `amaga-partition` attribute must be set to a partition name (e.g. `amaga-partition=production`)"
+    )]
+    PartitionAttributeInvalid(String),
+
     #[error("partition '{0}' already exists")]
     PartitionExists(String),
 

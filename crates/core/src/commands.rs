@@ -82,8 +82,8 @@ pub fn cmd_init(dir: &Path, name: &str, keys: &[String]) -> Result<Option<GpgKey
     Ok(resolved.gpg)
 }
 
-/// `git-amaga add [--force] [--partition <p>] <path>…` (plan 7): `partition` defaults to
-/// `default`.
+/// `git-amaga add [--force] [--partition <p>] <path>…` (plan 7): `partition`, else the
+/// `amaga-partition` attribute of each path, else `default`.
 pub fn cmd_add(
     dir: &Path,
     force: bool,
@@ -91,13 +91,23 @@ pub fn cmd_add(
     args: &[String],
 ) -> Result<Outcome, Error> {
     let mut ctx = Context::load(dir)?;
-    let partition = partition.unwrap_or(partition::DEFAULT);
-    ctx.require_member(partition)?;
-    ctx.require_up_to_date(partition)?;
     let mut outcome = Outcome::default();
 
+    // Every partition is checked before anything is written (plan 5.7, 7).
+    let mut chosen = Vec::new();
     for arg in args {
         let sp = paths::resolve_arg(&ctx.prefix, arg)?;
+        let partition = match partition {
+            Some(p) => p.to_string(),
+            None => partition::attribute(&ctx.root, &sp.plaintext)?
+                .unwrap_or_else(|| partition::DEFAULT.to_string()),
+        };
+        ctx.require_member(&partition)?;
+        ctx.require_up_to_date(&partition)?;
+        chosen.push((sp, partition));
+    }
+
+    for (sp, partition) in chosen {
         let meta =
             fs::symlink_metadata(ctx.root.join(&sp.plaintext)).map_err(|source| Error::IoPath {
                 path: sp.plaintext.clone(),
@@ -128,8 +138,8 @@ pub fn cmd_add(
 
         ensure_ignored(&ctx.root, &sp.plaintext)?;
         let body = read_repo_file(&ctx.root, &sp.plaintext)?;
-        let header = secret::next_header(None, false, &ctx.current_epoch(partition)?.members);
-        let ciphertext = ctx.encrypt(partition, &header, &body)?;
+        let header = secret::next_header(None, false, &ctx.current_epoch(&partition)?.members);
+        let ciphertext = ctx.encrypt(&partition, &header, &body)?;
         write_repo_file(&ctx.root, &sp.ciphertext, &ciphertext, None)?;
         ctx.set_base(&sp.plaintext, &body)?;
         ctx.audit("secret.added", &sp.plaintext)?;

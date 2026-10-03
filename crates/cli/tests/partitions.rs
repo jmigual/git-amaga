@@ -438,3 +438,58 @@ fn partition_move_flags_members_missing_from_target() {
     let (header, _) = decrypt_file(&repo, &identity_path, "d.env.amaga");
     assert_eq!(header.exposed_to.keys().collect::<Vec<_>>(), ["bob"]);
 }
+
+/// Test 64: the attribute picks the partition at `add` only. A later change makes `status` fail,
+/// but `rotate` follows the label and never widens access (decision 17).
+#[test]
+fn partition_is_chosen_at_add_and_attribute_never_moves_it() {
+    let (repo, _identity_path, bob_config) = repo_with_alice_and_bob();
+    repo.run(&["partition", "create", "production", "alice"])
+        .assert_success();
+    let attributes = repo.path().join(".gitattributes");
+    let original = std::fs::read_to_string(&attributes).unwrap();
+    std::fs::write(
+        &attributes,
+        format!("{original}prod/** amaga-partition=production\n"),
+    )
+    .unwrap();
+    let with_production = std::fs::read_to_string(&attributes).unwrap();
+    std::fs::create_dir(repo.path().join("prod")).unwrap();
+    add_secret(&repo, "prod/db.env", b"db");
+    let ciphertext = read(&repo, "prod/db.env.amaga");
+    let label = git_amaga_core::secret::label_of("prod/db.env.amaga", &ciphertext).unwrap();
+    assert_eq!(label, "production");
+    repo.commit_all("add prod/db.env");
+
+    std::fs::write(
+        &attributes,
+        with_production.replace("=production", "=default"),
+    )
+    .unwrap();
+    repo.commit_all("point the attribute at default");
+    let status = repo.run(&["status"]);
+    status.assert_failure();
+    assert!(stdout(&status).contains(".gitattributes says default"));
+    repo.run(&["rotate"]).assert_success();
+    let ciphertext = read(&repo, "prod/db.env.amaga");
+    let label = git_amaga_core::secret::label_of("prod/db.env.amaga", &ciphertext).unwrap();
+    assert_eq!(label, "production");
+    std::fs::remove_file(repo.path().join("prod/db.env")).unwrap();
+    run_as(&repo, &bob_config, &["open", "prod/db.env"]).assert_failure();
+
+    std::fs::write(&attributes, with_production).unwrap();
+    repo.run(&["status"]).assert_success();
+}
+
+/// A `set` attribute without a value is refused at `add`.
+#[test]
+fn add_refuses_an_attribute_without_a_partition_name() {
+    let (repo, _identity_path) = repo_with_alice();
+    let attributes = repo.path().join(".gitattributes");
+    let original = std::fs::read_to_string(&attributes).unwrap();
+    std::fs::write(&attributes, format!("{original}*.env amaga-partition\n")).unwrap();
+    std::fs::write(repo.path().join("a.env"), b"a").unwrap();
+
+    repo.run(&["add", "a.env"]).assert_failure();
+    assert!(!repo.path().join("a.env.amaga").exists());
+}

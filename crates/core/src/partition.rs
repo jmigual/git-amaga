@@ -27,6 +27,20 @@ pub struct Partition {
 /// Partition name -> partition.
 pub type Partitions = BTreeMap<String, Partition>;
 
+/// The partition the `amaga-partition` git attribute gives `plaintext`, if any (plan 5.7). A
+/// value that is `set`, `unset` or not a partition name is [`Error::PartitionAttributeInvalid`].
+pub(crate) fn attribute(root: &Path, plaintext: &str) -> Result<Option<String>, Error> {
+    let attrs = crate::git::check_attr(root, &["amaga-partition"], &[plaintext])?;
+    let Some((_, _, value)) = attrs.into_iter().next() else {
+        return Ok(None);
+    };
+    match value.as_str() {
+        "unspecified" => Ok(None),
+        v if users::valid_name(v) && v != "set" && v != "unset" => Ok(Some(value)),
+        _ => Err(Error::PartitionAttributeInvalid(plaintext.to_string())),
+    }
+}
+
 fn members_path(p: &str) -> String {
     format!("{DIR}/{p}/members")
 }

@@ -1194,8 +1194,9 @@ full. Struct and function names are illustrative unless 14.2 fixes them.
     returns `(path, attr, value)` triples. Skip this if 16.10 already added it.
   - `add`: choose the partition as in 5.7.
   - `status`: the mismatch error (7.2).
-- Fails before, passes after: 64, and a `git.rs` unit test of `check_attr` on a temp repository
-  (`unspecified`, `set`, and a value).
+- Fails before, passes after: 64 (which also covers `unspecified` and a value), a `git.rs` unit
+  test of the `check-attr -z` output parser on canned output, and a test that a `set` attribute
+  makes `add` fail. No unit test runs git: the checks include `GIT_DIR=/nonexistent cargo test`.
 
 ### 16.10 `import-git-crypt (ADR-0018)`
 
