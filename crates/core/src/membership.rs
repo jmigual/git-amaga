@@ -3,8 +3,9 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::context::{Context, read_repo_file, write_repo_file};
+use crate::context::Context;
 use crate::epoch::{self, Epoch};
+use crate::files::{read_repo_file, write_repo_file};
 use crate::keyring::GpgKey;
 use crate::outcome::Reencrypted;
 use crate::{Error, git, keyring, secret, users};

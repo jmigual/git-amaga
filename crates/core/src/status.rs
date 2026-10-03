@@ -2,7 +2,8 @@
 
 use std::path::Path;
 
-use crate::context::{Context, read_plaintext, read_repo_file, secret_paths_for};
+use crate::context::{Context, secret_paths_for};
+use crate::files::{read_plaintext, read_repo_file};
 use crate::outcome::{Level, SecretStatus, StatusReport};
 use crate::{Error, git, identity, paths, secret};
 

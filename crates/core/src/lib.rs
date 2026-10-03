@@ -10,6 +10,7 @@ mod dismiss;
 pub mod epoch;
 pub mod error;
 mod failure;
+mod files;
 mod git;
 pub mod gpg;
 pub mod identity;

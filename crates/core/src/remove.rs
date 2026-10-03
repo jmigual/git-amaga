@@ -4,7 +4,8 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
 
-use crate::context::{Context, read_plaintext, read_repo_file, secret_paths_for};
+use crate::context::{Context, secret_paths_for};
+use crate::files::{read_plaintext, read_repo_file};
 use crate::outcome::Outcome;
 use crate::{Error, secret};
 

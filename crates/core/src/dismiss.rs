@@ -3,7 +3,8 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
-use crate::context::{Context, read_repo_file, secret_paths_for, write_repo_file};
+use crate::context::{Context, secret_paths_for};
+use crate::files::{read_repo_file, write_repo_file};
 use crate::outcome::Outcome;
 use crate::secret::{self, Header, Recipients};
 use crate::{Error, audit};

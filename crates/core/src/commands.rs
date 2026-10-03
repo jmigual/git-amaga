@@ -1,11 +1,9 @@
 use std::fs;
 use std::path::Path;
 
-use crate::context::{
-    Context, ensure_ignored, read_plaintext, read_repo_file, secret_paths_for, write_epoch,
-    write_repo_file,
-};
+use crate::context::{Context, secret_paths_for, write_epoch};
 use crate::epoch::{self, Epoch};
+use crate::files::{ensure_ignored, read_plaintext, read_repo_file, write_repo_file};
 use crate::keyring::{GpgKey, ResolvedKeys};
 use crate::outcome::{Outcome, Warning};
 use crate::{Error, audit, git, identity, keyring, paths, secret, users};
