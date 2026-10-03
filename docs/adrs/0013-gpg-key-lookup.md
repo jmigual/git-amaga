@@ -1,6 +1,7 @@
 # ADR-0013: `KEY` arguments can name a key in the local gpg keyring
 
-**Status:** Accepted (implementation: plan.md §12 step 7b)
+**Status:** Accepted (implementation: plan.md §12 step 7b); also used by `import-git-crypt`
+(ADR-0018) for the fingerprints in `.git-crypt/keys`
 
 ## Context
 Requested: users should not have to type `gpg` or `age` commands themselves. Exporting a key

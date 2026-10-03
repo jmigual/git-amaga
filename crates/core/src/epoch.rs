@@ -1,4 +1,4 @@
-//! Epoch files and the `current-epoch` pointer (plan 5.6, ADR-0015).
+//! Epoch files (plan 5.6, ADR-0015); the `current-epoch` pointers live in `partition.rs`.
 
 use std::fs;
 use std::path::Path;
@@ -12,7 +12,6 @@ use crate::error::Error;
 use crate::paths;
 use crate::secret::{self, Recipients};
 
-const POINTER: &str = ".amaga/current-epoch";
 const DIR: &str = ".amaga/epochs";
 
 /// The JSON line of an epoch payload: the member keys the epoch is wrapped to.
@@ -111,39 +110,6 @@ pub fn unwrap(
     Ok(Epoch {
         members: header.members,
         identity,
-    })
-}
-
-/// The current epoch's public key from `.amaga/current-epoch`; the epoch file must exist.
-pub fn read_pointer(root: &Path) -> Result<x25519::Recipient, Error> {
-    let contents = match fs::read_to_string(root.join(POINTER)) {
-        Ok(contents) => contents,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(Error::NoEpoch),
-        Err(source) => {
-            return Err(Error::IoPath {
-                path: POINTER.into(),
-                source,
-            });
-        }
-    };
-    let recipient = x25519::Recipient::from_str(contents.trim())
-        .map_err(|_| Error::EpochInvalid(format!("{POINTER}: not an age public key")))?;
-    let path = file_path(&recipient.to_string());
-    if !root.join(&path).is_file() {
-        return Err(Error::EpochInvalid(format!(
-            "{POINTER}: {path} does not exist"
-        )));
-    }
-    Ok(recipient)
-}
-
-/// Points `.amaga/current-epoch` at `id`, atomically.
-pub fn write_pointer(root: &Path, id: &str) -> Result<(), Error> {
-    paths::atomic_write(&root.join(POINTER), format!("{id}\n").as_bytes(), None).map_err(|source| {
-        Error::IoPath {
-            path: POINTER.into(),
-            source,
-        }
     })
 }
 
@@ -248,41 +214,6 @@ mod tests {
                 .unwrap();
             assert!(matches!(err, Error::EpochInvalid(_)));
         }
-    }
-
-    #[test]
-    fn the_pointer_is_read_with_crlf_and_must_name_an_existing_epoch() {
-        let root = tempfile::tempdir().unwrap();
-        assert!(matches!(read_pointer(root.path()), Err(Error::NoEpoch)));
-
-        let alice = x25519::Identity::generate().to_public();
-        let epoch = Epoch::generate(members(&[("alice", &alice)]));
-        let id = epoch.id();
-        fs::create_dir_all(root.path().join(".amaga")).unwrap();
-        fs::write(root.path().join(POINTER), format!("{id}\r\n")).unwrap();
-        assert!(matches!(
-            read_pointer(root.path()),
-            Err(Error::EpochInvalid(_))
-        ));
-
-        write(root.path(), &epoch, &[&alice]).unwrap();
-        assert_eq!(read_pointer(root.path()).unwrap().to_string(), id);
-
-        fs::write(root.path().join(POINTER), "garbage\n").unwrap();
-        assert!(matches!(
-            read_pointer(root.path()),
-            Err(Error::EpochInvalid(_))
-        ));
-    }
-
-    #[test]
-    fn write_pointer_round_trips() {
-        let root = tempfile::tempdir().unwrap();
-        let alice = x25519::Identity::generate().to_public();
-        let epoch = Epoch::generate(Recipients::new());
-        write(root.path(), &epoch, &[&alice]).unwrap();
-        write_pointer(root.path(), &epoch.id()).unwrap();
-        assert_eq!(read_pointer(root.path()).unwrap().to_string(), epoch.id());
     }
 
     #[test]

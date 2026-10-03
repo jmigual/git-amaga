@@ -24,8 +24,14 @@ jobs:
       - name: Install GnuPG (Windows)
         if: runner.os == 'Windows'
         uses: ./.github/actions/install-gnupg
+      - name: Install git-crypt (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y git-crypt
       - name: gpg version
         run: gpg --version
       - run: cargo fmt --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace
+        env:
+          # CI must run the git-crypt end-to-end test, not skip it.
+          AMAGA_REQUIRE_GIT_CRYPT: ${{ runner.os == 'Linux' && '1' || '' }}

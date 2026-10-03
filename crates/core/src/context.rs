@@ -1,28 +1,36 @@
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use crate::epoch::{self, Epoch};
 use crate::failure::{EpochFailure, is_not_a_recipient};
-use crate::outcome::Warning;
+use crate::files::read_repo_file;
+use crate::partition::{self, Partition, Partitions};
 use crate::{Error, audit, git, gpg, identity, paths, secret, users};
 
-// Per-command state: repo, membership, actor identities and base hashes (plan 5.5), and the
-// epochs unwrapped so far (plan 5.6).
+// Per-command state: repo, membership, partitions, actor identities and base hashes (plan 5.5),
+// and the epochs unwrapped so far (plan 5.6).
 pub(crate) struct Context {
     pub(crate) root: PathBuf,
     pub(crate) prefix: String,
     pub(crate) actor: String,
     pub(crate) members: users::Members,
+    pub(crate) partitions: Partitions,
     pub(crate) age_identities: Vec<age::x25519::Identity>,
     pub(crate) gpg_fprs: Vec<String>,
     pub(crate) base_path: PathBuf,
     pub(crate) base: secret::BaseMap,
-    current: age::x25519::Recipient,
     epochs: RefCell<BTreeMap<String, Rc<Epoch>>>,
     failures: RefCell<BTreeMap<String, EpochFailure>>,
+}
+
+/// A decrypted secret: its header and body, the epoch that opened it and its partition.
+pub(crate) struct Decrypted {
+    pub(crate) header: secret::Header,
+    pub(crate) body: Vec<u8>,
+    pub(crate) epoch: Rc<Epoch>,
+    pub(crate) partition: String,
 }
 
 impl Context {
@@ -51,13 +59,12 @@ impl Context {
     }
 
     fn load_in(dir: &Path, root: PathBuf, tolerated: Option<&str>) -> Result<Self, Error> {
-        let unmerged_epoch =
-            git::unmerged_paths(&root, &[".amaga/current-epoch", ".amaga/epochs"])?;
+        let unmerged_epoch = git::unmerged_paths(&root, &[".amaga/partitions", ".amaga/epochs"])?;
         if !unmerged_epoch.is_empty() {
             return Err(Error::UnmergedEpoch(unmerged_epoch.join(", ")));
         }
         let members = users::load_tolerating(&root.join(".amaga/users"), tolerated)?;
-        let current = epoch::read_pointer(&root)?;
+        let partitions = partition::load(&root, &members)?;
         let age_identities = match identity::configured_identity_path(dir)? {
             Some(path) => identity::load_identity_file(&path)?,
             None => Vec::new(),
@@ -71,12 +78,46 @@ impl Context {
             root,
             actor,
             members,
+            partitions,
             age_identities,
             gpg_fprs,
-            current,
             epochs: RefCell::default(),
             failures: RefCell::default(),
         })
+    }
+
+    /// Partition `p`, or [`Error::UnknownPartition`].
+    pub(crate) fn partition(&self, p: &str) -> Result<&Partition, Error> {
+        self.partitions
+            .get(p)
+            .ok_or_else(|| Error::UnknownPartition(p.to_string()))
+    }
+
+    /// A partition that lists `name`, if any.
+    pub(crate) fn listing_partition(&self, name: &str) -> Option<&String> {
+        (self.partitions.iter())
+            .find_map(|(p, partition)| partition.members.contains(name).then_some(p))
+    }
+
+    /// Whether the actor is listed in partition `p` (plan 5.7).
+    pub(crate) fn in_partition(&self, p: &str) -> Result<bool, Error> {
+        Ok(self.partition(p)?.members.contains(&self.actor))
+    }
+
+    /// [`Error::NotInPartition`] unless the actor is listed in partition `p` (plan 7).
+    pub(crate) fn require_member(&self, p: &str) -> Result<(), Error> {
+        match self.in_partition(p)? {
+            true => Ok(()),
+            false => Err(Error::NotInPartition {
+                partition: p.to_string(),
+                path: None,
+            }),
+        }
+    }
+
+    /// The users that partition `p` lists; names that are not users are left out (plan 5.7).
+    pub(crate) fn partition_members(&self, p: &str) -> Result<users::Members, Error> {
+        Ok(users::select(&self.members, &self.partition(p)?.members).0)
     }
 
     // Unwraps epoch `id` once per command, success or failure (plan 5.6).
@@ -122,35 +163,60 @@ impl Context {
         }
     }
 
-    /// Whether the current epoch is wrapped to exactly the keys in `.amaga/users` (plan 5.6).
-    pub(crate) fn epoch_up_to_date(&self) -> Result<bool, Error> {
-        let epoch = self.current_epoch()?;
-        Ok(key_set(&epoch.members) == key_set(&users::recipients(&self.members)))
+    /// Whether partition `p`'s current epoch is wrapped to exactly the keys of the users `p`
+    /// lists (plan 5.7).
+    pub(crate) fn epoch_up_to_date(&self, p: &str) -> Result<bool, Error> {
+        let epoch = self.current_epoch(p)?;
+        let keys = users::recipients(&self.partition_members(p)?);
+        Ok(key_set(&epoch.members) == key_set(&keys))
     }
 
-    /// The guard of `add`, `seal`, `user add` and `dismiss`: [`Error::EpochStale`] unless up to
-    /// date (plan 7).
-    pub(crate) fn require_up_to_date(&self) -> Result<(), Error> {
-        match self.epoch_up_to_date()? {
+    /// The stale guard (plan 7): [`Error::EpochStale`] unless partition `p` is up to date.
+    pub(crate) fn require_up_to_date(&self, p: &str) -> Result<(), Error> {
+        match self.epoch_up_to_date(p)? {
             true => Ok(()),
-            false => Err(Error::EpochStale),
+            false => Err(Error::EpochStale(p.to_string())),
         }
     }
 
-    /// The current epoch. A failure aborts the command (plan 5.6).
-    pub(crate) fn current_epoch(&self) -> Result<Rc<Epoch>, Error> {
-        self.epoch(&self.current.to_string())
+    /// The access check and the stale guard for every partition named by the labels of `secrets`.
+    pub(crate) fn require_secrets_up_to_date(
+        &self,
+        secrets: &[paths::SecretPath],
+    ) -> Result<(), Error> {
+        let mut partitions = BTreeSet::new();
+        for sp in secrets {
+            let ciphertext = read_repo_file(&self.root, &sp.ciphertext)?;
+            let label = secret::label_of(&sp.ciphertext, &ciphertext)?;
+            if !self.in_partition(&label)? {
+                return Err(Error::NotInPartition {
+                    partition: label,
+                    path: Some(sp.ciphertext.clone()),
+                });
+            }
+            partitions.insert(label);
+        }
+        partitions
+            .iter()
+            .try_for_each(|p| self.require_up_to_date(p))
     }
 
-    // The current epoch first, then the others in name order (plan 5.6). Returns the header, the
-    // body and the epoch that decrypted them.
-    pub(crate) fn decrypt(
-        &self,
-        path: &str,
-        ciphertext: &[u8],
-    ) -> Result<(secret::Header, Vec<u8>, Rc<Epoch>), Error> {
-        self.current_epoch()?;
-        let current_id = self.current.to_string();
+    /// The current epoch of partition `p`. A failure aborts the command (plan 5.6).
+    pub(crate) fn current_epoch(&self, p: &str) -> Result<Rc<Epoch>, Error> {
+        self.epoch(&self.partition(p)?.current.to_string())
+    }
+
+    // The label's current epoch first, then the others in name order (plan 5.6).
+    pub(crate) fn decrypt(&self, path: &str, ciphertext: &[u8]) -> Result<Decrypted, Error> {
+        let partition = secret::label_of(path, ciphertext)?;
+        if !self.in_partition(&partition)? {
+            return Err(Error::NotInPartition {
+                partition,
+                path: Some(path.to_string()),
+            });
+        }
+        self.current_epoch(&partition)?;
+        let current_id = self.partition(&partition)?.current.to_string();
         let others = epoch::list(&self.root)?
             .into_iter()
             .filter(|id| *id != current_id);
@@ -171,7 +237,14 @@ impl Context {
                 }
             };
             match open_with(ciphertext, &epoch) {
-                Ok(Some((header, body))) => return Ok((header, body, epoch)),
+                Ok(Some((header, body))) => {
+                    return Ok(Decrypted {
+                        header,
+                        body,
+                        epoch,
+                        partition,
+                    });
+                }
                 Ok(None) => {}
                 Err(e) => return Err(undecryptable(e)),
             }
@@ -195,14 +268,28 @@ impl Context {
             .map(|(name, _)| name.clone())
     }
 
-    /// Encrypts to the current epoch's public key; needs no unwrap (plan 7).
-    pub(crate) fn encrypt(&self, header: &secret::Header, body: &[u8]) -> Result<Vec<u8>, Error> {
-        secret::encrypt(header, body, &[&self.current as &dyn age::Recipient])
+    /// Encrypts to partition `p`'s current epoch with label `p`; needs no unwrap (plan 7).
+    pub(crate) fn encrypt(
+        &self,
+        p: &str,
+        header: &secret::Header,
+        body: &[u8],
+    ) -> Result<Vec<u8>, Error> {
+        let label = secret::Label::new(p)?;
+        let current = &self.partition(p)?.current;
+        secret::encrypt(
+            header,
+            body,
+            &[
+                current as &dyn age::Recipient,
+                &label as &dyn age::Recipient,
+            ],
+        )
     }
 
-    /// Wraps `epoch` to every member key and writes its file (plan 5.6).
-    pub(crate) fn write_epoch(&self, epoch: &Epoch) -> Result<(), Error> {
-        write_epoch(&self.root, &self.members, epoch)
+    /// Wraps `epoch` to the users partition `p` lists and writes its file (plan 5.6).
+    pub(crate) fn write_epoch(&self, p: &str, epoch: &Epoch) -> Result<(), Error> {
+        write_epoch(&self.root, &self.partition_members(p)?, epoch)
     }
 
     // Rewrites the base file only when the hash changes.
@@ -229,6 +316,7 @@ impl Context {
             Some(path),
             None,
             None,
+            None,
         )
     }
 
@@ -245,7 +333,26 @@ impl Context {
             event,
             None,
             user,
+            None,
             gpg,
+        )
+    }
+
+    // A `partition.*` event about `partition`, and `user` when it concerns a member (plan 5.3).
+    pub(crate) fn audit_partition(
+        &self,
+        event: &str,
+        partition: &str,
+        user: Option<&str>,
+    ) -> Result<(), Error> {
+        audit::append(
+            &self.root.join(".amaga/audit.jsonl"),
+            &self.actor,
+            event,
+            None,
+            user,
+            Some(partition),
+            None,
         )
     }
 }
@@ -282,94 +389,4 @@ pub(crate) fn write_epoch(
         .chain(pgp.iter().map(|r| r as &dyn age::Recipient))
         .collect();
     epoch::write(root, epoch, &recipients)
-}
-
-// Explicit args must have a `.amaga`. No args: every existing managed secret, skipping invalid
-// listed paths with a `Skipped` warning.
-pub(crate) fn secret_paths_for(
-    ctx: &Context,
-    args: &[String],
-    existing_plaintext_only: bool,
-    warnings: &mut Vec<Warning>,
-) -> Result<Vec<paths::SecretPath>, Error> {
-    if !args.is_empty() {
-        return args
-            .iter()
-            .map(|a| {
-                let sp = paths::resolve_arg(&ctx.prefix, a)?;
-                if !ctx.root.join(&sp.ciphertext).exists() {
-                    return Err(Error::NotManagedSecret(sp.plaintext));
-                }
-                Ok(sp)
-            })
-            .collect();
-    }
-    let mut found = Vec::new();
-    for ciphertext in git::managed_secrets(&ctx.root)? {
-        if !ctx.root.join(&ciphertext).exists() {
-            continue;
-        }
-        match paths::resolve_arg("", &ciphertext) {
-            Ok(sp) if !existing_plaintext_only || ctx.root.join(&sp.plaintext).exists() => {
-                found.push(sp)
-            }
-            Ok(_) => {}
-            Err(error) => warnings.push(Warning::Skipped {
-                path: ciphertext,
-                error,
-            }),
-        }
-    }
-    Ok(found)
-}
-
-// Regular files only: following a symlinked secret could decrypt, then re-encrypt, a file from
-// another repository (plan 3).
-pub(crate) fn read_repo_file(root: &Path, path: &str) -> Result<Vec<u8>, Error> {
-    let full = root.join(path);
-    let io_error = |source| Error::IoPath {
-        path: path.to_string(),
-        source,
-    };
-    if !fs::symlink_metadata(&full)
-        .map_err(io_error)?
-        .file_type()
-        .is_file()
-    {
-        return Err(Error::NotARegularFile(path.to_string()));
-    }
-    fs::read(&full).map_err(io_error)
-}
-
-// `None` only when the plaintext does not exist; other read errors must not look like `Closed`.
-pub(crate) fn read_plaintext(root: &Path, path: &str) -> Result<Option<Vec<u8>>, Error> {
-    match read_repo_file(root, path) {
-        Err(Error::IoPath { source, .. }) if source.kind() == std::io::ErrorKind::NotFound => {
-            Ok(None)
-        }
-        other => other.map(Some),
-    }
-}
-
-pub(crate) fn write_repo_file(
-    root: &Path,
-    path: &str,
-    contents: &[u8],
-    mode: Option<u32>,
-) -> Result<(), Error> {
-    paths::atomic_write(&root.join(path), contents, mode).map_err(|source| Error::IoPath {
-        path: path.to_string(),
-        source,
-    })
-}
-
-pub(crate) fn ensure_ignored(root: &Path, path: &str) -> Result<(), Error> {
-    if git::is_ignored(root, path)? {
-        return Ok(());
-    }
-    paths::ensure_gitignore_line(&root.join(".gitignore"), &paths::gitignore_escape(path))?;
-    if !git::is_ignored(root, path)? {
-        return Err(Error::PlaintextNotIgnored(path.to_string()));
-    }
-    Ok(())
 }

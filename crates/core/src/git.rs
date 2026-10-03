@@ -1,13 +1,13 @@
 //! Runs `git` as a subprocess, never through a shell (plan 10.2).
 
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 
 use crate::error::Error;
 
-// Runs `git` in `dir`. An unusable `dir` is an `Error::IoPath` naming it, not a bare spawn error.
-fn output(dir: &Path, args: &[&str]) -> Result<Output, Error> {
+// An unusable `dir` is an `Error::IoPath` naming it, not a bare spawn error.
+fn check_dir(dir: &Path) -> Result<(), Error> {
     let io_error = |source| Error::IoPath {
         path: dir.display().to_string(),
         source,
@@ -15,11 +15,36 @@ fn output(dir: &Path, args: &[&str]) -> Result<Output, Error> {
     if !dir.metadata().map_err(io_error)?.is_dir() {
         return Err(io_error(io::ErrorKind::NotADirectory.into()));
     }
+    Ok(())
+}
+
+// Runs `git` in `dir`.
+fn output(dir: &Path, args: &[&str]) -> Result<Output, Error> {
+    check_dir(dir)?;
     Command::new("git")
         .args(args)
         .current_dir(dir)
         .output()
         .map_err(Error::Io)
+}
+
+// Like `output`, with `input` on stdin.
+fn output_with_stdin(dir: &Path, args: &[&str], input: &[u8]) -> Result<Output, Error> {
+    check_dir(dir)?;
+    let mut child = Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let mut stdin = child.stdin.take().expect("stdin is piped");
+    // A thread, so a large input and a large output cannot block each other. A write error means
+    // git exited early, which its status reports.
+    std::thread::scope(|scope| {
+        scope.spawn(move || stdin.write_all(input));
+        child.wait_with_output().map_err(Error::Io)
+    })
 }
 
 // Runs `git` in `dir`, returning trimmed stdout; a non-zero exit is `Error::Git`.
@@ -139,6 +164,60 @@ pub fn managed_secrets(root: &Path) -> Result<Vec<String>, Error> {
     Ok(paths)
 }
 
+fn nul_separated(output: &str) -> Vec<String> {
+    output
+        .split('\0')
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// Every tracked path.
+pub fn tracked_files(root: &Path) -> Result<Vec<String>, Error> {
+    run_in(root, &["ls-files", "-z"]).map(|out| nul_separated(&out))
+}
+
+/// The untracked paths that are not ignored.
+pub fn untracked_files(root: &Path) -> Result<Vec<String>, Error> {
+    run_in(root, &["ls-files", "-z", "--others", "--exclude-standard"])
+        .map(|out| nul_separated(&out))
+}
+
+/// The tracked paths matching `pathspecs`.
+pub fn tracked_matching(root: &Path, pathspecs: &[&str]) -> Result<Vec<String>, Error> {
+    let mut args = vec!["ls-files", "-z", "--"];
+    args.extend(pathspecs);
+    run_in(root, &args).map(|out| nul_separated(&out))
+}
+
+/// The paths with staged changes.
+pub fn staged_paths(root: &Path) -> Result<Vec<String>, Error> {
+    run_in(root, &["diff", "--cached", "--name-only", "-z"]).map(|out| nul_separated(&out))
+}
+
+/// `git rm --cached` for `paths`: removes them from the index only (plan 7.5).
+pub fn rm_cached(root: &Path, paths: &[&str]) -> Result<(), Error> {
+    let args = [
+        "--literal-pathspecs",
+        "rm",
+        "--cached",
+        "-q",
+        "--pathspec-from-file=-",
+        "--pathspec-file-nul",
+    ];
+    let input: Vec<u8> = paths
+        .iter()
+        .flat_map(|p| format!("{p}\0").into_bytes())
+        .collect();
+    let output = output_with_stdin(root, &args, &input)?;
+    match output.status.success() {
+        true => Ok(()),
+        false => Err(Error::Git(
+            String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        )),
+    }
+}
+
 /// The unmerged paths matching `pathspecs`, sorted and deduplicated.
 pub fn unmerged_paths(root: &Path, pathspecs: &[&str]) -> Result<Vec<String>, Error> {
     // `-z`: without it git C-quotes non-ASCII paths.
@@ -191,9 +270,81 @@ pub fn text_is_unset(root: &Path, path: &str) -> Result<bool, Error> {
     Ok(run_in(root, &["check-attr", "text", "--", path])?.ends_with(": unset"))
 }
 
+/// `(path, attribute, value)` for each of `attrs` on each of `paths`, from `git check-attr`. The
+/// value is `unspecified`, `set`, `unset` or the attribute's value.
+pub fn check_attr(
+    root: &Path,
+    attrs: &[&str],
+    paths: &[&str],
+) -> Result<Vec<(String, String, String)>, Error> {
+    let mut args = vec!["check-attr", "-z", "--stdin"];
+    args.extend(attrs);
+    let input: Vec<u8> = paths
+        .iter()
+        .flat_map(|p| format!("{p}\0").into_bytes())
+        .collect();
+    let output = output_with_stdin(root, &args, &input)?;
+    if !output.status.success() {
+        return Err(Error::Git(
+            String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        ));
+    }
+    let triples = parse_check_attr(&String::from_utf8_lossy(&output.stdout));
+    // Fail closed: a misaligned or short answer must not read as "no attribute".
+    if triples.len() != paths.len() * attrs.len() {
+        return Err(Error::Git("unexpected `git check-attr` output".into()));
+    }
+    Ok(triples)
+}
+
+// `-z` output: `path NUL attribute NUL value NUL` per pair. A value can be empty (`attr=`), so
+// empty fields are kept.
+fn parse_check_attr(output: &str) -> Vec<(String, String, String)> {
+    let fields: Vec<&str> = output
+        .strip_suffix('\0')
+        .unwrap_or(output)
+        .split('\0')
+        .collect();
+    let (triples, _) = fields.as_chunks::<3>();
+    triples
+        .iter()
+        .map(|[path, attr, value]| (path.to_string(), attr.to_string(), value.to_string()))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_empty_attribute_value_does_not_shift_the_next_triple() {
+        let got = parse_check_attr("a\0filter\0\0b\0filter\0git-crypt\0");
+        let triple =
+            |path: &str, value: &str| (path.to_string(), "filter".to_string(), value.to_string());
+        assert_eq!(got, [triple("a", ""), triple("b", "git-crypt")]);
+        assert!(parse_check_attr("").is_empty());
+    }
+
+    #[test]
+    fn check_attr_output_is_one_triple_per_path_and_attribute() {
+        let output = "a.env\0amaga-partition\0production\0flag.txt\0amaga-partition\0set\0x\0amaga-partition\0unspecified\0";
+        let got = parse_check_attr(output);
+        let triple = |path: &str, value: &str| {
+            (
+                path.to_string(),
+                "amaga-partition".to_string(),
+                value.to_string(),
+            )
+        };
+        assert_eq!(
+            got,
+            [
+                triple("a.env", "production"),
+                triple("flag.txt", "set"),
+                triple("x", "unspecified"),
+            ]
+        );
+    }
 
     #[test]
     fn is_not_a_git_repo_error_matches_only_that_failure() {

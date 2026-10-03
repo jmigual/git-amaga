@@ -10,23 +10,35 @@ mod dismiss;
 pub mod epoch;
 pub mod error;
 mod failure;
+mod files;
 mod git;
+mod gitcrypt;
 pub mod gpg;
 pub mod identity;
+mod import;
 mod keyring;
 mod membership;
 mod outcome;
+pub mod partition;
+mod partition_commands;
 mod paths;
 mod remove;
 pub mod secret;
+mod selection;
 mod status;
 pub mod users;
 
 pub use commands::{cmd_add, cmd_close, cmd_init, cmd_keygen, cmd_open, cmd_seal};
 pub use dismiss::cmd_dismiss;
 pub use error::Error;
+pub use import::cmd_import_git_crypt;
 pub use keyring::GpgKey;
 pub use membership::{cmd_rotate, cmd_user_add, cmd_user_remove};
-pub use outcome::{Level, Outcome, Reencrypted, SecretStatus, StatusReport, Warning};
+pub use outcome::{
+    Imported, Level, Outcome, Reencrypted, Rotation, SecretStatus, StatusReport, Warning,
+};
+pub use partition_commands::{
+    cmd_partition_add, cmd_partition_create, cmd_partition_move, cmd_partition_remove,
+};
 pub use remove::cmd_remove;
 pub use status::cmd_status;

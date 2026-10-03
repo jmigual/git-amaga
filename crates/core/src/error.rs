@@ -212,8 +212,10 @@ pub enum Error {
     #[error("no member named '{0}' in .amaga/users")]
     UserNotFound(String),
 
-    #[error("'{0}' is the last member; removing them would leave nobody who can decrypt")]
-    LastMember(String),
+    #[error(
+        "'{user}' is the only member of partition '{partition}'; removing them would leave nobody who can decrypt it"
+    )]
+    LastMember { user: String, partition: String },
 
     /// Nothing was written; every failing secret is listed.
     #[error(
@@ -238,20 +240,86 @@ pub enum Error {
     RemoveRefused(String, PlaintextState),
 
     #[error(
-        ".amaga/current-epoch is missing (repository written by git-amaga 0.1.0, or `init` was interrupted); open the secrets with 0.1.0 and run `init` anew, or delete `.amaga/` and rerun `init`"
+        ".amaga/partitions/default/current-epoch is missing (repository written by git-amaga 0.1.0 or 0.2.0, or `init` was interrupted); open the secrets with that version and run `init` anew, or delete `.amaga/` and rerun `init`"
     )]
     NoEpoch,
 
     #[error("invalid epoch: {0}")]
     EpochInvalid(String),
 
-    #[error("`.amaga/users` differs from the current epoch; run `git-amaga rotate` first")]
-    EpochStale,
+    #[error(
+        "partition '{0}' differs from its current epoch; run `git-amaga rotate --partition {0}` first"
+    )]
+    EpochStale(String),
+
+    #[error("invalid partition {0} (see .amaga/partitions)")]
+    PartitionInvalid(String),
+
+    #[error("partition '{0}' does not exist")]
+    UnknownPartition(String),
+
+    #[error("'{0}' is not a valid partition name (expected [a-z0-9][a-z0-9._-]{{0,63}})")]
+    InvalidPartitionName(String),
+
+    #[error(
+        "'{0}': the `amaga-partition` attribute must be set to a partition name (e.g. `amaga-partition=production`)"
+    )]
+    PartitionAttributeInvalid(String),
+
+    #[error("partition '{0}' already exists")]
+    PartitionExists(String),
+
+    #[error(
+        "'{user}' is still listed in partition '{partition}', which would give a new member that name's access; run `git-amaga partition remove {partition} {user}` first"
+    )]
+    UserStillListed { user: String, partition: String },
+
+    #[error("'{user}' is already in partition '{partition}'")]
+    AlreadyInPartition { user: String, partition: String },
+
+    #[error("'{user}' is not listed in partition '{partition}'")]
+    NotAPartitionMember { user: String, partition: String },
+
+    /// `path` is set when the command was reading that secret.
+    #[error("you are not a member of partition '{partition}'{}", .path.as_ref().map(|p| format!(" (needed for '{p}')")).unwrap_or_default())]
+    NotInPartition {
+        partition: String,
+        path: Option<String>,
+    },
 
     #[error(
         "unmerged epoch files must be resolved first: {0}\nrun `git checkout --ours -- <paths> && git add <paths>`, then `git-amaga rotate`"
     )]
     UnmergedEpoch(String),
+
+    /// The label is missing, repeated, or not a valid partition name (plan 5.2).
+    #[error("'{0}' has no valid partition label (expected exactly one `amaga-partition` stanza)")]
+    PartitionLabelInvalid(String),
+
+    #[error(
+        "this repository already has secrets; `import-git-crypt` only runs before the first `add`"
+    )]
+    ImportNotFresh,
+
+    #[error("no tracked file has a git-crypt `filter` attribute; nothing to import")]
+    NothingToImport,
+
+    #[error("these files are still git-crypt ciphertext (run `git-crypt unlock` first): {0}")]
+    GitCryptLocked(String),
+
+    #[error("these files have staged changes; commit or unstage them first: {0}")]
+    ImportStagedChanges(String),
+
+    #[error("'{0}' is not a key holder in .git-crypt/keys (expected `--name <FPR>=<name>`)")]
+    ImportUnknownFingerprint(String),
+
+    #[error("'{0}' is not named <40 hex digits>.gpg")]
+    ImportBadHolderName(String),
+
+    #[error(
+        "these paths still have a git-crypt filter after the import; remove it by hand (for example from .git/info/attributes): {0}"
+    )]
+    GitCryptAttributeRemains(String),
 
     #[error("nothing to dismiss: name at least one path or `--user`")]
     DismissNoTarget,

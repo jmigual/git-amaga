@@ -102,7 +102,7 @@ fn keygen_then_init_creates_state() {
     assert!(gitattributes.contains(".gitignore merge=union"));
     assert!(gitattributes.contains(".amaga/epochs/* binary"));
 
-    let epoch_id = common::current_epoch_id(&repo);
+    let epoch_id = common::current_epoch_id(&repo, "default");
     assert!(
         repo.path()
             .join(format!(".amaga/epochs/{epoch_id}.age"))
@@ -853,6 +853,7 @@ fn age_member_seals_for_gpg_member_without_gpg() {
         include_str!("../../core/tests/fixtures/valid_cv25519.asc"),
     )
     .unwrap();
+    common::join_default(&repo, "bob");
     // bob reads secrets only once an epoch is wrapped to him.
     repo.run(&["rotate"]).assert_success();
 
@@ -1588,6 +1589,7 @@ fn status_stale_compares_key_sets_not_names() {
     let bob = age::x25519::Identity::generate().to_public();
     let bob_file = repo.path().join(".amaga/users/bob.txt");
     std::fs::write(&bob_file, format!("{bob}\n")).unwrap();
+    common::join_default(&repo, "bob");
     repo.run(&["rotate"]).assert_success();
     std::fs::write(repo.path().join("secret.env"), b"v1").unwrap();
     repo.run(&["add", "secret.env"]).assert_success();
@@ -1595,6 +1597,7 @@ fn status_stale_compares_key_sets_not_names() {
 
     let robert_file = repo.path().join(".amaga/users/robert.txt");
     std::fs::rename(&bob_file, &robert_file).unwrap();
+    common::join_default(&repo, "robert");
     assert!(status_stdout(&repo).contains("ok secret.env.amaga"));
 
     let other = age::x25519::Identity::generate().to_public();
@@ -1905,7 +1908,7 @@ fn failed_older_epoch_is_unwrapped_once() {
         repo.run_with_env(&["add", name], &gpg_env).assert_success();
     }
     repo.commit_all("add secrets");
-    let old_epoch = common::current_epoch_id(&repo);
+    let old_epoch = common::current_epoch_id(&repo, "default");
     repo.run_with_env(&["rotate"], &gpg_env).assert_success();
     repo.git(&["checkout", "HEAD", "--", "a.env.amaga", "b.env.amaga"])
         .assert_success();
@@ -1958,7 +1961,10 @@ fn epoch_and_secret_are_plain_age() {
     repo.run(&["add", "secret.env"]).assert_success();
 
     let alice = common::load_identity(&identity_path);
-    let epoch_file = format!(".amaga/epochs/{}.age", common::current_epoch_id(&repo));
+    let epoch_file = format!(
+        ".amaga/epochs/{}.age",
+        common::current_epoch_id(&repo, "default")
+    );
     let epoch_payload = age_decrypt(
         &std::fs::read(repo.path().join(epoch_file)).unwrap(),
         &alice,
@@ -1979,7 +1985,10 @@ fn tampered_epoch_file_fails_and_writes_nothing() {
     std::fs::write(repo.path().join("secret.env"), b"hello").unwrap();
     repo.run(&["add", "secret.env"]).assert_success();
     std::fs::remove_file(repo.path().join("secret.env")).unwrap();
-    let epoch_name = format!(".amaga/epochs/{}.age", common::current_epoch_id(&repo));
+    let epoch_name = format!(
+        ".amaga/epochs/{}.age",
+        common::current_epoch_id(&repo, "default")
+    );
     let epoch_path = repo.path().join(&epoch_name);
     let mut bytes = std::fs::read(&epoch_path).unwrap();
     let last = bytes.len() - 1;
@@ -2012,11 +2021,11 @@ fn tampered_epoch_file_fails_and_writes_nothing() {
     );
 }
 
-/// Test 48: a repository without `.amaga/current-epoch` (a 0.1.0 one) is an error that names it.
+/// Test 48: a repository without `.amaga/partitions/default/current-epoch` (an older one) is an error that names it.
 #[test]
 fn repository_without_current_epoch_errors() {
     let (repo, _identity_path) = repo_with_alice();
-    std::fs::remove_file(repo.path().join(".amaga/current-epoch")).unwrap();
+    std::fs::remove_file(repo.path().join(".amaga/partitions/default/current-epoch")).unwrap();
 
     let status = repo.run(&["status"]);
     assert_eq!(status.status.code(), Some(1));
@@ -2065,7 +2074,7 @@ fn parallel_rotations_conflict_on_current_epoch() {
         assert_eq!(output.status.code(), Some(1), "{args:?}");
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
-            stderr.contains(".amaga/current-epoch"),
+            stderr.contains(".amaga/partitions/default/current-epoch"),
             "{args:?}: {stderr:?}"
         );
         assert!(
@@ -2074,9 +2083,15 @@ fn parallel_rotations_conflict_on_current_epoch() {
         );
     }
 
-    repo.git(&["checkout", "--ours", "--", ".amaga/current-epoch"])
+    repo.git(&[
+        "checkout",
+        "--ours",
+        "--",
+        ".amaga/partitions/default/current-epoch",
+    ])
+    .assert_success();
+    repo.git(&["add", ".amaga/partitions/default/current-epoch"])
         .assert_success();
-    repo.git(&["add", ".amaga/current-epoch"]).assert_success();
     assert_status_error(&repo, "run git-amaga rotate");
     repo.run(&["rotate"]).assert_success();
     status_stdout(&repo);
@@ -2092,7 +2107,7 @@ fn unreadable_older_epoch_is_reported_for_every_secret_under_it() {
         repo.run(&["add", name]).assert_success();
     }
     repo.commit_all("add secrets");
-    let old_epoch = common::current_epoch_id(&repo);
+    let old_epoch = common::current_epoch_id(&repo, "default");
     repo.run(&["rotate"]).assert_success();
     repo.git(&["checkout", "HEAD", "--", "a.env.amaga", "b.env.amaga"])
         .assert_success();
@@ -2112,4 +2127,14 @@ fn unreadable_older_epoch_is_reported_for_every_secret_under_it() {
             .unwrap_or_else(|| panic!("no error line for {name}: {stdout:?}"));
         assert!(line.contains(&old_epoch), "got {line:?}");
     }
+}
+
+#[test]
+fn version_flag_prints_the_package_version() {
+    let repo = Repo::new();
+
+    let output = repo.run(&["--version"]);
+
+    output.assert_success();
+    assert!(String::from_utf8_lossy(&output.stdout).contains(env!("CARGO_PKG_VERSION")));
 }

@@ -93,6 +93,23 @@ impl Repo {
         command.output().expect("spawn git-amaga")
     }
 
+    /// Runs another tool (such as `git-crypt`) in the repository with the same isolation, and
+    /// `extra_env` applied after it.
+    pub fn run_tool(
+        &self,
+        program: &str,
+        args: &[&str],
+        extra_env: &[(&str, &std::ffi::OsStr)],
+    ) -> Output {
+        let mut command = Command::new(program);
+        command.args(args);
+        self.isolate(&mut command, self.path());
+        for (key, value) in extra_env {
+            command.env(key, value);
+        }
+        command.output().expect("spawn tool")
+    }
+
     /// Commits everything except the identity file `repo_with_alice` writes into the repository.
     pub fn commit_all(&self, message: &str) {
         self.git(&["add", "-A", "--", ".", ":(exclude)identity.txt"])
@@ -174,25 +191,44 @@ pub fn repo_with_alice() -> (Repo, PathBuf) {
     (repo, identity_path)
 }
 
-/// The id of the current epoch (`.amaga/current-epoch`).
-pub fn current_epoch_id(repo: &Repo) -> String {
-    epoch::read_pointer(repo.path())
+/// The id of `partition`'s current epoch (`.amaga/partitions/<p>/current-epoch`).
+pub fn current_epoch_id(repo: &Repo, partition: &str) -> String {
+    git_amaga_core::partition::read_pointer(repo.path(), partition)
         .expect("read current-epoch")
         .to_string()
 }
 
-/// Unwraps the current epoch with `identity`.
+/// Appends `name` to `.amaga/partitions/default/members`, the state `user add` leaves after a
+/// test wrote the member's file by hand.
+pub fn join_default(repo: &Repo, name: &str) {
+    let path = repo.path().join(".amaga/partitions/default/members");
+    let mut members = std::fs::read_to_string(&path).expect("read members");
+    members.push_str(&format!("{name}\n"));
+    std::fs::write(&path, members).expect("write members");
+}
+
+/// Unwraps the `default` partition's current epoch with `identity`.
 pub fn current_epoch(repo: &Repo, identity: &x25519::Identity) -> Epoch {
-    let id = current_epoch_id(repo);
+    let id = current_epoch_id(repo, "default");
     let bytes = std::fs::read(repo.path().join(epoch::file_path(&id))).expect("read epoch file");
     epoch::unwrap(&id, &bytes, &[identity as &dyn age::Identity]).expect("unwrap current epoch")
 }
 
-/// Encrypts `header` and `body` to the current epoch, as a teammate's commit would. Needs only
+/// Encrypts `header` and `body` to the current epoch with the `default` label, as a teammate's commit would. Needs only
 /// the public key in `current-epoch`.
 pub fn encrypt_to_current_epoch(repo: &Repo, header: &Header, body: &[u8]) -> Vec<u8> {
-    let recipient = x25519::Recipient::from_str(&current_epoch_id(repo)).expect("epoch id");
-    secret::encrypt(header, body, &[&recipient as &dyn age::Recipient]).expect("encrypt")
+    let recipient =
+        x25519::Recipient::from_str(&current_epoch_id(repo, "default")).expect("epoch id");
+    let label = secret::Label::new("default").expect("label");
+    secret::encrypt(
+        header,
+        body,
+        &[
+            &recipient as &dyn age::Recipient,
+            &label as &dyn age::Recipient,
+        ],
+    )
+    .expect("encrypt")
 }
 
 /// Decrypts a secret as `identity` can: through any epoch file it can unwrap. Fails with
@@ -214,6 +250,42 @@ pub fn decrypt_as(
     Err(git_amaga_core::Error::Decrypt(
         age::DecryptError::NoMatchingKeys,
     ))
+}
+
+/// A second identity for `repo`: its public key and a global git config that selects it.
+pub fn second_identity(repo: &Repo, name: &str) -> (String, std::path::PathBuf) {
+    let identity_path = repo.path().join(format!("{name}-identity.txt"));
+    let keygen = repo.run(&["keygen", identity_path.to_str().unwrap()]);
+    keygen.assert_success();
+    let config = repo.path().join(format!("{name}-gitconfig"));
+    // `git config` escapes the value; a raw Windows path's backslashes would be read as escapes.
+    repo.git(&[
+        "config",
+        "--file",
+        config.to_str().unwrap(),
+        "amaga.identity",
+        identity_path.to_str().unwrap(),
+    ])
+    .assert_success();
+    let key = String::from_utf8_lossy(&keygen.stdout).trim().to_string();
+    (key, config)
+}
+
+pub fn run_as(repo: &Repo, config: &Path, args: &[&str]) -> Output {
+    repo.run_with_env(args, &[("GIT_CONFIG_GLOBAL", config.as_os_str())])
+}
+
+pub fn current_branch(repo: &Repo) -> String {
+    String::from_utf8(repo.git(&["rev-parse", "--abbrev-ref", "HEAD"]).stdout)
+        .unwrap()
+        .trim()
+        .to_string()
+}
+
+/// Whether `identity` can unwrap the epoch file `id`.
+pub fn can_unwrap(repo: &Repo, id: &str, identity: &x25519::Identity) -> bool {
+    let bytes = std::fs::read(repo.path().join(epoch::file_path(id))).expect("read epoch file");
+    epoch::unwrap(id, &bytes, &[identity as &dyn age::Identity]).is_ok()
 }
 
 /// The first identity of the file `repo_with_alice` wrote.
@@ -239,6 +311,21 @@ pub fn find_on_path(name: &str) -> PathBuf {
             })
         })
         .unwrap_or_else(|| panic!("{name} not found on PATH"))
+}
+
+/// Whether `git-crypt` is installed; prints a skip notice if it is not, or panics when
+/// `AMAGA_REQUIRE_GIT_CRYPT=1` (CI), so a missing install cannot pass as a silent skip.
+pub fn git_crypt_available(test_name: &str) -> bool {
+    let available = Command::new("git-crypt").arg("--version").output().is_ok();
+    if !available {
+        let required = std::env::var("AMAGA_REQUIRE_GIT_CRYPT").is_ok_and(|v| v == "1");
+        assert!(
+            !required,
+            "{test_name}: git-crypt is required but not on PATH"
+        );
+        println!("skipping {test_name}: git-crypt not on PATH");
+    }
+    available
 }
 
 /// A throwaway `GNUPGHOME` for gpg tests; the agent is killed on drop. Pass the path to children

@@ -16,7 +16,7 @@ use crate::paths;
 use crate::secret::Recipients;
 
 /// A member's keys, loaded from `<name>.txt` and/or `<name>.asc` (plan 5.1).
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Member {
     pub age_keys: Vec<x25519::Recipient>,
     pub asc: Option<AscKey>,
@@ -163,6 +163,21 @@ fn parse_age_keys(path: &Path) -> Result<Vec<x25519::Recipient>, Error> {
         .collect()
 }
 
+/// The members of `members` that `names` lists, and the names that are not users (plan 5.7).
+pub(crate) fn select(members: &Members, names: &BTreeSet<String>) -> (Members, Vec<String>) {
+    let mut selected = Members::new();
+    let mut unknown = Vec::new();
+    for name in names {
+        match members.get(name) {
+            Some(member) => {
+                selected.insert(name.clone(), member.clone());
+            }
+            None => unknown.push(name.clone()),
+        }
+    }
+    (selected, unknown)
+}
+
 /// Member name -> key strings, for [`crate::secret::next_header`] (plan 5.2).
 pub fn recipients(members: &Members) -> Recipients {
     members
@@ -202,6 +217,20 @@ mod tests {
         let alice = &members["alice"];
         assert_eq!(alice.age_keys.len(), 1);
         assert_eq!(alice.age_keys[0].to_string(), key);
+    }
+
+    #[test]
+    fn select_skips_names_that_are_not_users_and_reports_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let key = x25519::Identity::generate().to_public().to_string();
+        write(dir.path(), "alice.txt", &format!("{key}\n"));
+        let members = load(dir.path()).unwrap();
+
+        let names = BTreeSet::from(["alice".to_string(), "ghost".to_string()]);
+        let (selected, unknown) = select(&members, &names);
+        assert_eq!(selected.keys().collect::<Vec<_>>(), ["alice"]);
+        assert_eq!(unknown, ["ghost"]);
+        assert_eq!(recipients(&selected), recipients(&members));
     }
 
     #[test]
