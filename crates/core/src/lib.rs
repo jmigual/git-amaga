@@ -1,14 +1,17 @@
-pub mod audit;
-pub mod commands;
+//! The commands of git-amaga as functions: they act on the repository containing the current
+//! directory and never print (ADR-0014).
+
+mod audit;
+mod commands;
 mod context;
 pub mod error;
-pub mod git;
+mod git;
 pub mod gpg;
 pub mod identity;
 mod keyring;
-pub mod membership;
+mod membership;
 mod outcome;
-pub mod paths;
+mod paths;
 mod remove;
 pub mod secret;
 pub mod users;
