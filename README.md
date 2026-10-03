@@ -7,7 +7,8 @@ Encrypted secret files in Git, shared with a team through age or GPG keys.
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![MSRV 1.88](https://img.shields.io/badge/MSRV-1.88-orange.svg)](Cargo.toml)
 
-> **Status: 0.1.0, not audited.** The on-disk formats and commands may still change before 1.0.
+> **Status: 0.2.0, not audited.** The on-disk formats and commands may still change before 1.0.
+> 0.2.0 cannot read repositories written by 0.1.0 (format version 2).
 > Read [Security model and limitations](#security-model-and-limitations) before trusting it with
 > production secrets.
 
@@ -57,8 +58,8 @@ events are appended to `.amaga/audit.jsonl`, and plaintext paths are kept in a m
 `.gitignore` block. `user remove` and `rotate` create a new epoch and re-encrypt every secret;
 `user add` only re-wraps the current epoch. Epoch files are never deleted.
 
-This is format version 2. Repositories written by 0.1.0 are not readable: open the secrets with
-0.1.0, then run `init` anew.
+This is format version 2 (0.2.0). It cannot read repositories written by 0.1.0 (format version
+1): open the secrets with 0.1.0, then run `init` anew.
 
 **Escape hatch for age members:** the tool is not needed to read a secret. Two `age -d`
 commands. The epoch key goes to a temporary file outside the repository (`mktemp` makes it
