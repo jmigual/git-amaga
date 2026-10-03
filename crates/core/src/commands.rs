@@ -2,14 +2,17 @@ use std::fs;
 use std::path::Path;
 
 use crate::context::{
-    Context, ensure_ignored, read_plaintext, read_repo_file, secret_paths_for, write_repo_file,
+    Context, ensure_ignored, read_plaintext, read_repo_file, secret_paths_for, write_epoch,
+    write_repo_file,
 };
+use crate::epoch::{self, Epoch};
 use crate::keyring::{GpgKey, ResolvedKeys};
 use crate::outcome::{Outcome, Warning};
 use crate::{Error, audit, git, identity, keyring, paths, secret, users};
 
-const GITATTRIBUTES_LINES: [&str; 3] = [
+const GITATTRIBUTES_LINES: [&str; 4] = [
     "*.amaga binary",
+    ".amaga/epochs/* binary",
     ".amaga/audit.jsonl merge=union",
     ".gitignore merge=union",
 ];
@@ -55,6 +58,11 @@ pub fn cmd_init(dir: &Path, name: &str, keys: &[String]) -> Result<Option<GpgKey
     fs::create_dir_all(&users_dir)?;
     users::write_member(&users_dir, name, &resolved)?;
 
+    let members = users::Members::from([(name.to_string(), users::member_from_keys(&resolved))]);
+    let first_epoch = Epoch::generate(users::recipients(&members));
+    write_epoch(&root, &members, &first_epoch)?;
+    epoch::write_pointer(&root, &first_epoch.id())?;
+
     let gpg_info = resolved
         .gpg
         .as_ref()
@@ -74,7 +82,6 @@ pub fn cmd_init(dir: &Path, name: &str, keys: &[String]) -> Result<Option<GpgKey
 /// `git-amaga add [--force] <path>…` (plan 7).
 pub fn cmd_add(dir: &Path, force: bool, args: &[String]) -> Result<Outcome, Error> {
     let mut ctx = Context::load(dir)?;
-    let current = users::recipients(&ctx.members);
     let mut outcome = Outcome::default();
 
     for arg in args {
@@ -109,7 +116,7 @@ pub fn cmd_add(dir: &Path, force: bool, args: &[String]) -> Result<Outcome, Erro
 
         ensure_ignored(&ctx.root, &sp.plaintext)?;
         let body = read_repo_file(&ctx.root, &sp.plaintext)?;
-        let header = secret::next_header(None, false, &current);
+        let header = secret::next_header(None, false, &ctx.current_epoch()?.members);
         let ciphertext = ctx.encrypt(&header, &body)?;
         write_repo_file(&ctx.root, &sp.ciphertext, &ciphertext, None)?;
         ctx.set_base(&sp.plaintext, &body)?;
@@ -122,12 +129,11 @@ pub fn cmd_add(dir: &Path, force: bool, args: &[String]) -> Result<Outcome, Erro
 /// `git-amaga seal [--force] [<path>…]` (plan 7).
 pub fn cmd_seal(dir: &Path, force: bool, args: &[String]) -> Result<Outcome, Error> {
     let mut ctx = Context::load(dir)?;
-    let current = users::recipients(&ctx.members);
     let mut outcome = Outcome::default();
 
     for sp in secret_paths_for(&ctx, args, true, &mut outcome.warnings)? {
         let ciphertext = read_repo_file(&ctx.root, &sp.ciphertext)?;
-        let (old_header, old_body) = ctx.decrypt(&sp.ciphertext, &ciphertext)?;
+        let (old_header, old_body, old_epoch) = ctx.decrypt(&sp.ciphertext, &ciphertext)?;
         ensure_ignored(&ctx.root, &sp.plaintext)?;
         let Some(local) = read_plaintext(&ctx.root, &sp.plaintext)? else {
             continue;
@@ -157,7 +163,11 @@ pub fn cmd_seal(dir: &Path, force: bool, args: &[String]) -> Result<Outcome, Err
             }
         }
 
-        let new_header = secret::next_header(Some(&old_header), true, &current);
+        let new_header = secret::next_header(
+            Some((&old_header, &old_epoch.members)),
+            true,
+            &ctx.current_epoch()?.members,
+        );
         let new_ciphertext = ctx.encrypt(&new_header, &local)?;
         write_repo_file(&ctx.root, &sp.ciphertext, &new_ciphertext, None)?;
         ctx.set_base(&sp.plaintext, &local)?;
@@ -174,7 +184,7 @@ pub fn cmd_open(dir: &Path, force: bool, args: &[String]) -> Result<Outcome, Err
 
     for sp in secret_paths_for(&ctx, args, false, &mut outcome.warnings)? {
         let ciphertext = read_repo_file(&ctx.root, &sp.ciphertext)?;
-        let (_header, body) = ctx.decrypt(&sp.ciphertext, &ciphertext)?;
+        let (_header, body, _epoch) = ctx.decrypt(&sp.ciphertext, &ciphertext)?;
         if git::is_tracked(&ctx.root, &sp.plaintext)? {
             return Err(Error::PlaintextTracked(sp.plaintext));
         }
@@ -214,7 +224,7 @@ pub fn cmd_close(dir: &Path, args: &[String]) -> Result<Outcome, Error> {
             continue;
         };
         let ciphertext = read_repo_file(&ctx.root, &sp.ciphertext)?;
-        let (_header, body) = ctx.decrypt(&sp.ciphertext, &ciphertext)?;
+        let (_header, body, _epoch) = ctx.decrypt(&sp.ciphertext, &ciphertext)?;
 
         let state =
             secret::plaintext_state(Some(&local), &body, ctx.base.get(&sp.plaintext).copied());

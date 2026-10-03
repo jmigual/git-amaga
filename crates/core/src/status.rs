@@ -13,13 +13,14 @@ const UNMERGED: &str = "unmerged; resolve the conflict and `git add` the file";
 pub fn cmd_status(dir: &Path) -> Result<StatusReport, Error> {
     let ctx = Context::load_allowing_unmerged(dir)?;
     let unmerged = git::unmerged_secrets(&ctx.root)?;
-    let current = users::recipients(&ctx.members);
+    let epoch = ctx.current_epoch()?;
+    let up_to_date = key_set(&epoch.members) == key_set(&users::recipients(&ctx.members));
 
     let mut warnings = Vec::new();
     let mut statuses = Vec::new();
     let secrets = secret_paths_for(&ctx, &[], false, &mut warnings)?;
     for sp in &secrets {
-        statuses.push(secret_status(&ctx, sp, &unmerged, &current)?);
+        statuses.push(secret_status(&ctx, sp, &unmerged, up_to_date)?);
     }
     // Unmerged files that are not listed above (deleted from the worktree, or invalid paths).
     for path in unmerged
@@ -45,7 +46,7 @@ fn secret_status(
     ctx: &Context,
     sp: &paths::SecretPath,
     unmerged: &[String],
-    current: &secret::Recipients,
+    up_to_date: bool,
 ) -> Result<SecretStatus, Error> {
     let mut errors = Vec::new();
     let mut warnings = Vec::new();
@@ -75,8 +76,8 @@ fn secret_status(
             .and_then(|ciphertext| ctx.decrypt(&sp.ciphertext, &ciphertext));
         match decrypted {
             Err(e) => errors.push(without_path(e)),
-            Ok((header, body)) => {
-                if key_set(&header.recipients) != key_set(current) {
+            Ok((header, body, epoch)) => {
+                if !up_to_date || epoch.id() != ctx.current_epoch()?.id() {
                     errors.push("stale recipients; run git-amaga rotate".into());
                 }
                 if !header.exposed_to.is_empty() {
@@ -117,11 +118,6 @@ fn secret_status(
 // The status line already starts with the secret's path; drop the copy inside the error.
 fn without_path(e: Error) -> String {
     match e {
-        Error::SecretUndecryptable {
-            member: Some(member),
-            source,
-            ..
-        } => format!("member {member}: {source}"),
         Error::SecretUndecryptable { source, .. } => source.to_string(),
         Error::IoPath { source, .. } => source.to_string(),
         Error::NotARegularFile(_) => "not a regular file".into(),

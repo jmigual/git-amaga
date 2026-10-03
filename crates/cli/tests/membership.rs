@@ -7,8 +7,10 @@ use std::path::Path;
 use std::process::Output;
 
 use age::x25519;
-use common::{OutputExt, Repo, repo_with_alice};
-use git_amaga_core::secret::{self, Header};
+use common::{
+    OutputExt, Repo, current_epoch, decrypt_as, decrypt_file, load_identity, repo_with_alice,
+};
+use git_amaga_core::secret::Header;
 
 fn stderr(output: &std::process::Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
@@ -19,7 +21,8 @@ fn add_secret(repo: &Repo, name: &str, body: &[u8]) {
     repo.run(&["add", name]).assert_success();
 }
 
-/// Writes `.amaga/users/<name>.txt` by hand, as a merge or a teammate's commit would.
+/// Writes `.amaga/users/<name>.txt` by hand, as a merge or a teammate's commit would, and runs
+/// `rotate` so the new member can read the secrets (an epoch is wrapped only when it is written).
 fn write_member(repo: &Repo, name: &str) -> x25519::Identity {
     let identity = x25519::Identity::generate();
     std::fs::write(
@@ -27,21 +30,26 @@ fn write_member(repo: &Repo, name: &str) -> x25519::Identity {
         format!("{}\n", identity.to_public()),
     )
     .unwrap();
+    repo.run(&["rotate"]).assert_success();
     identity
-}
-
-fn decrypt_with(
-    ciphertext: &[u8],
-    identity: &x25519::Identity,
-) -> Result<(Header, Vec<u8>), git_amaga_core::Error> {
-    secret::decrypt(ciphertext, &[identity as &dyn age::Identity])
 }
 
 /// The decrypted header of `path`, read with alice's identity file.
 fn header_of(repo: &Repo, identity_path: &Path, path: &str) -> Header {
-    let alice = git_amaga_core::identity::load_identity_file(identity_path).unwrap();
-    let ciphertext = std::fs::read(repo.path().join(path)).unwrap();
-    decrypt_with(&ciphertext, &alice[0]).unwrap().0
+    decrypt_file(repo, identity_path, path).0
+}
+
+/// The members recorded in the current epoch, as alice reads them.
+fn epoch_members(repo: &Repo, identity_path: &Path) -> git_amaga_core::secret::Recipients {
+    current_epoch(repo, &load_identity(identity_path)).members
+}
+
+/// The current epoch id and every epoch file id.
+fn epoch_state(repo: &Repo) -> (String, Vec<String>) {
+    (
+        common::current_epoch_id(repo),
+        git_amaga_core::epoch::list(repo.path()).unwrap(),
+    )
 }
 
 fn audit_events(repo: &Repo) -> Vec<String> {
@@ -100,12 +108,24 @@ fn rotate_preserves_exposure() {
         [&bob.to_public().to_string()]
     );
 
+    let epoch_before = epoch_state(&repo);
     repo.run(&["rotate"]).assert_success();
     let second = std::fs::read(repo.path().join("secret.env.amaga")).unwrap();
     assert_ne!(first, second, "rotate must use a fresh file key");
+    let epoch_after = epoch_state(&repo);
+    assert_ne!(
+        epoch_after.0, epoch_before.0,
+        "rotate must move current-epoch"
+    );
+    assert_eq!(epoch_after.1.len(), epoch_before.1.len() + 1);
     let header = header_of(&repo, &identity_path, "secret.env.amaga");
     assert_eq!(header.exposed_to, exposed);
-    assert_eq!(header.recipients.keys().collect::<Vec<_>>(), ["alice"]);
+    assert_eq!(
+        epoch_members(&repo, &identity_path)
+            .keys()
+            .collect::<Vec<_>>(),
+        ["alice"]
+    );
 }
 
 /// `rotate` appends a `rotated` audit event and does not touch the plaintext.
@@ -187,9 +207,9 @@ fn rotate_with_undecryptable_secret_changes_nothing() {
     for name in ["a.env", "b.env", "c.env"] {
         add_secret(&repo, name, b"v1");
     }
+    write_member(&repo, "bob");
     corrupt(&repo, "a.env.amaga");
     corrupt(&repo, "b.env.amaga");
-    write_member(&repo, "bob");
     let before_c = std::fs::read(repo.path().join("c.env.amaga")).unwrap();
     let before_audit = audit_events(&repo);
 
@@ -237,12 +257,14 @@ fn user_add_new_member_decrypts_current_not_history() {
     user_add(&repo, "bob", &bob.to_public().to_string()).assert_success();
 
     let current = std::fs::read(repo.path().join("secret.env.amaga")).unwrap();
-    assert_eq!(decrypt_with(&current, &bob).unwrap().1, b"v1");
+    assert_eq!(decrypt_as(&repo, &current, &bob).unwrap().1, b"v1");
     let history = repo.git(&["show", "HEAD:secret.env.amaga"]).stdout;
-    assert!(decrypt_with(&history, &bob).is_err());
+    assert!(decrypt_as(&repo, &history, &bob).is_err());
     let header = header_of(&repo, &identity_path, "secret.env.amaga");
     assert_eq!(
-        header.recipients.keys().collect::<Vec<_>>(),
+        epoch_members(&repo, &identity_path)
+            .keys()
+            .collect::<Vec<_>>(),
         ["alice", "bob"]
     );
     assert!(header.exposed_to.is_empty());
@@ -345,8 +367,7 @@ fn gpg_member_add_then_remove_flags_its_pgp_key() {
         std::fs::read_to_string(repo.path().join(".amaga/users/bob.asc")).unwrap(),
         armored
     );
-    let header = header_of(&repo, &identity_path, "secret.env.amaga");
-    assert!(header.recipients["bob"].contains(&format!("pgp:{}", asc.fpr)));
+    assert!(epoch_members(&repo, &identity_path)["bob"].contains(&format!("pgp:{}", asc.fpr)));
     let audit = audit_events(&repo);
     let added = audit.last().unwrap();
     assert!(
@@ -410,7 +431,7 @@ fn gpg_subkey_replacement_flags_exposure() {
         header.exposed_to["bob"].iter().collect::<Vec<_>>(),
         [&format!("pgp:{old_fpr}")]
     );
-    assert!(header.recipients["bob"].contains(&format!("pgp:{new_fpr}")));
+    assert!(epoch_members(&repo, &identity_path)["bob"].contains(&format!("pgp:{new_fpr}")));
 }
 
 /// A repository with members alice and bob and secrets `a.env` and `b.env`.
@@ -434,7 +455,7 @@ fn user_remove_locks_out_and_flags_all() {
     assert_eq!(user_files(&repo), ["alice.txt"]);
     for name in ["a.env.amaga", "b.env.amaga"] {
         let ciphertext = std::fs::read(repo.path().join(name)).unwrap();
-        assert!(decrypt_with(&ciphertext, &bob).is_err());
+        assert!(decrypt_as(&repo, &ciphertext, &bob).is_err());
         let header = header_of(&repo, &identity_path, name);
         assert_eq!(
             header.exposed_to["bob"].iter().collect::<Vec<_>>(),
@@ -525,6 +546,7 @@ fn user_remove_with_undecryptable_secret_changes_nothing() {
     corrupt(&repo, "b.env.amaga");
     let before_a = std::fs::read(repo.path().join("a.env.amaga")).unwrap();
     let before_audit = audit_events(&repo);
+    let before_epochs = epoch_state(&repo);
 
     let remove = repo.run(&["user", "remove", "bob"]);
     remove.assert_failure();
@@ -534,6 +556,7 @@ fn user_remove_with_undecryptable_secret_changes_nothing() {
 
     assert_eq!(user_files(&repo), ["alice.txt", "bob.txt"]);
     assert_eq!(audit_events(&repo), before_audit);
+    assert_eq!(epoch_state(&repo), before_epochs);
     assert_eq!(
         std::fs::read(repo.path().join("a.env.amaga")).unwrap(),
         before_a
@@ -564,7 +587,7 @@ fn user_can_remove_themselves() {
     repo.run(&["user", "remove", "alice"]).assert_success();
 
     let ciphertext = std::fs::read(repo.path().join("secret.env.amaga")).unwrap();
-    let (header, body) = decrypt_with(&ciphertext, &bob).unwrap();
+    let (header, body) = decrypt_as(&repo, &ciphertext, &bob).unwrap();
     assert_eq!(body, b"v1");
     assert!(header.exposed_to.contains_key("alice"));
     repo.run(&["rotate"]).assert_failure();
@@ -615,4 +638,99 @@ fn user_remove_with_a_broken_asc_and_a_valid_txt() {
     assert_eq!(user_files(&repo), ["alice.txt"]);
     let header = header_of(&repo, &identity_path, "secret.env.amaga");
     assert!(header.exposed_to["bob"].contains(&bob.to_public().to_string()));
+}
+
+fn current_branch(repo: &Repo) -> String {
+    String::from_utf8(repo.git(&["rev-parse", "--abbrev-ref", "HEAD"]).stdout)
+        .unwrap()
+        .trim()
+        .to_string()
+}
+
+/// Test 40: a secret a branch added under an epoch that `user remove` then replaced stays
+/// readable after the merge; it is stale, and `rotate` flags the removed member.
+#[test]
+fn branch_secret_under_old_epoch_after_user_remove() {
+    let (repo, identity_path) = repo_with_alice();
+    let bob = x25519::Identity::generate().to_public().to_string();
+    user_add(&repo, "bob", &bob).assert_success();
+    repo.commit_all("add bob");
+    let main = current_branch(&repo);
+
+    repo.git(&["checkout", "-b", "feature"]).assert_success();
+    add_secret(&repo, "feature.env", b"f");
+    repo.commit_all("feature adds a secret");
+    // `main` does not ignore the plaintext, so it must not stay in the work tree.
+    std::fs::remove_file(repo.path().join("feature.env")).unwrap();
+
+    repo.git(&["checkout", &main]).assert_success();
+    repo.run(&["user", "remove", "bob"]).assert_success();
+    repo.commit_all("remove bob");
+    repo.git(&["merge", "--no-edit", "feature"])
+        .assert_success();
+
+    repo.run(&["open", "feature.env"]).assert_success();
+    assert_eq!(
+        std::fs::read(repo.path().join("feature.env")).unwrap(),
+        b"f"
+    );
+    let status = repo.run(&["status"]);
+    assert_eq!(status.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&status.stdout).contains("run git-amaga rotate"));
+
+    repo.run(&["rotate"]).assert_success();
+    let header = header_of(&repo, &identity_path, "feature.env.amaga");
+    assert!(header.exposed_to.contains_key("bob"));
+}
+
+/// Test 43: a member who is not in an old epoch cannot read the secrets still under it, and
+/// their `rotate` writes nothing; after another member's `rotate` they can.
+#[test]
+fn member_not_in_old_epoch_cannot_read_its_secrets() {
+    let (repo, _identity_path) = repo_with_alice();
+    repo.commit_all("init");
+    let main = current_branch(&repo);
+    repo.git(&["checkout", "-b", "feature"]).assert_success();
+    add_secret(&repo, "feature.env", b"f");
+    repo.commit_all("feature adds a secret");
+    std::fs::remove_file(repo.path().join("feature.env")).unwrap();
+
+    repo.git(&["checkout", &main]).assert_success();
+    repo.run(&["rotate"]).assert_success();
+    let carol_identity = repo.path().join("carol-identity.txt");
+    let carol = repo.run(&["keygen", carol_identity.to_str().unwrap()]);
+    let carol_key = String::from_utf8_lossy(&carol.stdout).trim().to_string();
+    user_add(&repo, "carol", &carol_key).assert_success();
+    repo.commit_all("rotate, add carol");
+    repo.git(&["merge", "--no-edit", "feature"])
+        .assert_success();
+
+    let carol_config = repo.path().join("carol-gitconfig");
+    std::fs::write(
+        &carol_config,
+        format!("[amaga]\n\tidentity = {}\n", carol_identity.display()),
+    )
+    .unwrap();
+    let as_carol =
+        |args: &[&str]| repo.run_with_env(args, &[("GIT_CONFIG_GLOBAL", carol_config.as_os_str())]);
+    let secret_before = std::fs::read(repo.path().join("feature.env.amaga")).unwrap();
+    let epochs_before = epoch_state(&repo);
+    let audit_before = audit_events(&repo);
+
+    as_carol(&["open", "feature.env"]).assert_failure();
+    as_carol(&["rotate"]).assert_failure();
+    assert!(!repo.path().join("feature.env").exists());
+    assert_eq!(
+        std::fs::read(repo.path().join("feature.env.amaga")).unwrap(),
+        secret_before
+    );
+    assert_eq!(epoch_state(&repo), epochs_before);
+    assert_eq!(audit_events(&repo), audit_before);
+
+    repo.run(&["rotate"]).assert_success();
+    as_carol(&["open", "feature.env"]).assert_success();
+    assert_eq!(
+        std::fs::read(repo.path().join("feature.env")).unwrap(),
+        b"f"
+    );
 }

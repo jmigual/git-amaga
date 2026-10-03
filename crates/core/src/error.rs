@@ -173,9 +173,16 @@ pub enum Error {
     #[error("'{0}' could not be ignored (check for a conflicting negation rule in .gitignore)")]
     PlaintextNotIgnored(String),
 
-    /// Names the `.amaga` file and, for a gpg failure, the member.
-    #[error("{path}{}: {source}", .member.as_ref().map(|m| format!(" (member {m})")).unwrap_or_default())]
+    #[error("{path}: {source}")]
     SecretUndecryptable {
+        path: String,
+        #[source]
+        source: Box<Error>,
+    },
+
+    /// Names the epoch file and, for a gpg failure, the member.
+    #[error("{path}{}: {source}", .member.as_ref().map(|m| format!(" (member {m})")).unwrap_or_default())]
+    EpochUndecryptable {
         path: String,
         member: Option<String>,
         #[source]

@@ -1,10 +1,16 @@
+use std::cell::RefCell;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
+use std::str::FromStr;
 
+use crate::epoch::{self, Epoch};
 use crate::outcome::Warning;
 use crate::{Error, audit, git, gpg, identity, paths, secret, users};
 
-// Per-command state: repo, membership, actor identities and base hashes (plan 5.5).
+// Per-command state: repo, membership, actor identities and base hashes (plan 5.5), and the
+// epochs unwrapped so far (plan 5.6).
 pub(crate) struct Context {
     pub(crate) root: PathBuf,
     pub(crate) prefix: String,
@@ -14,6 +20,9 @@ pub(crate) struct Context {
     pub(crate) gpg_fprs: Vec<String>,
     pub(crate) base_path: PathBuf,
     pub(crate) base: secret::BaseMap,
+    current: age::x25519::Recipient,
+    epochs: RefCell<BTreeMap<String, Rc<Epoch>>>,
+    unreadable: RefCell<BTreeSet<String>>,
 }
 
 impl Context {
@@ -43,6 +52,8 @@ impl Context {
 
     fn load_in(dir: &Path, root: PathBuf, tolerated: Option<&str>) -> Result<Self, Error> {
         let members = users::load_tolerating(&root.join(".amaga/users"), tolerated)?;
+        let current = age::x25519::Recipient::from_str(&epoch::read_pointer(&root)?)
+            .expect("read_pointer returns a valid public key");
         let age_identities = match identity::configured_identity_path(dir)? {
             Some(path) => identity::load_identity_file(&path)?,
             None => Vec::new(),
@@ -58,27 +69,86 @@ impl Context {
             members,
             age_identities,
             gpg_fprs,
+            current,
+            epochs: RefCell::default(),
+            unreadable: RefCell::default(),
         })
     }
 
-    // Age identities first, then gpg (plan 5.5).
-    pub(crate) fn decrypt(
-        &self,
-        path: &str,
-        ciphertext: &[u8],
-    ) -> Result<(secret::Header, Vec<u8>), Error> {
+    // Unwraps epoch `id` once per command; a failure is remembered in `unreadable` (plan 5.6).
+    fn epoch(&self, id: &str) -> Result<Rc<Epoch>, Error> {
+        if let Some(epoch) = self.epochs.borrow().get(id) {
+            return Ok(Rc::clone(epoch));
+        }
+        let path = epoch::file_path(id);
         let gpg_identity = gpg::GpgIdentity::new(self.gpg_fprs.clone());
+        // Age identities first, then gpg (plan 5.5).
         let mut identities: Vec<&dyn age::Identity> = self
             .age_identities
             .iter()
             .map(|i| i as &dyn age::Identity)
             .collect();
         identities.push(&gpg_identity);
-        secret::decrypt(ciphertext, &identities).map_err(|source| Error::SecretUndecryptable {
+        let unwrapped = read_repo_file(&self.root, &path)
+            .and_then(|bytes| epoch::unwrap(id, &bytes, &identities))
+            .map_err(|source| match source {
+                Error::EpochInvalid(_) | Error::IoPath { .. } => source,
+                source => Error::EpochUndecryptable {
+                    path,
+                    member: self.failing_member(&source),
+                    source: Box::new(source),
+                },
+            });
+        match unwrapped {
+            Ok(epoch) => {
+                let epoch = Rc::new(epoch);
+                self.epochs
+                    .borrow_mut()
+                    .insert(id.to_string(), Rc::clone(&epoch));
+                Ok(epoch)
+            }
+            Err(e) => {
+                self.unreadable.borrow_mut().insert(id.to_string());
+                Err(e)
+            }
+        }
+    }
+
+    /// The current epoch. A failure aborts the command (plan 5.6).
+    pub(crate) fn current_epoch(&self) -> Result<Rc<Epoch>, Error> {
+        self.epoch(&self.current.to_string())
+    }
+
+    // The current epoch first, then the others in name order (plan 5.6). Returns the header, the
+    // body and the epoch that decrypted them.
+    pub(crate) fn decrypt(
+        &self,
+        path: &str,
+        ciphertext: &[u8],
+    ) -> Result<(secret::Header, Vec<u8>, Rc<Epoch>), Error> {
+        self.current_epoch()?;
+        let current_id = self.current.to_string();
+        let others = epoch::list(&self.root)?
+            .into_iter()
+            .filter(|id| *id != current_id);
+        let undecryptable = |source| Error::SecretUndecryptable {
             path: path.to_string(),
-            member: self.failing_member(&source),
             source: Box::new(source),
-        })
+        };
+        for id in std::iter::once(current_id.clone()).chain(others) {
+            if self.unreadable.borrow().contains(&id) {
+                continue;
+            }
+            let Ok(epoch) = self.epoch(&id) else { continue };
+            match open_with(ciphertext, &epoch) {
+                Ok(Some((header, body))) => return Ok((header, body, epoch)),
+                Ok(None) => {}
+                Err(e) => return Err(undecryptable(e)),
+            }
+        }
+        Err(undecryptable(Error::Decrypt(
+            age::DecryptError::NoMatchingKeys,
+        )))
     }
 
     pub(crate) fn failing_member(&self, err: &Error) -> Option<String> {
@@ -96,21 +166,14 @@ impl Context {
             .map(|(name, _)| name.clone())
     }
 
+    /// Encrypts to the current epoch's public key; needs no unwrap (plan 7).
     pub(crate) fn encrypt(&self, header: &secret::Header, body: &[u8]) -> Result<Vec<u8>, Error> {
-        let pgp: Vec<gpg::PgpRecipient> = self
-            .members
-            .values()
-            .filter_map(|m| m.asc.as_ref())
-            .map(gpg::PgpRecipient::new)
-            .collect();
-        let recipients: Vec<&dyn age::Recipient> = self
-            .members
-            .values()
-            .flat_map(|m| &m.age_keys)
-            .map(|k| k as &dyn age::Recipient)
-            .chain(pgp.iter().map(|r| r as &dyn age::Recipient))
-            .collect();
-        secret::encrypt(header, body, &recipients)
+        secret::encrypt(header, body, &[&self.current as &dyn age::Recipient])
+    }
+
+    /// Wraps `epoch` to every member key and writes its file (plan 5.6).
+    pub(crate) fn write_epoch(&self, epoch: &Epoch) -> Result<(), Error> {
+        write_epoch(&self.root, &self.members, epoch)
     }
 
     // Rewrites the base file only when the hash changes.
@@ -156,6 +219,35 @@ impl Context {
             gpg,
         )
     }
+}
+
+// `None`: the epoch's key does not open the file.
+fn open_with(ciphertext: &[u8], epoch: &Epoch) -> Result<Option<(secret::Header, Vec<u8>)>, Error> {
+    match secret::decrypt(ciphertext, &[epoch.identity() as &dyn age::Identity]) {
+        Ok(found) => Ok(Some(found)),
+        Err(Error::Decrypt(age::DecryptError::NoMatchingKeys)) => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
+/// Wraps `epoch` to every key of `members`, X25519 and `pgp` stanzas, and writes its file.
+pub(crate) fn write_epoch(
+    root: &Path,
+    members: &users::Members,
+    epoch: &Epoch,
+) -> Result<(), Error> {
+    let pgp: Vec<gpg::PgpRecipient> = members
+        .values()
+        .filter_map(|m| m.asc.as_ref())
+        .map(gpg::PgpRecipient::new)
+        .collect();
+    let recipients: Vec<&dyn age::Recipient> = members
+        .values()
+        .flat_map(|m| &m.age_keys)
+        .map(|k| k as &dyn age::Recipient)
+        .chain(pgp.iter().map(|r| r as &dyn age::Recipient))
+        .collect();
+    epoch::write(root, epoch, &recipients)
 }
 
 // Explicit args must have a `.amaga`. No args: every existing managed secret, skipping invalid

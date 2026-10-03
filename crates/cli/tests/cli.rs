@@ -100,6 +100,20 @@ fn keygen_then_init_creates_state() {
     assert!(gitattributes.contains("*.amaga binary"));
     assert!(gitattributes.contains(".amaga/audit.jsonl merge=union"));
     assert!(gitattributes.contains(".gitignore merge=union"));
+    assert!(gitattributes.contains(".amaga/epochs/* binary"));
+
+    let epoch_id = common::current_epoch_id(&repo);
+    assert!(
+        repo.path()
+            .join(format!(".amaga/epochs/{epoch_id}.age"))
+            .is_file()
+    );
+    let identity = common::load_identity(&identity_path);
+    let epoch = common::current_epoch(&repo, &identity);
+    assert_eq!(
+        epoch.members["alice"].iter().collect::<Vec<_>>(),
+        [&public_key]
+    );
 
     let gitignore = std::fs::read_to_string(repo.path().join(".gitignore")).unwrap();
     assert!(gitignore.contains("# BEGIN git-amaga"));
@@ -202,18 +216,15 @@ fn init_deduplicates_a_key_given_twice() {
     assert_eq!(contents.trim(), public_key);
 }
 
-/// Overwrites `secret.env.amaga` with a fresh encryption of `body` to alice, standing in for a
-/// teammate's push. Returns the new ciphertext.
+/// Overwrites `secret.env.amaga` with a fresh encryption of `body` to the current epoch, standing
+/// in for a teammate's push. Returns the new ciphertext.
 fn rotate_ciphertext(repo: &Repo, body: &[u8]) -> Vec<u8> {
-    let members = git_amaga_core::users::load(&repo.path().join(".amaga/users")).unwrap();
     let header = git_amaga_core::secret::next_header(
         None,
         false,
-        &git_amaga_core::users::recipients(&members),
+        &git_amaga_core::secret::Recipients::new(),
     );
-    let alice = members["alice"].age_keys[0].clone();
-    let ciphertext =
-        git_amaga_core::secret::encrypt(&header, body, &[&alice as &dyn age::Recipient]).unwrap();
+    let ciphertext = common::encrypt_to_current_epoch(repo, &header, body);
     std::fs::write(repo.path().join("secret.env.amaga"), &ciphertext).unwrap();
     ciphertext
 }
@@ -416,23 +427,17 @@ fn renamed_secret_plaintext_stays_ignored() {
 fn readd_deleted_secret_requires_force() {
     let (repo, identity_path) = repo_with_alice();
 
-    let members = git_amaga_core::users::load(&repo.path().join(".amaga/users")).unwrap();
-    let recipients = git_amaga_core::users::recipients(&members);
-    let age_recipient = members["alice"].age_keys[0].clone();
     let mut exposed_to = git_amaga_core::secret::Recipients::new();
     exposed_to.insert(
         "charlie".to_string(),
         std::collections::BTreeSet::from(["age1charliestalekey".to_string()]),
     );
     let header = git_amaga_core::secret::Header {
-        v: 1,
-        recipients,
+        v: git_amaga_core::secret::VERSION,
         exposed_to,
     };
     let body: &[u8] = b"v1";
-    let original =
-        git_amaga_core::secret::encrypt(&header, body, &[&age_recipient as &dyn age::Recipient])
-            .unwrap();
+    let original = common::encrypt_to_current_epoch(&repo, &header, body);
     let cipher_path = repo.path().join("secret.env.amaga");
     std::fs::write(&cipher_path, &original).unwrap();
     repo.git(&[
@@ -462,14 +467,7 @@ fn readd_deleted_secret_requires_force() {
         "got {:?}",
         String::from_utf8_lossy(&forced.stderr)
     );
-    let identities = git_amaga_core::identity::load_identity_file(&identity_path).unwrap();
-    let id_refs: Vec<&dyn age::Identity> =
-        identities.iter().map(|i| i as &dyn age::Identity).collect();
-    let (forced_header, _) = git_amaga_core::secret::decrypt::<git_amaga_core::secret::Header>(
-        &std::fs::read(&cipher_path).unwrap(),
-        &id_refs,
-    )
-    .unwrap();
+    let (forced_header, _) = common::decrypt_file(&repo, &identity_path, "secret.env.amaga");
     assert!(
         forced_header.exposed_to.is_empty(),
         "add --force drops exposure history"
@@ -478,11 +476,7 @@ fn readd_deleted_secret_requires_force() {
     repo.git(&["checkout", "HEAD~1", "--", "secret.env.amaga"])
         .assert_success();
     repo.run(&["seal", "secret.env"]).assert_success();
-    let (restored_header, _) = git_amaga_core::secret::decrypt::<git_amaga_core::secret::Header>(
-        &std::fs::read(&cipher_path).unwrap(),
-        &id_refs,
-    )
-    .unwrap();
+    let (restored_header, _) = common::decrypt_file(&repo, &identity_path, "secret.env.amaga");
     assert_eq!(
         restored_header.exposed_to.len(),
         1,
@@ -534,23 +528,16 @@ fn seal_force_warns_when_clearing_exposed_to() {
     std::fs::write(repo.path().join("secret.env"), b"v1").unwrap();
     repo.run(&["add", "secret.env"]).assert_success();
 
-    let members = git_amaga_core::users::load(&repo.path().join(".amaga/users")).unwrap();
-    let age_recipient = members["alice"].age_keys[0].clone();
     let mut header = git_amaga_core::secret::next_header(
         None,
         false,
-        &git_amaga_core::users::recipients(&members),
+        &git_amaga_core::secret::Recipients::new(),
     );
     header.exposed_to.insert(
         "charlie".to_string(),
         std::collections::BTreeSet::from(["age1charliestalekey".to_string()]),
     );
-    let pulled = git_amaga_core::secret::encrypt(
-        &header,
-        b"v2-rotated",
-        &[&age_recipient as &dyn age::Recipient],
-    )
-    .unwrap();
+    let pulled = common::encrypt_to_current_epoch(&repo, &header, b"v2-rotated");
     let cipher_path = repo.path().join("secret.env.amaga");
     std::fs::write(&cipher_path, &pulled).unwrap();
 
@@ -564,14 +551,7 @@ fn seal_force_warns_when_clearing_exposed_to() {
         "got {:?}",
         String::from_utf8_lossy(&forced.stderr)
     );
-    let identities = git_amaga_core::identity::load_identity_file(&identity_path).unwrap();
-    let id_refs: Vec<&dyn age::Identity> =
-        identities.iter().map(|i| i as &dyn age::Identity).collect();
-    let (sealed_header, body) = git_amaga_core::secret::decrypt::<git_amaga_core::secret::Header>(
-        &std::fs::read(&cipher_path).unwrap(),
-        &id_refs,
-    )
-    .unwrap();
+    let (sealed_header, body) = common::decrypt_file(&repo, &identity_path, "secret.env.amaga");
     assert!(sealed_header.exposed_to.is_empty());
     assert_eq!(body, b"v1");
 }
@@ -849,6 +829,8 @@ fn age_member_seals_for_gpg_member_without_gpg() {
         include_str!("../../core/tests/fixtures/valid_cv25519.asc"),
     )
     .unwrap();
+    // bob reads secrets only once an epoch is wrapped to him.
+    repo.run(&["rotate"]).assert_success();
 
     std::fs::write(repo.path().join("secret.env"), b"v1").unwrap();
     repo.run(&["add", "secret.env"]).assert_success();
@@ -915,7 +897,7 @@ fn gpg_decrypt_failure_writes_nothing() {
     open.assert_failure();
     let stderr = String::from_utf8_lossy(&open.stderr);
     assert!(stderr.contains("gpg decryption failed"), "got {stderr:?}");
-    assert!(stderr.contains("secret.env.amaga"), "got {stderr:?}");
+    assert!(stderr.contains(".amaga/epochs/"), "got {stderr:?}");
     assert!(stderr.contains("member alice"), "got {stderr:?}");
     assert!(!repo.path().join("secret.env").exists());
 }
@@ -1461,14 +1443,16 @@ fn status_names_undecryptable_secret() {
     assert!(stdout.contains("decryption error"), "got {stdout:?}");
 }
 
-/// A secret whose header key set differs from the members is stale until `rotate`.
+/// A secret under an epoch that is no longer current is stale until `rotate`.
 #[test]
 fn status_reports_stale_recipients() {
     let (repo, _identity_path) = repo_with_alice();
     std::fs::write(repo.path().join("secret.env"), b"v1").unwrap();
     repo.run(&["add", "secret.env"]).assert_success();
-    let bob = age::x25519::Identity::generate().to_public();
-    std::fs::write(repo.path().join(".amaga/users/bob.txt"), format!("{bob}\n")).unwrap();
+    repo.commit_all("add secret");
+    repo.run(&["rotate"]).assert_success();
+    repo.git(&["checkout", "HEAD", "--", "secret.env.amaga"])
+        .assert_success();
 
     assert_status_error(&repo, "run git-amaga rotate");
 }
@@ -1479,18 +1463,15 @@ fn status_warns_about_exposure_with_exit_zero() {
     let (repo, _identity_path) = repo_with_alice();
     std::fs::write(repo.path().join("secret.env"), b"v1").unwrap();
     repo.run(&["add", "secret.env"]).assert_success();
-    let members = git_amaga_core::users::load(&repo.path().join(".amaga/users")).unwrap();
     let mut header = git_amaga_core::secret::next_header(
         None,
         false,
-        &git_amaga_core::users::recipients(&members),
+        &git_amaga_core::secret::Recipients::new(),
     );
     header
         .exposed_to
         .insert("charlie".into(), Default::default());
-    let alice = members["alice"].age_keys[0].clone();
-    let ciphertext =
-        git_amaga_core::secret::encrypt(&header, b"v1", &[&alice as &dyn age::Recipient]).unwrap();
+    let ciphertext = common::encrypt_to_current_epoch(&repo, &header, b"v1");
     std::fs::write(repo.path().join("secret.env.amaga"), ciphertext).unwrap();
 
     let stdout = status_stdout(&repo);
@@ -1583,6 +1564,7 @@ fn status_stale_compares_key_sets_not_names() {
     let bob = age::x25519::Identity::generate().to_public();
     let bob_file = repo.path().join(".amaga/users/bob.txt");
     std::fs::write(&bob_file, format!("{bob}\n")).unwrap();
+    repo.run(&["rotate"]).assert_success();
     std::fs::write(repo.path().join("secret.env"), b"v1").unwrap();
     repo.run(&["add", "secret.env"]).assert_success();
     assert!(status_stdout(&repo).contains("ok secret.env.amaga"));
@@ -1787,4 +1769,149 @@ fn remove_dedupes_paths() {
 
     let audit = std::fs::read_to_string(repo.path().join(".amaga/audit.jsonl")).unwrap();
     assert_eq!(audit.matches("secret.removed").count(), 1, "got {audit:?}");
+}
+
+/// Test 45 (gpg, Unix only): a GPG member runs gpg `--decrypt` once per command, whatever the
+/// number of secrets.
+#[cfg(unix)]
+#[test]
+fn one_gpg_decrypt_per_command() {
+    use std::os::unix::fs::PermissionsExt;
+    let repo = Repo::new();
+    let Some(gpg_home) = common::GpgHome::new("one_gpg_decrypt_per_command") else {
+        return;
+    };
+    let fpr = gpg_home.generate_key("Valid <valid@example.invalid>");
+    let key_path = repo.path().join("alice.asc");
+    std::fs::write(&key_path, gpg_home.export_minimal(&fpr)).unwrap();
+    repo.run(&["init", "alice", key_path.to_str().unwrap()])
+        .assert_success();
+    for name in ["a.env", "b.env", "c.env"] {
+        std::fs::write(repo.path().join(name), name).unwrap();
+        repo.run_with_env(&["add", name], &gnupghome_env(&gpg_home))
+            .assert_success();
+        std::fs::remove_file(repo.path().join(name)).unwrap();
+    }
+
+    let bin_dir = tempfile::tempdir().unwrap();
+    let log = bin_dir.path().join("gpg.log");
+    let wrapper = bin_dir.path().join("gpg");
+    std::fs::write(
+        &wrapper,
+        format!(
+            "#!/bin/sh\necho \"$@\" >> '{}'\nexec '{}' \"$@\"\n",
+            log.display(),
+            common::find_on_path("gpg").display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = std::env::join_paths(
+        std::iter::once(bin_dir.path().to_path_buf())
+            .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+    )
+    .unwrap();
+    let env = [
+        ("GNUPGHOME", gpg_home.path().as_os_str()),
+        ("PATH", path.as_os_str()),
+    ];
+
+    for command in ["open", "status"] {
+        let _ = std::fs::remove_file(&log);
+        repo.run_with_env(&[command], &env).assert_success();
+        let logged = std::fs::read_to_string(&log).unwrap();
+        let decrypts = logged.lines().filter(|l| l.contains("--decrypt")).count();
+        assert_eq!(decrypts, 1, "{command} ran gpg as: {logged}");
+    }
+}
+
+/// Test 46: with the `age` crate alone, an epoch file and a secret decrypt as the escape hatch
+/// in plan section 4 describes.
+#[test]
+fn epoch_and_secret_are_plain_age() {
+    use std::io::Read;
+    use std::str::FromStr;
+
+    fn age_decrypt(ciphertext: &[u8], identity: &dyn age::Identity) -> Vec<u8> {
+        let decryptor = age::Decryptor::new_buffered(ciphertext).unwrap();
+        let mut reader = decryptor.decrypt(std::iter::once(identity)).unwrap();
+        let mut out = Vec::new();
+        reader.read_to_end(&mut out).unwrap();
+        out
+    }
+    // `tail -n +2`
+    fn drop_first_line(payload: &[u8]) -> &[u8] {
+        let newline = payload.iter().position(|&b| b == b'\n').unwrap();
+        &payload[newline + 1..]
+    }
+
+    let (repo, identity_path) = repo_with_alice();
+    std::fs::write(repo.path().join("secret.env"), b"hello\x00world").unwrap();
+    repo.run(&["add", "secret.env"]).assert_success();
+
+    let alice = common::load_identity(&identity_path);
+    let epoch_file = format!(".amaga/epochs/{}.age", common::current_epoch_id(&repo));
+    let epoch_payload = age_decrypt(
+        &std::fs::read(repo.path().join(epoch_file)).unwrap(),
+        &alice,
+    );
+    let epoch_key = String::from_utf8(drop_first_line(&epoch_payload).to_vec()).unwrap();
+    let epoch_identity = age::x25519::Identity::from_str(epoch_key.trim()).unwrap();
+    let secret_payload = age_decrypt(
+        &std::fs::read(repo.path().join("secret.env.amaga")).unwrap(),
+        &epoch_identity,
+    );
+    assert_eq!(drop_first_line(&secret_payload), b"hello\x00world");
+}
+
+/// Test 47: a tampered epoch file fails `open` and `rotate`, names the file, and writes nothing.
+#[test]
+fn tampered_epoch_file_fails_and_writes_nothing() {
+    let (repo, _identity_path) = repo_with_alice();
+    std::fs::write(repo.path().join("secret.env"), b"hello").unwrap();
+    repo.run(&["add", "secret.env"]).assert_success();
+    std::fs::remove_file(repo.path().join("secret.env")).unwrap();
+    let epoch_name = format!(".amaga/epochs/{}.age", common::current_epoch_id(&repo));
+    let epoch_path = repo.path().join(&epoch_name);
+    let mut bytes = std::fs::read(&epoch_path).unwrap();
+    let last = bytes.len() - 1;
+    bytes[last] ^= 0xFF;
+    std::fs::write(&epoch_path, &bytes).unwrap();
+    let secret_before = std::fs::read(repo.path().join("secret.env.amaga")).unwrap();
+    let audit_before = std::fs::read(repo.path().join(".amaga/audit.jsonl")).unwrap();
+
+    for command in ["open", "rotate"] {
+        let output = repo.run(&[command]);
+        output.assert_failure();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(&epoch_name), "{command}: got {stderr:?}");
+    }
+
+    assert!(!repo.path().join("secret.env").exists());
+    assert_eq!(
+        std::fs::read(repo.path().join("secret.env.amaga")).unwrap(),
+        secret_before
+    );
+    assert_eq!(
+        std::fs::read(repo.path().join(".amaga/audit.jsonl")).unwrap(),
+        audit_before
+    );
+    assert_eq!(std::fs::read(&epoch_path).unwrap(), bytes);
+    assert_eq!(
+        git_amaga_core::epoch::list(repo.path()).unwrap().len(),
+        1,
+        "rotate must not write a new epoch"
+    );
+}
+
+/// Test 48: a repository without `.amaga/current-epoch` (a 0.1.0 one) is an error that names it.
+#[test]
+fn repository_without_current_epoch_errors() {
+    let (repo, _identity_path) = repo_with_alice();
+    std::fs::remove_file(repo.path().join(".amaga/current-epoch")).unwrap();
+
+    let status = repo.run(&["status"]);
+    assert_eq!(status.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&status.stderr);
+    assert!(stderr.contains("current-epoch"), "got {stderr:?}");
 }

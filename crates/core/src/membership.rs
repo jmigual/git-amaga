@@ -4,13 +4,15 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::context::{Context, read_repo_file, write_repo_file};
+use crate::epoch::{self, Epoch};
 use crate::keyring::GpgKey;
 use crate::outcome::Reencrypted;
 use crate::{Error, git, keyring, secret, users};
 
 /// Plan 7.1: decrypts every secret first and writes nothing if any fails, then runs `change` (the
 /// membership change and its audit event, for `user add`/`user remove`; it may update
-/// `ctx.members`), then rewrites each secret for the current members, in order.
+/// `ctx.members`), then writes a new epoch for the current members, rewrites each secret under
+/// it, in order, and moves `current-epoch` last.
 pub(crate) fn reencrypt_all(
     ctx: &mut Context,
     change: impl FnOnce(&mut Context) -> Result<(), Error>,
@@ -22,9 +24,13 @@ pub(crate) fn reencrypt_all(
             continue;
         }
         match read_repo_file(&ctx.root, &path).and_then(|bytes| ctx.decrypt(&path, &bytes)) {
-            Ok((header, body)) => decrypted.push((path, header, body)),
+            Ok((header, body, epoch)) => decrypted.push((path, header, body, epoch)),
             Err(e) => failures.push(e.to_string()),
         }
+    }
+    if !decrypted.is_empty() {
+        // A current epoch that cannot be unwrapped aborts instead of failing every secret.
+        ctx.current_epoch()?;
     }
     if !failures.is_empty() {
         return Err(Error::ReencryptAborted(failures.join("\n")));
@@ -32,17 +38,24 @@ pub(crate) fn reencrypt_all(
 
     change(ctx)?;
 
-    let current = users::recipients(&ctx.members);
+    let epoch = Epoch::generate(users::recipients(&ctx.members));
+    ctx.write_epoch(&epoch)?;
+    let recipient = epoch.recipient();
     let mut written = Vec::new();
-    for (path, old_header, body) in decrypted {
-        let header = secret::next_header(Some(&old_header), false, &current);
-        let ciphertext = ctx.encrypt(&header, &body)?;
+    for (path, old_header, body, old_epoch) in decrypted {
+        let header = secret::next_header(
+            Some((&old_header, &old_epoch.members)),
+            false,
+            &epoch.members,
+        );
+        let ciphertext = secret::encrypt(&header, &body, &[&recipient as &dyn age::Recipient])?;
         write_repo_file(&ctx.root, &path, &ciphertext, None)?;
         written.push(Reencrypted {
             path,
             exposed_to: header.exposed_to.keys().cloned().collect(),
         });
     }
+    epoch::write_pointer(&ctx.root, &epoch.id())?;
     Ok(written)
 }
 
