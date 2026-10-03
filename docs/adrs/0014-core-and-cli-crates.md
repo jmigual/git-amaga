@@ -22,7 +22,8 @@ cannot use a command without it writing to the terminal.
   current directory: it drives git, the path prefix, relative `KEY` files and the `keygen` path.
   A relative `amaga.identity` config value resolves against `dir` too. For an absolute `dir` the
   core never reads the process cwd. Git's own environment (`GIT_DIR`, `GIT_WORK_TREE`) still
-  takes precedence over `dir`, as with `git -C`.
+  takes precedence over `dir`, as with `git -C`. The CLI passes its cwd, or the global
+  `-C <path>` (`--repo`), like `git -C`.
 - The integration tests stay in the CLI crate as the output regression net; only their crate
   path (`git_amaga::` → `git_amaga_core::`) and fixture paths change.
 

@@ -604,7 +604,7 @@ Internal changes (no new behaviour):
 relative `amaga.identity` config value. For an absolute `dir` the core never reads the process
 cwd (ADR-0014). Git's own environment (`GIT_DIR`, `GIT_WORK_TREE`) takes precedence over `dir`,
 as with `git -C`. An unusable `dir` (missing, or not a directory) is `Error::IoPath` naming it,
-raised before anything is written. The CLI passes its cwd, so it behaves as before.
+raised before anything is written. The CLI passes its cwd, or the global `-C <path>` (`--repo`).
 
 ### 14.3 Rendering contract
 

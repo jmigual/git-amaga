@@ -19,8 +19,9 @@ plaintext. Members hold age keys or GPG keys (a custom `pgp` age stanza).
   identity, actor · `paths.rs` path mapping, `.gitignore` block, atomic write · `git.rs` git
   subprocess helpers · `audit.rs` JSONL events · `error.rs` the `Error` enum.
 - Tests: unit tests beside the code; integration tests in `crates/cli/tests/cli.rs` and
-  `crates/cli/tests/membership.rs` (helpers in `crates/cli/tests/common/`); key fixtures in
-  `crates/core/tests/fixtures/`.
+  `crates/cli/tests/membership.rs` and `crates/cli/tests/repo_dir.rs` (`-C`; helpers in
+  `crates/cli/tests/common/`); `crates/core/tests/directory.rs` (the `dir` parameter); key
+  fixtures in `crates/core/tests/fixtures/`.
 
 ## Build and test (all must pass before each commit)
 `cargo fmt --check` · `cargo clippy --workspace --all-targets -- -D warnings` ·

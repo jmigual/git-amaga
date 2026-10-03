@@ -13,6 +13,9 @@ use git_amaga_core::{Error, GpgKey, Level, Outcome, Reencrypted, StatusReport, W
     about = "Encrypted secret files for Git repositories"
 )]
 struct Cli {
+    /// Run as if started in this directory, like `git -C`.
+    #[arg(short = 'C', long = "repo", value_name = "PATH", global = true)]
+    dir: Option<PathBuf>,
     #[command(subcommand)]
     command: Command,
 }
@@ -98,7 +101,8 @@ enum UserCommand {
 }
 
 fn main() -> ExitCode {
-    match run(Cli::parse().command) {
+    let cli = Cli::parse();
+    match run(cli.dir, cli.command) {
         Ok(code) => code,
         Err(e) => {
             eprintln!("error: {e}");
@@ -107,8 +111,8 @@ fn main() -> ExitCode {
     }
 }
 
-fn run(command: Command) -> Result<ExitCode, Error> {
-    let dir = std::path::absolute(".")?;
+fn run(dir: Option<PathBuf>, command: Command) -> Result<ExitCode, Error> {
+    let dir = std::path::absolute(dir.unwrap_or_else(|| ".".into()))?;
     let dir = dir.as_path();
     match command {
         Command::Keygen { path } => {

@@ -83,6 +83,9 @@ fingerprint or email that the tool exports from your local keyring (for `init` a
 Without a `KEY`, `init` uses your age identity. `seal` and `open` refuse to overwrite diverged
 files unless `--force` is given.
 
+`-C <path>` (`--repo <path>`) runs any command as if started in `<path>`, like `git -C`; relative
+paths and `KEY` files then resolve against it.
+
 Every command that works on secrets, except `status`, refuses while a `*.amaga` is unmerged.
 Resolve a conflict with `git checkout --ours|--theirs -- f.amaga && git add f.amaga`, then
 `git amaga open --force f` and re-apply your edit (details in plan.md section 8).
