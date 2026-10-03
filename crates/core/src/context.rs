@@ -154,20 +154,29 @@ impl Context {
             path: path.to_string(),
             source: Box::new(source),
         };
+        // The first reason an epoch could not be unwrapped, other than "not wrapped to us".
+        let mut unwrap_failure = None;
         for id in std::iter::once(current_id.clone()).chain(others) {
             if self.unreadable.borrow().contains(&id) {
                 continue;
             }
-            let Ok(epoch) = self.epoch(&id) else { continue };
+            let epoch = match self.epoch(&id) {
+                Ok(epoch) => epoch,
+                Err(e) => {
+                    if !is_not_a_recipient(&e) {
+                        unwrap_failure.get_or_insert(e);
+                    }
+                    continue;
+                }
+            };
             match open_with(ciphertext, &epoch) {
                 Ok(Some((header, body))) => return Ok((header, body, epoch)),
                 Ok(None) => {}
                 Err(e) => return Err(undecryptable(e)),
             }
         }
-        Err(undecryptable(Error::Decrypt(
-            age::DecryptError::NoMatchingKeys,
-        )))
+        Err(unwrap_failure
+            .unwrap_or_else(|| undecryptable(Error::Decrypt(age::DecryptError::NoMatchingKeys))))
     }
 
     pub(crate) fn failing_member(&self, err: &Error) -> Option<String> {
@@ -243,6 +252,15 @@ impl Context {
 // Stale means a different set of keys; member names are only labels (plan 5.2).
 fn key_set(recipients: &secret::Recipients) -> BTreeSet<&str> {
     recipients.values().flatten().map(String::as_str).collect()
+}
+
+// An epoch file with no stanza for our keys (no gpg was run), as opposed to a failure to unwrap.
+fn is_not_a_recipient(err: &Error) -> bool {
+    matches!(
+        err,
+        Error::EpochUndecryptable { source, .. }
+            if matches!(**source, Error::Decrypt(age::DecryptError::NoMatchingKeys))
+    )
 }
 
 // `None`: the epoch's key does not open the file.
