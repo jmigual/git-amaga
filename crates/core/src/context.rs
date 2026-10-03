@@ -173,7 +173,7 @@ impl Context {
         }
     }
 
-    /// The stale guard for every partition named by the labels of `secrets`.
+    /// The access check and the stale guard for every partition named by the labels of `secrets`.
     pub(crate) fn require_secrets_up_to_date(
         &self,
         secrets: &[paths::SecretPath],
@@ -181,7 +181,14 @@ impl Context {
         let mut partitions = BTreeSet::new();
         for sp in secrets {
             let ciphertext = read_repo_file(&self.root, &sp.ciphertext)?;
-            partitions.insert(secret::label_of(&sp.ciphertext, &ciphertext)?);
+            let label = secret::label_of(&sp.ciphertext, &ciphertext)?;
+            if !self.in_partition(&label)? {
+                return Err(Error::NotInPartition {
+                    partition: label,
+                    path: Some(sp.ciphertext.clone()),
+                });
+            }
+            partitions.insert(label);
         }
         partitions
             .iter()

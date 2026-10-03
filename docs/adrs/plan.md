@@ -811,7 +811,7 @@ pub struct Reencrypted { pub path: String, pub exposed_to: Vec<String> }      //
 pub struct Rotation { pub written: Vec<Reencrypted>, pub warnings: Vec<Warning> }
 pub struct Imported { pub members: Vec<(String, GpgKey)>, pub created: Vec<String>, pub changed: Vec<String>, pub warnings: Vec<Warning> }
 // Warning gains:
-//   PartitionNotRotated(String)   partition '{0}' was not re-encrypted: you are not a member; a member must run `git-amaga rotate --partition {0}`
+//   PartitionNotRotated(String)   partition '{0}' was not re-encrypted: you are not a member; if it needs rotation, a member must run `git-amaga rotate --partition {0}`
 //   KeySkipped { fpr: String, error: Error }   git-crypt key holder {fpr} not imported: {error}
 //   UnknownMember { partition: String, name: String }   partition '{partition}' lists '{name}', who is not in .amaga/users; it grants nothing
 //   GitCryptHistory               every former git-crypt key holder, including anyone given an exported key, can still read the imported files in git history; treat those credentials as exposed

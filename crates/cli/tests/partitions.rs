@@ -537,3 +537,30 @@ fn user_add_refuses_a_name_still_listed_in_a_partition() {
     assert!(!repo.path().join(".amaga/users/dave.txt").exists());
     assert_eq!(read(&repo, ".amaga/audit.jsonl"), before);
 }
+
+/// A non-member naming another partition's secret gets the access error, not an epoch error and
+/// not the `git rm` hint of `remove`.
+#[test]
+fn non_members_get_not_in_partition_for_seal_dismiss_and_remove() {
+    let (repo, _identity_path, bob_config) = repo_with_alice_and_bob();
+    repo.run(&["partition", "create", "production", "alice"])
+        .assert_success();
+    std::fs::write(repo.path().join("p.env"), b"prod").unwrap();
+    repo.run(&["add", "--partition", "production", "p.env"])
+        .assert_success();
+
+    for args in [
+        vec!["seal", "p.env"],
+        vec!["dismiss", "--user", "alice", "p.env"],
+        vec!["remove", "p.env"],
+    ] {
+        let output = run_as(&repo, &bob_config, &args);
+        output.assert_failure();
+        let err = stderr(&output);
+        assert!(
+            err.contains("not a member of partition 'production'"),
+            "{args:?}: {err}"
+        );
+        assert!(!err.contains("git rm"), "{args:?}: {err}");
+    }
+}

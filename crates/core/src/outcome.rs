@@ -70,7 +70,7 @@ impl fmt::Display for Warning {
             ),
             Self::PartitionNotRotated(partition) => write!(
                 f,
-                "partition '{partition}' was not re-encrypted: you are not a member; a member must run `git-amaga rotate --partition {partition}`"
+                "partition '{partition}' was not re-encrypted: you are not a member; if it needs rotation, a member must run `git-amaga rotate --partition {partition}`"
             ),
             Self::KeySkipped { fpr, error } => {
                 write!(f, "git-crypt key holder {fpr} not imported: {error}")
