@@ -11,17 +11,21 @@ plaintext. Members hold age keys or GPG keys (a custom `pgp` age stanza).
 - CLI: `crates/cli/src/main.rs` clap, dispatch and rendering of the core's results.
 - Core, under `crates/core/src/`: `lib.rs` module list and re-exports · `commands.rs` one `cmd_*`
   per subcommand · `status.rs` `status` · `dismiss.rs` `dismiss` · `epoch.rs` epoch files,
-  `current-epoch`, wrap/unwrap · `membership.rs` `rotate`, `user add` (re-wrap) and `user remove` ·
-  `remove.rs` `remove` ·
+  wrap/unwrap · `partition.rs` `.amaga/partitions/` (members, `current-epoch` pointers, the
+  `amaga-partition` attribute) · `membership.rs` `rotate`, `user add` and `user remove`, and the
+  shared re-encrypt · `partition_commands.rs` the `partition` commands · `import.rs`
+  `import-git-crypt` (pure helpers in `gitcrypt.rs`) · `remove.rs` `remove` ·
+  `selection.rs` which secrets a command acts on · `files.rs` repo file helpers ·
   `outcome.rs` the result types (`Outcome`, `Warning`, `StatusReport`, …) · `context.rs`
-  per-command `Context` and file helpers · `secret.rs` header,
+  per-command `Context` (partitions, epochs, decrypt) · `secret.rs` header, partition label,
   age encrypt/decrypt, `next_header`, `plaintext_state`, base file · `gpg.rs` `.asc` validation,
   `pgp` stanza, gpg subprocess · `users.rs` `.amaga/users/` loading · `keyring.rs` `KEY`
   resolution and gpg keyring lookup · `identity.rs` keygen,
   identity, actor · `paths.rs` path mapping, `.gitignore` block, atomic write · `git.rs` git
   subprocess helpers · `audit.rs` JSONL events · `error.rs` the `Error` enum.
 - Tests: unit tests beside the code; integration tests in `crates/cli/tests/cli.rs` and
-  `crates/cli/tests/membership.rs` and `crates/cli/tests/repo_dir.rs` (`-C`; helpers in
+  `crates/cli/tests/membership.rs`, `crates/cli/tests/partitions.rs`,
+  `crates/cli/tests/import_git_crypt.rs` and `crates/cli/tests/repo_dir.rs` (`-C`; helpers in
   `crates/cli/tests/common/`); `crates/core/tests/directory.rs` (the `dir` parameter); key
   fixtures in `crates/core/tests/fixtures/`.
 
@@ -42,6 +46,8 @@ plaintext. Members hold age keys or GPG keys (a custom `pgp` age stanza).
   `GIT_CONFIG_GLOBAL` and `GIT_CONFIG_NOSYSTEM=1` and a temp `HOME`.
 - gpg tests use a short temp `GNUPGHOME` under `/tmp` (agent socket path limit), passed only to
   child processes (never `set_var`), skip with a notice when gpg is absent, and kill the agent on drop.
+- git-crypt: only the end-to-end import test needs the real `git-crypt`; it skips with a notice
+  when it is absent. Unit tests never run git (the checks set `GIT_DIR=/nonexistent`).
 
 ## Commits
 Small, signed, one logical unit each; every commit builds and passes the checks above.
