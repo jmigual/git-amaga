@@ -52,3 +52,22 @@ jobs:
           files: dist/*
           # Tags like v1.2.0-rc.1 publish a pre-release, so they never become "latest".
           prerelease: ${{ contains(github.ref_name, '-') }}
+
+  crates-io:
+    needs: build
+    # Tags like v1.2.0-rc.1 only publish a GitHub pre-release.
+    if: ${{ !contains(github.ref_name, '-') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - name: Check the tag matches the workspace version
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 --locked | jq -r '.packages[] | select(.name == "git-amaga") | .version')
+          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "tag $GITHUB_REF_NAME does not match workspace version v$version" >&2
+            exit 1
+          fi
+      - run: cargo publish --workspace --locked
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_API_KEY }}
