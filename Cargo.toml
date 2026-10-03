@@ -8,9 +8,10 @@ edition = "2024"
 rust-version = "1.88"
 license = "MIT"
 repository = "https://github.com/jmigual/git-amaga"
+homepage = "https://github.com/jmigual/git-amaga"
 
 [workspace.dependencies]
-git-amaga-core = { path = "crates/core" }
+git-amaga-core = { path = "crates/core", version = "=0.2.0" }
 age = "0.12.1"
 age-core = "0.12.0"
 clap = { version = "4.6.7", features = ["derive"] }

@@ -5,6 +5,11 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+description = "Encrypted secret files in Git, shared with a team through age or GPG keys"
+readme = "../../README.md"
+keywords = ["age", "gpg", "secrets", "git", "encryption"]
+categories = ["command-line-utilities", "cryptography", "development-tools"]
 
 [dependencies]
 clap.workspace = true
