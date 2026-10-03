@@ -18,3 +18,4 @@ Agents: read this table, then open only the ADRs relevant to your task. The full
 | [0011](0011-append-only-gitignore.md) | Append-only `.gitignore` block | Accepted | Managed block only grows, `merge=union`; `check-ignore` is the source of truth. |
 | [0012](0012-membership-directory.md) | Membership is `.amaga/users/` | Accepted | `<name>.txt` (age) and/or `<name>.asc` (GPG); lowercase names; key change = edit + `rotate`. |
 | [0013](0013-gpg-key-lookup.md) | GPG key lookup from the local keyring | Accepted | `KEY` that is not `age1…` or an `.asc` file is exported from local gpg (export-minimal); `keygen` prints the `user add` line. |
+| [0014](0014-core-and-cli-crates.md) | Core library crate and CLI crate | Accepted | Workspace: `git-amaga-core` returns typed results and never prints; `git-amaga` (CLI) renders today's output and exit codes. |
