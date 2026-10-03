@@ -229,4 +229,12 @@ pub enum Error {
         "'{0}' must be open and in sync before its `.amaga` is removed (state: {1:?}); run `open` (or `seal`) first so you keep a copy"
     )]
     RemoveRefused(String, PlaintextState),
+
+    #[error(
+        ".amaga/current-epoch is missing (repository written by git-amaga 0.1.0, or `init` was interrupted); open the secrets with 0.1.0 and run `init` anew, or delete `.amaga/` and rerun `init`"
+    )]
+    NoEpoch,
+
+    #[error("invalid epoch: {0}")]
+    EpochInvalid(String),
 }

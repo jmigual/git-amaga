@@ -6,6 +6,7 @@
 mod audit;
 mod commands;
 mod context;
+pub mod epoch;
 pub mod error;
 mod git;
 pub mod gpg;
