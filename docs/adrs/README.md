@@ -1,7 +1,7 @@
 # Architecture decision records
 
 Agents: read this table, then open only the ADRs relevant to your task. The full spec is
-[`plan.md`](../../plan.md).
+[`plan.md`](plan.md).
 
 | ADR | Title | Status | Decision |
 |-----|-------|--------|----------|

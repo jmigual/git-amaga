@@ -4,7 +4,7 @@ Rust CLI that stores whole secret files in Git as explicit `*.amaga` age files n
 plaintext. Members hold age keys or GPG keys (a custom `pgp` age stanza).
 
 ## Where to look
-- `plan.md`: the v1 spec (formats, commands, tests, implementation steps). Read the section you need.
+- `docs/adrs/plan.md`: the v1 spec (formats, commands, tests, implementation steps). Read the section you need.
 - `docs/adrs/README.md`: decision index. Read it first; open only the relevant ADRs.
 - Workspace (ADR-0014): `crates/core` is package `git-amaga-core` (the library) and `crates/cli`
   is package `git-amaga` (the binary). The core never prints; the CLI owns output and exit codes.

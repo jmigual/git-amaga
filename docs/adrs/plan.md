@@ -9,7 +9,7 @@ credentials rotated after someone lost access. Members hold either an age key or
 **Runtime dependencies:** the `git` executable. Members who decrypt with a GPG key also need `gpg`
 (2.1+, with gpg-agent). Nobody needs the `age` CLI, and age-only members never need `gpg`.
 
-**Decision records:** the decisions below are summarised as ADRs in [`docs/adrs/README.md`](docs/adrs/README.md).
+**Decision records:** the decisions below are summarised as ADRs in [`README.md`](README.md).
 
 ## 1. Changes from the original plan
 

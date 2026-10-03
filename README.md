@@ -72,7 +72,7 @@ age -d -i epoch.key secrets/prod.env.amaga | tail -n +2 > secrets/prod.env
 epoch's file instead. GPG members need the tool, because the `pgp` age stanza is specific to it.
 
 Design decisions are in [`docs/adrs/`](docs/adrs/README.md) and the full specification (formats,
-commands, threat model) is in [`plan.md`](plan.md).
+commands, threat model) is in [`plan.md`](docs/adrs/plan.md).
 
 ## Install
 
@@ -205,7 +205,7 @@ Epoch files are named by their public key, so branches never collide on them. Tw
 each run `rotate` or `user remove` conflict on `.amaga/current-epoch`, and two that each run
 `user add` conflict on the epoch file. Every command, `status` included, refuses until you take
 either side (`git checkout --ours -- <paths> && git add <paths>`) and run `git amaga rotate`.
-Details are in [plan.md](plan.md) section 8.
+Details are in [plan.md](docs/adrs/plan.md) section 8.
 
 ## Security model and limitations
 
@@ -229,7 +229,7 @@ Details are in [plan.md](plan.md) section 8.
 - Merging a branch that predates a removal brings secrets that are still under an older epoch;
   `status` reports them as stale and `rotate` flags every key of that epoch the new one lacks.
 - `dismiss` is a human assertion recorded in the audit log, not a check.
-- The full threat model is in [plan.md](plan.md) section 4.
+- The full threat model is in [plan.md](docs/adrs/plan.md) section 4.
 
 ## Using the library
 
@@ -270,7 +270,7 @@ cargo test --workspace
 The workspace has two crates: `crates/core` (library `git-amaga-core`) and `crates/cli` (binary
 `git-amaga`). GPG tests skip with a notice when `gpg` is not installed. Contributor and agent
 conventions are in [`CLAUDE.md`](CLAUDE.md), design decisions in
-[`docs/adrs/`](docs/adrs/README.md) and the specification in [`plan.md`](plan.md).
+[`docs/adrs/`](docs/adrs/README.md) and the specification in [`plan.md`](docs/adrs/plan.md).
 
 ## Reporting security issues
 
