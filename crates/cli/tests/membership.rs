@@ -889,3 +889,99 @@ fn member_added_on_branch_and_removal_on_main() {
     assert_eq!(exposed.keys().collect::<Vec<_>>(), ["bob"]);
     repo.run(&["status"]).assert_success();
 }
+
+/// A repository with members alice, bob and carol, secrets `a.env` and `b.env` (both left open),
+/// and bob and carol removed, so both secrets are flagged for both.
+fn repo_with_two_exposed_secrets() -> Repo {
+    let (repo, _identity_path) = repo_with_alice();
+    for name in ["bob", "carol"] {
+        let key = x25519::Identity::generate().to_public().to_string();
+        user_add(&repo, name, &key).assert_success();
+    }
+    add_secret(&repo, "a.env", b"a1");
+    add_secret(&repo, "b.env", b"b1");
+    repo.run(&["user", "remove", "bob"]).assert_success();
+    repo.run(&["user", "remove", "carol"]).assert_success();
+    repo
+}
+
+fn exposed(repo: &Repo, identity_path: &Path, path: &str) -> Vec<String> {
+    header_of(repo, identity_path, path)
+        .exposed_to
+        .into_keys()
+        .collect()
+}
+
+/// Test 49: `dismiss --user bob a.env` clears bob from that secret only and audits it.
+#[test]
+fn dismiss_clears_selected_user_and_paths() {
+    let repo = repo_with_two_exposed_secrets();
+    let identity_path = repo.path().join("identity.txt");
+    let audit_before = audit_events(&repo);
+
+    let dismiss = repo.run(&["dismiss", "--user", "bob", "a.env"]);
+    dismiss.assert_success();
+
+    assert_eq!(
+        String::from_utf8_lossy(&dismiss.stdout),
+        "dismissed a.env.amaga\n"
+    );
+    assert_eq!(exposed(&repo, &identity_path, "a.env.amaga"), ["carol"]);
+    assert_eq!(
+        exposed(&repo, &identity_path, "b.env.amaga"),
+        ["bob", "carol"]
+    );
+    // The plaintext is untouched: `status` finds no edit or outdated copy, only the warnings.
+    assert_eq!(std::fs::read(repo.path().join("a.env")).unwrap(), b"a1");
+    let status = repo.run(&["status"]);
+    status.assert_success();
+    let stdout = String::from_utf8_lossy(&status.stdout);
+    assert!(stdout.contains("WARN a.env.amaga: NEEDS ROTATION: exposed to carol"));
+    assert!(stdout.contains("WARN b.env.amaga: NEEDS ROTATION: exposed to bob, carol"));
+    let audit = audit_events(&repo);
+    let added = &audit[audit_before.len()..];
+    assert_eq!(added.len(), 1, "got {added:?}");
+    assert!(added[0].contains("\"event\":\"exposure.dismissed\""));
+    assert!(added[0].contains("\"path\":\"a.env\""));
+    assert!(added[0].contains("\"user\":\"bob\""));
+}
+
+/// Test 50: a bare `dismiss` and an unknown `--user` are refused and write nothing.
+#[test]
+fn dismiss_refuses_without_target_or_unknown_user() {
+    let repo = repo_with_two_exposed_secrets();
+    let read = |name: &str| std::fs::read(repo.path().join(name)).unwrap();
+    let before = (
+        read("a.env.amaga"),
+        read("b.env.amaga"),
+        audit_events(&repo),
+    );
+
+    repo.run(&["dismiss"]).assert_failure();
+    repo.run(&["dismiss", "--user", "nobody"]).assert_failure();
+
+    assert_eq!(
+        (
+            read("a.env.amaga"),
+            read("b.env.amaga"),
+            audit_events(&repo)
+        ),
+        before
+    );
+}
+
+/// Test 51: `dismiss --user bob` clears bob everywhere; repeating it is `NotExposed`.
+#[test]
+fn dismiss_user_across_all_secrets() {
+    let repo = repo_with_two_exposed_secrets();
+    let identity_path = repo.path().join("identity.txt");
+
+    repo.run(&["dismiss", "--user", "bob"]).assert_success();
+    for name in ["a.env.amaga", "b.env.amaga"] {
+        assert_eq!(exposed(&repo, &identity_path, name), ["carol"]);
+    }
+    let before = audit_events(&repo);
+
+    repo.run(&["dismiss", "--user", "bob"]).assert_failure();
+    assert_eq!(audit_events(&repo), before);
+}

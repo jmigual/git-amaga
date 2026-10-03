@@ -78,6 +78,14 @@ enum Command {
     },
     /// Re-encrypt every secret with fresh keys; also finishes an interrupted removal.
     Rotate,
+    /// Clear NEEDS ROTATION without changing the plaintext.
+    Dismiss {
+        /// Members to dismiss (default: every member flagged in the selected secrets).
+        #[arg(long = "user", value_name = "NAME")]
+        users: Vec<String>,
+        /// Plaintext or `.amaga` paths (default: every secret).
+        paths: Vec<String>,
+    },
     /// Show the members and the state and problems of every secret.
     Status,
 }
@@ -149,6 +157,10 @@ fn run(dir: Option<PathBuf>, command: Command) -> Result<ExitCode, Error> {
             command: UserCommand::Remove { name },
         } => print_reencrypted(&git_amaga_core::cmd_user_remove(dir, &name)?),
         Command::Rotate => print_reencrypted(&git_amaga_core::cmd_rotate(dir)?),
+        Command::Dismiss { users, paths } => print_outcome(
+            "dismissed",
+            git_amaga_core::cmd_dismiss(dir, &users, &paths)?,
+        ),
         Command::Status => return Ok(print_status(&git_amaga_core::cmd_status(dir)?)),
     }
     Ok(ExitCode::SUCCESS)
