@@ -252,4 +252,10 @@ pub enum Error {
         "unmerged epoch files must be resolved first: {0}\nrun `git checkout --ours -- <paths> && git add <paths>`, then `git-amaga rotate`"
     )]
     UnmergedEpoch(String),
+
+    #[error("nothing to dismiss: name at least one path or `--user`")]
+    DismissNoTarget,
+
+    #[error("'{0}' is not exposed in any of the selected secrets")]
+    NotExposed(String),
 }
