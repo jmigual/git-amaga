@@ -493,3 +493,24 @@ fn add_refuses_an_attribute_without_a_partition_name() {
     repo.run(&["add", "a.env"]).assert_failure();
     assert!(!repo.path().join("a.env.amaga").exists());
 }
+
+/// `user remove` also re-encrypts a partition whose `members` no longer list the name but whose
+/// current epoch is still wrapped to them (a hand edit, or an interrupted run).
+#[test]
+fn user_remove_rotates_a_partition_whose_epoch_still_holds_the_user() {
+    let (repo, _identity_path, _bob_config) = repo_with_alice_and_bob();
+    std::fs::write(
+        repo.path().join(".amaga/partitions/default/members"),
+        "alice\n",
+    )
+    .unwrap();
+
+    repo.run(&["user", "remove", "bob"]).assert_success();
+
+    let bob = load_identity(&repo.path().join("bob-identity.txt"));
+    assert!(!can_unwrap(
+        &repo,
+        &current_epoch_id(&repo, "default"),
+        &bob
+    ));
+}

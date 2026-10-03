@@ -206,7 +206,7 @@ pub fn cmd_user_remove(dir: &Path, name: &str) -> Result<Rotation, Error> {
         }
     }
 
-    let (selected, others) = actor_partitions(&ctx, |p| p.members.contains(name));
+    let (selected, others) = removal_partitions(&ctx, name)?;
     let warnings = others
         .into_iter()
         .map(Warning::PartitionNotRotated)
@@ -224,6 +224,38 @@ pub fn cmd_user_remove(dir: &Path, name: &str) -> Result<Rotation, Error> {
         ctx.audit_event("user.removed", Some(name), None)
     })?;
     Ok(Rotation { written, warnings })
+}
+
+// The partitions `user remove` re-encrypts, and those it can only report. A partition that
+// lists the actor is re-encrypted when it lists `name` or when its current epoch was wrapped to
+// `name` (or any of their keys), so a rerun after an interruption or a hand edit of `members`
+// still locks them out. Others are reported when they list `name`.
+fn removal_partitions(ctx: &Context, name: &str) -> Result<(BTreeSet<String>, Vec<String>), Error> {
+    let keys = users::recipients(&ctx.members)
+        .remove(name)
+        .unwrap_or_default();
+    let (mut selected, mut others) = (BTreeSet::new(), Vec::new());
+    for (p, partition) in &ctx.partitions {
+        let listed = partition.members.contains(name);
+        if !partition.members.contains(&ctx.actor) {
+            if listed {
+                others.push(p.clone());
+            }
+            continue;
+        }
+        let wrapped = || {
+            let epoch = ctx.current_epoch(p)?;
+            let found = epoch
+                .members
+                .iter()
+                .any(|(n, ks)| n == name || ks.iter().any(|k| keys.contains(k)));
+            Ok::<_, Error>(found)
+        };
+        if listed || wrapped()? {
+            selected.insert(p.clone());
+        }
+    }
+    Ok((selected, others))
 }
 
 // The existing user files of member `name`: `<name>.txt` and `<name>.asc`.
