@@ -30,8 +30,8 @@ pub use dismiss::cmd_dismiss;
 pub use error::Error;
 pub use keyring::GpgKey;
 pub use membership::{
-    cmd_partition_add, cmd_partition_create, cmd_partition_remove, cmd_rotate, cmd_user_add,
-    cmd_user_remove,
+    cmd_partition_add, cmd_partition_create, cmd_partition_move, cmd_partition_remove, cmd_rotate,
+    cmd_user_add, cmd_user_remove,
 };
 pub use outcome::{Level, Outcome, Reencrypted, Rotation, SecretStatus, StatusReport, Warning};
 pub use remove::cmd_remove;

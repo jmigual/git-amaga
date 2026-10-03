@@ -398,3 +398,43 @@ fn user_add_into_partition_only() {
     );
     assert_eq!(default_before, default_after);
 }
+
+/// Test 63: `partition move` flags the members of the old epoch that the target lacks, and
+/// leaves plaintext and base alone.
+#[test]
+fn partition_move_flags_members_missing_from_target() {
+    let (repo, identity_path, bob_config) = repo_with_alice_and_bob();
+    repo.run(&["partition", "create", "production", "alice"])
+        .assert_success();
+    add_secret(&repo, "d.env", b"dev");
+    let base = ".git/amaga-base";
+    let base_before = read(&repo, base);
+
+    let moved = repo.run(&["partition", "move", "production", "d.env"]);
+    moved.assert_success();
+    assert_eq!(stdout(&moved), "moved d.env.amaga\n");
+    assert_eq!(read(&repo, "d.env"), b"dev");
+    assert_eq!(read(&repo, base), base_before);
+    let ciphertext = read(&repo, "d.env.amaga");
+    let label = git_amaga_core::secret::label_of("d.env.amaga", &ciphertext).unwrap();
+    assert_eq!(label, "production");
+    let status = stdout(&repo.run(&["status"]));
+    assert!(
+        status.contains("WARN d.env.amaga (production): NEEDS ROTATION: exposed to bob"),
+        "{status}"
+    );
+    let audit = String::from_utf8(read(&repo, ".amaga/audit.jsonl")).unwrap();
+    assert!(
+        audit
+            .lines()
+            .last()
+            .unwrap()
+            .contains("\"event\":\"secret.moved\"")
+    );
+    run_as(&repo, &bob_config, &["open", "d.env"]).assert_failure();
+
+    repo.run(&["partition", "move", "default", "d.env"])
+        .assert_success();
+    let (header, _) = decrypt_file(&repo, &identity_path, "d.env.amaga");
+    assert_eq!(header.exposed_to.keys().collect::<Vec<_>>(), ["bob"]);
+}

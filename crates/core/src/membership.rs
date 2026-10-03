@@ -8,8 +8,9 @@ use crate::context::{Context, Decrypted, write_epoch};
 use crate::epoch::Epoch;
 use crate::files::{read_repo_file, write_repo_file};
 use crate::keyring::GpgKey;
-use crate::outcome::{Reencrypted, Rotation, Warning};
-use crate::{Error, git, keyring, partition, secret, users};
+use crate::outcome::{Outcome, Reencrypted, Rotation, Warning};
+use crate::selection::secret_paths_for;
+use crate::{Error, audit, git, keyring, partition, secret, users};
 
 /// Plan 7.1 for the partitions `selected`: decrypts every secret labelled with one of them first
 /// and writes nothing if any fails, then runs `change` (the membership change and its audit
@@ -253,6 +254,49 @@ pub fn cmd_partition_remove(dir: &Path, name: &str, members: &[String]) -> Resul
         written,
         warnings: Vec::new(),
     })
+}
+
+/// `git-amaga partition move <p> <path>…` (plan 7): re-encrypts the secrets into `p`, flagging the
+/// members of their old epoch that `p` lacks. Plaintext and base are never touched.
+pub fn cmd_partition_move(dir: &Path, name: &str, args: &[String]) -> Result<Outcome, Error> {
+    if args.is_empty() {
+        return Err(Error::NoPaths);
+    }
+    let ctx = Context::load(dir)?;
+    ctx.require_member(name)?;
+    ctx.require_up_to_date(name)?;
+    let mut outcome = Outcome::default();
+
+    let mut seen = BTreeSet::new();
+    let mut targets = secret_paths_for(&ctx, args, false, &mut outcome.warnings)?;
+    targets.retain(|sp| seen.insert(sp.ciphertext.clone()));
+    let mut moving = Vec::new();
+    for sp in targets {
+        let ciphertext = read_repo_file(&ctx.root, &sp.ciphertext)?;
+        let found = ctx.decrypt(&sp.ciphertext, &ciphertext)?;
+        if found.partition != name {
+            moving.push((sp, found));
+        }
+    }
+
+    for (sp, old) in moving {
+        let current = ctx.current_epoch(name)?;
+        let old_epoch = Some((&old.header, &old.epoch.members));
+        let header = secret::next_header(old_epoch, false, &current.members);
+        let ciphertext = ctx.encrypt(name, &header, &old.body)?;
+        write_repo_file(&ctx.root, &sp.ciphertext, &ciphertext, None)?;
+        audit::append(
+            &ctx.root.join(".amaga/audit.jsonl"),
+            &ctx.actor,
+            "secret.moved",
+            Some(&sp.plaintext),
+            None,
+            Some(name),
+            None,
+        )?;
+        outcome.changed.push(sp.ciphertext);
+    }
+    Ok(outcome)
 }
 
 /// `git-amaga user add [--partition <p>]… <name> <KEY>…` (plan 7): validates the keys, then

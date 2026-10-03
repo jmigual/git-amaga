@@ -145,6 +145,15 @@ enum PartitionCommand {
         #[arg(required = true)]
         members: Vec<String>,
     },
+    /// Move secrets into a partition; members of the old key who lack the new one are flagged
+    /// NEEDS ROTATION.
+    Move {
+        /// The target partition.
+        name: String,
+        /// Plaintext or `.amaga` paths to move.
+        #[arg(required = true)]
+        paths: Vec<String>,
+    },
     /// Remove members from a partition, re-encrypt its secrets and flag the ones they could read.
     Remove {
         /// The partition.
@@ -220,6 +229,12 @@ fn run(dir: Option<PathBuf>, command: Command) -> Result<ExitCode, Error> {
         Command::Partition {
             command: PartitionCommand::Add { name, members },
         } => git_amaga_core::cmd_partition_add(dir, &name, &members)?,
+        Command::Partition {
+            command: PartitionCommand::Move { name, paths },
+        } => print_outcome(
+            "moved",
+            git_amaga_core::cmd_partition_move(dir, &name, &paths)?,
+        ),
         Command::Partition {
             command: PartitionCommand::Remove { name, members },
         } => print_rotation(&git_amaga_core::cmd_partition_remove(dir, &name, &members)?),
