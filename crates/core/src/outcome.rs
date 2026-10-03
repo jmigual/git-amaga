@@ -27,6 +27,8 @@ pub enum Warning {
         /// How many members were flagged as exposed.
         members: usize,
     },
+    /// `rotate` or `user remove` left a partition alone because the actor is not in it.
+    PartitionNotRotated(String),
     /// A partition lists a name that is not in `.amaga/users`; it grants nothing.
     UnknownMember {
         /// The partition.
@@ -56,6 +58,10 @@ impl fmt::Display for Warning {
                 "sealing '{plaintext}' with --force clears NEEDS ROTATION for {members} member(s); \
                  the local copy may still hold an old value"
             ),
+            Self::PartitionNotRotated(partition) => write!(
+                f,
+                "partition '{partition}' was not re-encrypted: you are not a member; a member must run `git-amaga rotate --partition {partition}`"
+            ),
             Self::UnknownMember { partition, name } => write!(
                 f,
                 "partition '{partition}' lists '{name}', who is not in .amaga/users; it grants nothing"
@@ -65,7 +71,16 @@ impl fmt::Display for Warning {
     }
 }
 
-/// One secret rewritten by `rotate`, `user add` or `user remove`.
+/// The result of `rotate` and `user remove`.
+#[derive(Debug, Default)]
+pub struct Rotation {
+    /// The secrets that were re-encrypted, in write order.
+    pub written: Vec<Reencrypted>,
+    /// Problems that did not stop the command.
+    pub warnings: Vec<Warning>,
+}
+
+/// One secret rewritten by `rotate` or `user remove`.
 #[derive(Debug)]
 pub struct Reencrypted {
     /// The `.amaga` path.

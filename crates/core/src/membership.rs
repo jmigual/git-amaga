@@ -8,7 +8,7 @@ use crate::context::{Context, Decrypted, write_epoch};
 use crate::epoch::Epoch;
 use crate::files::{read_repo_file, write_repo_file};
 use crate::keyring::GpgKey;
-use crate::outcome::Reencrypted;
+use crate::outcome::{Reencrypted, Rotation, Warning};
 use crate::{Error, git, keyring, partition, secret, users};
 
 /// Plan 7.1 for the partitions `selected`: decrypts every secret labelled with one of them first
@@ -99,13 +99,44 @@ pub(crate) fn reencrypt(
     Ok(written)
 }
 
-/// `git-amaga rotate` (plan 7): re-encrypts everything; also finishes an interrupted run.
-pub fn cmd_rotate(dir: &Path) -> Result<Vec<Reencrypted>, Error> {
+/// `git-amaga rotate [--partition <p>]…` (plan 7): re-encrypts the named partitions, or every
+/// partition that lists the actor; also finishes an interrupted run.
+pub fn cmd_rotate(dir: &Path, partitions: &[String]) -> Result<Rotation, Error> {
     let mut ctx = Context::load(dir)?;
-    let all = ctx.partitions.keys().cloned().collect();
-    let written = reencrypt(&mut ctx, &all, |_| Ok(()))?;
-    ctx.audit_event("rotated", None, None)?;
-    Ok(written)
+    let mut warnings = Vec::new();
+    let selected: BTreeSet<String> = if partitions.is_empty() {
+        let (mine, others) = actor_partitions(&ctx, |_| true);
+        warnings.extend(others.into_iter().map(Warning::PartitionNotRotated));
+        mine
+    } else {
+        for p in partitions {
+            ctx.require_member(p)?;
+        }
+        partitions.iter().cloned().collect()
+    };
+    let written = reencrypt(&mut ctx, &selected, |_| Ok(()))?;
+    for p in &selected {
+        ctx.audit_partition("rotated", p, None)?;
+    }
+    Ok(Rotation { written, warnings })
+}
+
+// The partitions accepted by `wanted` that list the actor, and those that do not.
+fn actor_partitions(
+    ctx: &Context,
+    wanted: impl Fn(&partition::Partition) -> bool,
+) -> (BTreeSet<String>, Vec<String>) {
+    let (mut mine, mut others) = (BTreeSet::new(), Vec::new());
+    for (p, partition) in ctx.partitions.iter().filter(|(_, p)| wanted(p)) {
+        match partition.members.contains(&ctx.actor) {
+            true => mine.insert(p.clone()),
+            false => {
+                others.push(p.clone());
+                false
+            }
+        };
+    }
+    (mine, others)
 }
 
 /// `git-amaga partition create <p> <member>…` (plan 7): a new partition with a new epoch wrapped
@@ -180,7 +211,7 @@ pub fn cmd_user_add(dir: &Path, name: &str, keys: &[String]) -> Result<Option<Gp
 }
 
 /// `git-amaga user remove <name>` (plan 7): the member's own files need not be valid.
-pub fn cmd_user_remove(dir: &Path, name: &str) -> Result<Vec<Reencrypted>, Error> {
+pub fn cmd_user_remove(dir: &Path, name: &str) -> Result<Rotation, Error> {
     if !users::valid_name(name) {
         return Err(Error::InvalidMemberName(name.to_string()));
     }
@@ -203,8 +234,12 @@ pub fn cmd_user_remove(dir: &Path, name: &str) -> Result<Vec<Reencrypted>, Error
         }
     }
 
-    let all = ctx.partitions.keys().cloned().collect();
-    reencrypt(&mut ctx, &all, |ctx| {
+    let (selected, others) = actor_partitions(&ctx, |p| p.members.contains(name));
+    let warnings = others
+        .into_iter()
+        .map(Warning::PartitionNotRotated)
+        .collect();
+    let written = reencrypt(&mut ctx, &selected, |ctx| {
         for (p, partition) in &mut ctx.partitions {
             if partition.members.remove(name) {
                 partition::write_members(&ctx.root, p, &partition.members)?;
@@ -215,7 +250,8 @@ pub fn cmd_user_remove(dir: &Path, name: &str) -> Result<Vec<Reencrypted>, Error
         }
         ctx.members.remove(name);
         ctx.audit_event("user.removed", Some(name), None)
-    })
+    })?;
+    Ok(Rotation { written, warnings })
 }
 
 // The existing user files of member `name`: `<name>.txt` and `<name>.asc`.

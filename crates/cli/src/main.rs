@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
-use git_amaga_core::{Error, GpgKey, Level, Outcome, Reencrypted, StatusReport, Warning};
+use git_amaga_core::{Error, GpgKey, Level, Outcome, Rotation, StatusReport, Warning};
 
 #[derive(Parser)]
 #[command(
@@ -88,8 +88,12 @@ enum Command {
         #[command(subcommand)]
         command: PartitionCommand,
     },
-    /// Re-encrypt every secret with fresh keys; also finishes an interrupted removal.
-    Rotate,
+    /// Re-encrypt secrets with fresh keys; also finishes an interrupted removal.
+    Rotate {
+        /// Rotate only this partition (default: every partition you are a member of).
+        #[arg(long = "partition", value_name = "NAME")]
+        partitions: Vec<String>,
+    },
     /// Clear NEEDS ROTATION without changing the plaintext.
     Dismiss {
         /// Members to dismiss (default: every member flagged in the selected secrets).
@@ -113,7 +117,7 @@ enum UserCommand {
         #[arg(required = true)]
         keys: Vec<String>,
     },
-    /// Remove a member, re-encrypt every secret and flag the ones they could read.
+    /// Remove a member, re-encrypt the secrets of your partitions and flag the ones they could read.
     Remove {
         /// The member to remove.
         name: String,
@@ -184,11 +188,13 @@ fn run(dir: Option<PathBuf>, command: Command) -> Result<ExitCode, Error> {
         }
         Command::User {
             command: UserCommand::Remove { name },
-        } => print_reencrypted(&git_amaga_core::cmd_user_remove(dir, &name)?),
+        } => print_rotation(&git_amaga_core::cmd_user_remove(dir, &name)?),
         Command::Partition {
             command: PartitionCommand::Create { name, members },
         } => git_amaga_core::cmd_partition_create(dir, &name, &members)?,
-        Command::Rotate => print_reencrypted(&git_amaga_core::cmd_rotate(dir)?),
+        Command::Rotate { partitions } => {
+            print_rotation(&git_amaga_core::cmd_rotate(dir, &partitions)?)
+        }
         Command::Dismiss { users, paths } => print_outcome(
             "dismissed",
             git_amaga_core::cmd_dismiss(dir, &users, &paths)?,
@@ -217,8 +223,9 @@ fn print_gpg_key(name: &str, key: Option<GpgKey>) {
     }
 }
 
-fn print_reencrypted(written: &[Reencrypted]) {
-    for item in written {
+fn print_rotation(rotation: &Rotation) {
+    print_warnings(&rotation.warnings);
+    for item in &rotation.written {
         if item.exposed_to.is_empty() {
             println!("re-encrypted {}", item.path);
         } else {

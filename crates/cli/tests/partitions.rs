@@ -6,8 +6,8 @@ use std::path::PathBuf;
 use std::process::Output;
 
 use common::{
-    OutputExt, Repo, can_unwrap, current_epoch_id, decrypt_file, load_identity, repo_with_alice,
-    run_as, second_identity,
+    OutputExt, Repo, can_unwrap, current_epoch_id, decrypt_as, decrypt_file, load_identity,
+    repo_with_alice, run_as, second_identity,
 };
 
 fn add_secret(repo: &Repo, name: &str, body: &[u8]) {
@@ -146,4 +146,108 @@ fn stale_guard_is_per_partition() {
     add.assert_failure();
     assert!(stderr(&add).contains("rotate --partition production"));
     add_secret(&repo, "y.env", b"y");
+}
+
+fn read(repo: &Repo, path: &str) -> Vec<u8> {
+    std::fs::read(repo.path().join(path)).unwrap()
+}
+
+/// Test 56: `rotate --partition p` touches only `p`, and `rotate` skips partitions the actor is
+/// not in.
+#[test]
+fn rotate_partition_touches_only_that_partition() {
+    let (repo, _identity_path, bob_config) = repo_with_alice_and_bob();
+    repo.run(&["partition", "create", "production", "alice"])
+        .assert_success();
+    std::fs::write(repo.path().join("p.env"), b"prod").unwrap();
+    repo.run(&["add", "--partition", "production", "p.env"])
+        .assert_success();
+    add_secret(&repo, "d.env", b"dev");
+    let default_pointer = current_epoch_id(&repo, "default");
+    let production_pointer = current_epoch_id(&repo, "production");
+    let (d_before, p_before) = (read(&repo, "d.env.amaga"), read(&repo, "p.env.amaga"));
+
+    repo.run(&["rotate", "--partition", "production"])
+        .assert_success();
+    assert_eq!(read(&repo, "d.env.amaga"), d_before);
+    assert_eq!(current_epoch_id(&repo, "default"), default_pointer);
+    assert_ne!(read(&repo, "p.env.amaga"), p_before);
+    assert_ne!(current_epoch_id(&repo, "production"), production_pointer);
+
+    let p_before = read(&repo, "p.env.amaga");
+    let rotate = run_as(&repo, &bob_config, &["rotate"]);
+    rotate.assert_success();
+    assert!(
+        stderr(&rotate).contains("production"),
+        "{}",
+        stderr(&rotate)
+    );
+    assert_ne!(read(&repo, "d.env.amaga"), d_before);
+    assert_eq!(read(&repo, "p.env.amaga"), p_before);
+}
+
+/// Test 57: `user remove` re-encrypts only the actor's partitions and reports the others. Alice
+/// is in `default` only; bob and carol are in `default` and `production`, which holds `p.env`
+/// (added by carol).
+#[test]
+fn user_remove_rotates_only_the_actors_partitions() {
+    let (repo, alice_identity, _bob_config) = repo_with_alice_and_bob();
+    let (carol_key, carol_config) = second_identity(&repo, "carol");
+    repo.run(&["user", "add", "carol", &carol_key])
+        .assert_success();
+    repo.run(&["partition", "create", "production", "bob", "carol"])
+        .assert_success();
+    std::fs::write(repo.path().join("p.env"), b"prod").unwrap();
+    let production = ["add", "--partition", "production", "p.env"];
+    run_as(&repo, &carol_config, &production).assert_success();
+    add_secret(&repo, "d.env", b"dev");
+    let p_before = read(&repo, "p.env.amaga");
+
+    let remove = repo.run(&["user", "remove", "bob"]);
+    remove.assert_success();
+    assert!(
+        stderr(&remove).contains("production"),
+        "{}",
+        stderr(&remove)
+    );
+    assert!(stdout(&remove).contains("re-encrypted d.env.amaga (NEEDS ROTATION: exposed to bob)"));
+    assert!(!repo.path().join(".amaga/users/bob.txt").exists());
+    assert_eq!(
+        read(&repo, ".amaga/partitions/production/members"),
+        b"carol\n"
+    );
+    assert_eq!(read(&repo, "p.env.amaga"), p_before);
+    let (header, _) = decrypt_file(&repo, &alice_identity, "d.env.amaga");
+    assert_eq!(header.exposed_to.keys().collect::<Vec<_>>(), ["bob"]);
+
+    let status = run_as(&repo, &carol_config, &["status"]);
+    status.assert_failure();
+    assert!(stdout(&status).contains("run git-amaga rotate --partition production"));
+    run_as(&repo, &carol_config, &["rotate"]).assert_success();
+    let carol = load_identity(&repo.path().join("carol-identity.txt"));
+    let (header, _) = decrypt_as(&repo, &read(&repo, "p.env.amaga"), &carol).unwrap();
+    assert_eq!(header.exposed_to.keys().collect::<Vec<_>>(), ["bob"]);
+}
+
+/// Test 58: the last member of a partition cannot be removed by `user remove`.
+#[test]
+fn last_partition_member_cannot_be_removed_by_user_remove() {
+    let (repo, _identity_path, _bob_config) = repo_with_alice_and_bob();
+    repo.run(&["partition", "create", "production", "alice"])
+        .assert_success();
+    let members = ".amaga/partitions/production/members";
+    let before = (read(&repo, members), read(&repo, ".amaga/audit.jsonl"));
+
+    let remove = repo.run(&["user", "remove", "alice"]);
+    remove.assert_failure();
+    assert!(
+        stderr(&remove).contains("production"),
+        "{}",
+        stderr(&remove)
+    );
+    assert!(repo.path().join(".amaga/users/alice.txt").exists());
+    assert_eq!(
+        before,
+        (read(&repo, members), read(&repo, ".amaga/audit.jsonl"))
+    );
 }
