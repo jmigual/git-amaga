@@ -71,7 +71,7 @@ enum Command {
         #[arg(required = true)]
         paths: Vec<String>,
     },
-    /// Add or remove a member and re-encrypt every secret.
+    /// Add a member, or remove one and re-encrypt every secret.
     User {
         #[command(subcommand)]
         command: UserCommand,
@@ -84,7 +84,7 @@ enum Command {
 
 #[derive(Subcommand)]
 enum UserCommand {
-    /// Add a member and re-encrypt every secret to them.
+    /// Add a member: re-wrap the current epoch key to them (no secret is rewritten).
     Add {
         /// The new member's name.
         name: String,
@@ -143,9 +143,7 @@ fn run(dir: Option<PathBuf>, command: Command) -> Result<ExitCode, Error> {
         Command::User {
             command: UserCommand::Add { name, keys },
         } => {
-            let (gpg, written) = git_amaga_core::cmd_user_add(dir, &name, &keys)?;
-            print_gpg_key(&name, gpg);
-            print_reencrypted(&written);
+            print_gpg_key(&name, git_amaga_core::cmd_user_add(dir, &name, &keys)?);
         }
         Command::User {
             command: UserCommand::Remove { name },

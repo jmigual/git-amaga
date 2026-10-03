@@ -67,13 +67,10 @@ pub fn cmd_rotate(dir: &Path) -> Result<Vec<Reencrypted>, Error> {
     Ok(written)
 }
 
-/// `git-amaga user add <name> <KEY>…` (plan 7): validates the keys, then re-encrypts everything.
-/// Returns the new member's GPG key, if any, and the rewritten secrets.
-pub fn cmd_user_add(
-    dir: &Path,
-    name: &str,
-    keys: &[String],
-) -> Result<(Option<GpgKey>, Vec<Reencrypted>), Error> {
+/// `git-amaga user add <name> <KEY>…` (plan 7): validates the keys, then re-wraps the current epoch
+/// to the members including the newcomer. No secret is rewritten (ADR-0015). Returns the new
+/// member's GPG key, if any.
+pub fn cmd_user_add(dir: &Path, name: &str, keys: &[String]) -> Result<Option<GpgKey>, Error> {
     if !users::valid_name(name) {
         return Err(Error::InvalidMemberName(name.to_string()));
     }
@@ -82,21 +79,23 @@ pub fn cmd_user_add(
     if member_files(&users_dir, name).next().is_some() {
         return Err(Error::UserExists(name.to_string()));
     }
+    ctx.require_up_to_date()?;
     let resolved = keyring::resolve(dir, keys)?;
-    // Checked before anything is written; decrypting does not depend on the member list.
     ctx.members
         .insert(name.to_string(), users::member_from_keys(&resolved));
     users::check(&ctx.members, None)?;
 
-    let written = reencrypt_all(&mut ctx, |ctx| {
-        users::write_member(&users_dir, name, &resolved)?;
-        let gpg = resolved
-            .gpg
-            .as_ref()
-            .map(|k| (k.fpr.as_str(), k.uid.as_str()));
-        ctx.audit_event("user.added", Some(name), gpg)
-    })?;
-    Ok((resolved.gpg, written))
+    users::write_member(&users_dir, name, &resolved)?;
+    let gpg = resolved
+        .gpg
+        .as_ref()
+        .map(|k| (k.fpr.as_str(), k.uid.as_str()));
+    ctx.audit_event("user.added", Some(name), gpg)?;
+    let epoch = ctx
+        .current_epoch()?
+        .with_members(users::recipients(&ctx.members));
+    ctx.write_epoch(&epoch)?;
+    Ok(resolved.gpg)
 }
 
 /// `git-amaga user remove <name>` (plan 7): the member's own files need not be valid.

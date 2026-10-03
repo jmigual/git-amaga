@@ -120,7 +120,7 @@ impl Context {
         Ok(key_set(&epoch.members) == key_set(&users::recipients(&self.members)))
     }
 
-    /// The guard of `add` and `seal`: [`Error::EpochStale`] unless up to date (plan 7).
+    /// The guard of `add`, `seal` and `user add`: [`Error::EpochStale`] unless up to date (plan 7).
     pub(crate) fn require_up_to_date(&self) -> Result<(), Error> {
         match self.epoch_up_to_date()? {
             true => Ok(()),

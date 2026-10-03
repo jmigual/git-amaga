@@ -39,6 +39,16 @@ impl Epoch {
         }
     }
 
+    /// The same key, to be wrapped to another member set (`user add`, plan 7).
+    pub fn with_members(&self, members: Recipients) -> Self {
+        let key = self.identity.to_string();
+        Self {
+            members,
+            identity: x25519::Identity::from_str(key.expose_secret())
+                .expect("a key that was just serialized parses"),
+        }
+    }
+
     /// The public key string, which names the epoch file.
     pub fn id(&self) -> String {
         self.identity.to_public().to_string()
