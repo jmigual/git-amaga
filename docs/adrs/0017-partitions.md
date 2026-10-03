@@ -76,3 +76,6 @@ member can unwrap every secret. Access must stay enforced by encryption, using s
 - One `.amaga/epochs/<p>/` directory per partition: epoch names are already unique, and the
   "try older epochs" lookup (plan §5.6) needs one listing.
 - Groups: not requested.
+- A secret in several partitions: encrypt to each partition's current epoch, with one label
+  stanza per partition; readers are the union. Deferred (plan §13). It is additive, because
+  single-label files stay valid. Until then, use a partition whose members are the union.
