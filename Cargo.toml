@@ -1,0 +1,27 @@
+[workspace]
+members = ["crates/core", "crates/cli"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "MIT"
+repository = "https://github.com/jmigual/git-amaga"
+
+[workspace.dependencies]
+git-amaga-core = { path = "crates/core" }
+age = "0.12.1"
+age-core = "0.12.0"
+clap = { version = "4.6.7", features = ["derive"] }
+pgp = { version = "0.20.0", default-features = false }
+rand = "0.8"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+sha2 = "0.10"
+tempfile = "3.27.0"
+thiserror = "2.0.21"
+
+[profile.release]
+lto = true
+strip = true

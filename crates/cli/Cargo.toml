@@ -1,0 +1,15 @@
+[package]
+name = "git-amaga"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+clap.workspace = true
+git-amaga-core.workspace = true
+
+[dev-dependencies]
+age.workspace = true
+tempfile.workspace = true
