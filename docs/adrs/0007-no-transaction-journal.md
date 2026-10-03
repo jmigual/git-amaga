@@ -1,6 +1,7 @@
 # ADR-0007: No transaction journal; `rotate` is the recovery command
 
-**Status:** Accepted; amended by ADR-0015 (new epoch, pointer moved last)
+**Status:** Accepted; amended by ADR-0015 (new epoch, pointer moved last) and ADR-0017
+(re-encryption is scoped to partitions)
 
 ## Context
 `user add`, `user remove` and `rotate` change membership or keys across several files, and a
@@ -23,6 +24,9 @@ run can be interrupted midway. The original design had a local journal and a `re
 - Git already holds the previous state for anything else.
 - No clean-tree precondition: unsealed local edits are unaffected.
 - Ceiling: all secrets are held in memory at once; stream per file if large files appear.
+- With partitions (ADR-0017), re-encryption covers a set of partitions: one new epoch each, and
+  each pointer moves last. `user remove` leaves the partitions the actor is not in stale, the
+  same state an interrupted run leaves; one of their members finishes it with `rotate`.
 
 ## Alternatives considered
 - Transaction journal + `recover`: more state to get wrong, and it lives under `.git`, which

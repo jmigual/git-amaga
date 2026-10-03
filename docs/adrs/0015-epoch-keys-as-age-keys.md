@@ -1,6 +1,7 @@
 # ADR-0015: Epoch keys that are themselves age keys
 
-**Status:** Accepted (supersedes ADR-0003; plan.md §5.6, §7.1)
+**Status:** Accepted (supersedes ADR-0003; plan.md §5.6, §7.1); amended by ADR-0017 (one epoch
+chain and pointer per partition, `.amaga/partitions/<p>/current-epoch`)
 
 ## Context
 With one age file per secret encrypted to every member (ADR-0003), a GPG member needs one
@@ -31,7 +32,8 @@ hand-built AEAD, no custom container (the reasons ADR-0003 dropped the original 
 - Format version 2. Repositories and secrets from 0.1.0 fail with an error; there is no migration.
 
 ## Consequences
-- One gpg call (one card touch) per command; more only for secrets under older epochs.
+- One gpg call (one card touch) per command; more only for secrets under older epochs. With
+  partitions (ADR-0017), the count is one per partition the command touches.
 - `user add` changes `.amaga/users/` and one epoch file. The newcomer can read every version of
   every secret committed under that epoch. Run `rotate` before `user add` to prevent that.
 - Escape hatch for age members, two `age -d` commands (plan.md §4).

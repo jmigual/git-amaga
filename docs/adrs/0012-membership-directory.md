@@ -1,6 +1,7 @@
 # ADR-0012: Membership is the `.amaga/users/` directory
 
-**Status:** Accepted; amended by ADR-0015 (epochs) and ADR-0016 (`dismiss`)
+**Status:** Accepted; amended by ADR-0015 (epochs), ADR-0016 (`dismiss`) and ADR-0017
+(partition member lists)
 
 ## Context
 The tool needs a committed, reviewable list of members and their keys, supporting several
@@ -15,6 +16,9 @@ devices per person and both age and GPG keys.
   case-insensitive filesystems.
 - Duplicate keys across members, members without keys, unknown files, or no members at all
   are errors.
+- `.amaga/users/` holds keys. Access comes from the partition member lists,
+  `.amaga/partitions/<p>/members` (ADR-0017). A listed name without a user file grants nothing;
+  `status` warns about it.
 - Key changes for an existing member: edit or replace the file, then `rotate`
   (plan.md §2 decision 5). If the old key is known to be safe, `dismiss --user <name>`
   clears the resulting flags (ADR-0016).

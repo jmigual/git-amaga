@@ -1,7 +1,7 @@
 # ADR-0006: Exposure tracking via epoch member sets and `exposed_to`
 
-**Status:** Accepted; amended by ADR-0015 (member sets live in epoch files) and ADR-0016
-(`dismiss`)
+**Status:** Accepted; amended by ADR-0015 (member sets live in epoch files), ADR-0016
+(`dismiss`) and ADR-0017 (partitions)
 
 ## Context
 After someone loses access, the team must know which secrets they could read and which still
@@ -28,6 +28,8 @@ epoch that decrypted the file and of the epoch it is written to:
 - Removing any key (even a routine device swap) flags exposure: conservative
   (plan.md §2 decision 5); `dismiss` clears it.
 - Re-encryption is never reported as credential rotation.
+- Partitions (ADR-0017) use the same rule: `partition remove` flags only that partition's
+  secrets, and `partition move` flags the members of the old epoch who are missing from the new one.
 
 ## Alternatives considered
 - Generation counters (original design): missed merges and interrupted removals.
