@@ -317,3 +317,34 @@ fn import_covers_every_file_after_an_empty_attribute_value() {
     assert!(!tracked.contains(&"c.env".to_string()), "{tracked:?}");
     assert!(tracked.contains(&"b.txt".to_string()));
 }
+
+/// A name that a `members` file still lists is never given to a new holder: `--name` is refused
+/// and a derived name skips it.
+#[test]
+fn import_does_not_reuse_a_name_a_partition_still_lists() {
+    let Some(gpg_home) = GpgHome::new("import_does_not_reuse_a_name_a_partition_still_lists")
+    else {
+        return;
+    };
+    let dave = gpg_home.generate_key("Dave <dave@example.invalid>");
+    let env = [("GNUPGHOME", gpg_home.path().as_os_str())];
+    let (repo, _keys, _identity_path) = simulated_repo(&[("Prod", &dave)]);
+    let members = repo.path().join(".amaga/partitions/default/members");
+    std::fs::write(&members, "alice\ndave\n").unwrap();
+    let before = snapshot(&repo);
+
+    let named = format!("{dave}=dave");
+    let refused = repo.run_with_env(&["import-git-crypt", "--name", &named], &env);
+    refused.assert_failure();
+    assert!(stderr(&refused).contains("partition remove default dave"));
+    assert_eq!(snapshot(&repo), before);
+
+    repo.run_with_env(&["import-git-crypt"], &env)
+        .assert_success();
+    assert!(repo.path().join(".amaga/users/dave-2.asc").exists());
+    assert!(!repo.path().join(".amaga/users/dave.asc").exists());
+    assert_eq!(
+        read(&repo, ".amaga/partitions/prod/members"),
+        b"alice\ndave-2\n"
+    );
+}

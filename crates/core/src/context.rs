@@ -93,6 +93,12 @@ impl Context {
             .ok_or_else(|| Error::UnknownPartition(p.to_string()))
     }
 
+    /// A partition that lists `name`, if any.
+    pub(crate) fn listing_partition(&self, name: &str) -> Option<&String> {
+        (self.partitions.iter())
+            .find_map(|(p, partition)| partition.members.contains(name).then_some(p))
+    }
+
     /// Whether the actor is listed in partition `p` (plan 5.7).
     pub(crate) fn in_partition(&self, p: &str) -> Result<bool, Error> {
         Ok(self.partition(p)?.members.contains(&self.actor))

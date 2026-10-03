@@ -173,7 +173,11 @@ fn plan_members(
     }
     let chosen = parse_names(ctx, names, &all)?;
 
-    let mut taken: BTreeSet<String> = ctx.members.keys().chain(chosen.values()).cloned().collect();
+    // A name a partition still lists would give the new member that partition's access.
+    let listed = ctx.partitions.values().flat_map(|p| &p.members);
+    let mut taken: BTreeSet<String> = (ctx.members.keys().chain(chosen.values()).chain(listed))
+        .cloned()
+        .collect();
     let mut members = ctx.members.clone();
     let (mut member_of, mut new_users) = (BTreeMap::new(), Vec::new());
     for fpr in &all {
@@ -240,6 +244,12 @@ fn parse_names(
         }
         if ctx.members.contains_key(name) || chosen.values().any(|n| n == name) {
             return Err(Error::UserExists(name.to_string()));
+        }
+        if let Some(partition) = ctx.listing_partition(name) {
+            return Err(Error::UserStillListed {
+                user: name.to_string(),
+                partition: partition.clone(),
+            });
         }
         chosen.insert(fpr, name.to_string());
     }

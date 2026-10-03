@@ -157,11 +157,7 @@ pub fn cmd_user_add(
     if member_files(&users_dir, name).next().is_some() {
         return Err(Error::UserExists(name.to_string()));
     }
-    if let Some(partition) = ctx
-        .partitions
-        .iter()
-        .find_map(|(p, partition)| partition.members.contains(name).then_some(p))
-    {
+    if let Some(partition) = ctx.listing_partition(name) {
         return Err(Error::UserStillListed {
             user: name.to_string(),
             partition: partition.clone(),
