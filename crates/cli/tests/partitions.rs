@@ -35,6 +35,10 @@ fn repo_with_alice_and_bob() -> (Repo, PathBuf, PathBuf) {
 #[test]
 fn secret_label_is_readable_and_authenticated() {
     let (repo, _identity_path) = repo_with_alice();
+    // An existing partition of the same name length that alice is in, so the relabelled file
+    // fails on the header MAC and not on an unknown partition.
+    repo.run(&["partition", "create", "staging", "alice"])
+        .assert_success();
     std::fs::write(repo.path().join("a.env"), b"v1").unwrap();
     repo.run(&["add", "a.env"]).assert_success();
     std::fs::remove_file(repo.path().join("a.env")).unwrap();
@@ -44,10 +48,12 @@ fn secret_label_is_readable_and_authenticated() {
     let label = b"-> amaga-partition default\n";
     let at = bytes.windows(label.len()).position(|w| w == label).unwrap();
 
-    // The last name byte, before the newline.
-    bytes[at + label.len() - 2] = b'x';
+    let forged = b"-> amaga-partition staging\n";
+    bytes[at..at + label.len()].copy_from_slice(forged);
     std::fs::write(&path, &bytes).unwrap();
-    repo.run(&["open", "a.env"]).assert_failure();
+    let open = repo.run(&["open", "a.env"]);
+    open.assert_failure();
+    assert!(stderr(&open).contains("MAC"), "{}", stderr(&open));
     assert!(!repo.path().join("a.env").exists());
 }
 
@@ -111,6 +117,7 @@ fn partition_create_restricts_access() {
         &current_epoch_id(&repo, "production"),
         &bob
     ));
+    assert!(decrypt_as(&repo, &read(&repo, "p.env.amaga"), &bob).is_err());
 
     let status = stdout(&repo.run(&["status"]));
     assert!(status.contains("partition default: alice, bob\n"));
@@ -256,6 +263,7 @@ fn last_partition_member_cannot_be_removed_by_user_remove() {
 #[test]
 fn partition_remove_flags_only_that_partition() {
     let (repo, identity_path, _bob_config) = repo_with_alice_and_bob();
+    let bob = load_identity(&repo.path().join("bob-identity.txt"));
     repo.run(&["partition", "create", "production", "alice", "bob"])
         .assert_success();
     std::fs::write(repo.path().join("p.env"), b"prod").unwrap();
@@ -272,6 +280,9 @@ fn partition_remove_flags_only_that_partition() {
     assert_eq!(current_epoch_id(&repo, "default"), default_pointer);
     let (header, _) = decrypt_file(&repo, &identity_path, "p.env.amaga");
     assert_eq!(header.exposed_to.keys().collect::<Vec<_>>(), ["bob"]);
+    let production = current_epoch_id(&repo, "production");
+    assert!(!can_unwrap(&repo, &production, &bob));
+    assert!(decrypt_as(&repo, &read(&repo, "p.env.amaga"), &bob).is_err());
 
     let members = ".amaga/partitions/production/members";
     let before = (read(&repo, members), read(&repo, "p.env.amaga"));
@@ -284,6 +295,10 @@ fn partition_remove_flags_only_that_partition() {
 #[test]
 fn partition_add_rewraps_only() {
     let (repo, _identity_path, bob_config) = repo_with_alice_and_bob();
+    // carol is in `default` only: re-wrapping `production` must not reach her.
+    let (carol_key, _carol_config) = second_identity(&repo, "carol");
+    repo.run(&["user", "add", "carol", &carol_key])
+        .assert_success();
     repo.run(&["partition", "create", "production", "alice"])
         .assert_success();
     std::fs::write(repo.path().join("p.env"), b"prod").unwrap();
@@ -317,6 +332,8 @@ fn partition_add_rewraps_only() {
     );
     run_as(&repo, &bob_config, &["open", "p.env"]).assert_success();
     assert_eq!(read(&repo, "p.env"), b"prod");
+    let carol = load_identity(&repo.path().join("carol-identity.txt"));
+    assert!(!can_unwrap(&repo, &epoch_id, &carol));
 }
 
 /// Test 61: `partition add` on a branch and `rotate --partition` on main merge cleanly into a

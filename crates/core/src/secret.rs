@@ -526,7 +526,16 @@ mod tests {
     fn label_of_rejects_zero_two_and_non_age_input() {
         let (none, _) = encrypt_labelled(&[]);
         let (two, _) = encrypt_labelled(&["a", "b"]);
-        for input in [&none[..], &two[..], b"not an age file".as_slice()] {
+        // A forged label outside the name rule: `Label::new` would refuse to write it.
+        let (mut forged, _) = encrypt_labelled(&["prod"]);
+        let at = forged.windows(4).position(|w| w == b"prod").unwrap();
+        forged[at] = b'P';
+        for input in [
+            &none[..],
+            &two[..],
+            &forged[..],
+            b"not an age file".as_slice(),
+        ] {
             assert!(matches!(
                 label_of("p.env.amaga", input),
                 Err(Error::PartitionLabelInvalid(_))
