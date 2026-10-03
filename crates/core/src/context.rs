@@ -1,11 +1,11 @@
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::io;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use crate::epoch::{self, Epoch};
+use crate::failure::{EpochFailure, is_not_a_recipient};
 use crate::outcome::Warning;
 use crate::{Error, audit, git, gpg, identity, paths, secret, users};
 
@@ -22,7 +22,7 @@ pub(crate) struct Context {
     pub(crate) base: secret::BaseMap,
     current: age::x25519::Recipient,
     epochs: RefCell<BTreeMap<String, Rc<Epoch>>>,
-    unreadable: RefCell<BTreeMap<String, Option<String>>>,
+    failures: RefCell<BTreeMap<String, EpochFailure>>,
 }
 
 impl Context {
@@ -75,26 +75,18 @@ impl Context {
             gpg_fprs,
             current,
             epochs: RefCell::default(),
-            unreadable: RefCell::default(),
+            failures: RefCell::default(),
         })
     }
 
-    // Unwraps epoch `id` once per command, success or failure (plan 5.6). `unreadable` keeps the
-    // message of a real failure, and `None` for an epoch that is simply not wrapped to us.
+    // Unwraps epoch `id` once per command, success or failure (plan 5.6).
     fn epoch(&self, id: &str) -> Result<Rc<Epoch>, Error> {
         if let Some(epoch) = self.epochs.borrow().get(id) {
             return Ok(Rc::clone(epoch));
         }
         let path = epoch::file_path(id);
-        if let Some(failure) = self.unreadable.borrow().get(id) {
-            return Err(match failure {
-                Some(message) => Error::Io(io::Error::other(message.clone())),
-                None => Error::EpochUndecryptable {
-                    path,
-                    member: None,
-                    source: Box::new(Error::Decrypt(age::DecryptError::NoMatchingKeys)),
-                },
-            });
+        if let Some(failure) = self.failures.borrow().get(id) {
+            return Err(failure.error());
         }
         let gpg_identity = gpg::GpgIdentity::new(self.gpg_fprs.clone());
         // Age identities first, then gpg (plan 5.5).
@@ -123,8 +115,8 @@ impl Context {
                 Ok(epoch)
             }
             Err(e) => {
-                let message = (!is_not_a_recipient(&e)).then(|| e.to_string());
-                self.unreadable.borrow_mut().insert(id.to_string(), message);
+                let failure = EpochFailure::of(&epoch::file_path(id), &e);
+                self.failures.borrow_mut().insert(id.to_string(), failure);
                 Err(e)
             }
         }
@@ -136,7 +128,8 @@ impl Context {
         Ok(key_set(&epoch.members) == key_set(&users::recipients(&self.members)))
     }
 
-    /// The guard of `add`, `seal`, `user add` and `dismiss`: [`Error::EpochStale`] unless up to date (plan 7).
+    /// The guard of `add`, `seal`, `user add` and `dismiss`: [`Error::EpochStale`] unless up to
+    /// date (plan 7).
     pub(crate) fn require_up_to_date(&self) -> Result<(), Error> {
         match self.epoch_up_to_date()? {
             true => Ok(()),
@@ -260,15 +253,6 @@ impl Context {
 // Stale means a different set of keys; member names are only labels (plan 5.2).
 fn key_set(recipients: &secret::Recipients) -> BTreeSet<&str> {
     recipients.values().flatten().map(String::as_str).collect()
-}
-
-// An epoch file with no stanza for our keys (no gpg was run), as opposed to a failure to unwrap.
-fn is_not_a_recipient(err: &Error) -> bool {
-    matches!(
-        err,
-        Error::EpochUndecryptable { source, .. }
-            if matches!(**source, Error::Decrypt(age::DecryptError::NoMatchingKeys))
-    )
 }
 
 // `None`: the epoch's key does not open the file.

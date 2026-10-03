@@ -9,6 +9,7 @@ mod context;
 mod dismiss;
 pub mod epoch;
 pub mod error;
+mod failure;
 mod git;
 pub mod gpg;
 pub mod identity;
