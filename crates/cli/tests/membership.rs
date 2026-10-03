@@ -707,11 +707,15 @@ fn second_identity(repo: &Repo, name: &str) -> (String, std::path::PathBuf) {
     let keygen = repo.run(&["keygen", identity_path.to_str().unwrap()]);
     keygen.assert_success();
     let config = repo.path().join(format!("{name}-gitconfig"));
-    std::fs::write(
-        &config,
-        format!("[amaga]\n\tidentity = {}\n", identity_path.display()),
-    )
-    .unwrap();
+    // `git config` escapes the value; a raw Windows path's backslashes would be read as escapes.
+    repo.git(&[
+        "config",
+        "--file",
+        config.to_str().unwrap(),
+        "amaga.identity",
+        identity_path.to_str().unwrap(),
+    ])
+    .assert_success();
     let key = String::from_utf8_lossy(&keygen.stdout).trim().to_string();
     (key, config)
 }
