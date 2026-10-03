@@ -264,6 +264,12 @@ pub enum Error {
     #[error("partition '{0}' already exists")]
     PartitionExists(String),
 
+    #[error("'{user}' is already in partition '{partition}'")]
+    AlreadyInPartition { user: String, partition: String },
+
+    #[error("'{user}' is not listed in partition '{partition}'")]
+    NotAPartitionMember { user: String, partition: String },
+
     /// `path` is set when the command was reading that secret.
     #[error("you are not a member of partition '{partition}'{}", .path.as_ref().map(|p| format!(" (needed for '{p}')")).unwrap_or_default())]
     NotInPartition {

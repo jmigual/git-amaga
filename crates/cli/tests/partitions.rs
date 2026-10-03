@@ -6,8 +6,8 @@ use std::path::PathBuf;
 use std::process::Output;
 
 use common::{
-    OutputExt, Repo, can_unwrap, current_epoch_id, decrypt_as, decrypt_file, load_identity,
-    repo_with_alice, run_as, second_identity,
+    OutputExt, Repo, can_unwrap, current_branch, current_epoch_id, decrypt_as, decrypt_file,
+    load_identity, repo_with_alice, run_as, second_identity,
 };
 
 fn add_secret(repo: &Repo, name: &str, body: &[u8]) {
@@ -250,4 +250,111 @@ fn last_partition_member_cannot_be_removed_by_user_remove() {
         before,
         (read(&repo, members), read(&repo, ".amaga/audit.jsonl"))
     );
+}
+
+/// Test 59: `partition remove` flags only that partition's secrets, and keeps its last member.
+#[test]
+fn partition_remove_flags_only_that_partition() {
+    let (repo, identity_path, _bob_config) = repo_with_alice_and_bob();
+    repo.run(&["partition", "create", "production", "alice", "bob"])
+        .assert_success();
+    std::fs::write(repo.path().join("p.env"), b"prod").unwrap();
+    repo.run(&["add", "--partition", "production", "p.env"])
+        .assert_success();
+    add_secret(&repo, "d.env", b"dev");
+    let d_before = read(&repo, "d.env.amaga");
+    let default_pointer = current_epoch_id(&repo, "default");
+
+    let remove = repo.run(&["partition", "remove", "production", "bob"]);
+    remove.assert_success();
+    assert!(stdout(&remove).contains("re-encrypted p.env.amaga (NEEDS ROTATION: exposed to bob)"));
+    assert_eq!(read(&repo, "d.env.amaga"), d_before);
+    assert_eq!(current_epoch_id(&repo, "default"), default_pointer);
+    let (header, _) = decrypt_file(&repo, &identity_path, "p.env.amaga");
+    assert_eq!(header.exposed_to.keys().collect::<Vec<_>>(), ["bob"]);
+
+    let members = ".amaga/partitions/production/members";
+    let before = (read(&repo, members), read(&repo, "p.env.amaga"));
+    repo.run(&["partition", "remove", "production", "alice"])
+        .assert_failure();
+    assert_eq!(before, (read(&repo, members), read(&repo, "p.env.amaga")));
+}
+
+/// Test 60: `partition add` re-wraps the partition's epoch and rewrites no secret.
+#[test]
+fn partition_add_rewraps_only() {
+    let (repo, _identity_path, bob_config) = repo_with_alice_and_bob();
+    repo.run(&["partition", "create", "production", "alice"])
+        .assert_success();
+    std::fs::write(repo.path().join("p.env"), b"prod").unwrap();
+    repo.run(&["add", "--partition", "production", "p.env"])
+        .assert_success();
+    repo.run(&["close"]).assert_success();
+    repo.commit_all("base");
+    let secret_before = read(&repo, "p.env.amaga");
+    let epoch_id = current_epoch_id(&repo, "production");
+
+    repo.run(&["partition", "add", "production", "bob"])
+        .assert_success();
+
+    assert_eq!(read(&repo, "p.env.amaga"), secret_before);
+    assert_eq!(current_epoch_id(&repo, "production"), epoch_id);
+    let porcelain = String::from_utf8(repo.git(&["status", "--porcelain"]).stdout).unwrap();
+    let mut changed: Vec<&str> = porcelain
+        .lines()
+        .filter(|line| !line.ends_with(" identity.txt"))
+        .map(|line| &line[3..])
+        .collect();
+    changed.sort();
+    let epoch_file = format!(".amaga/epochs/{epoch_id}.age");
+    assert_eq!(
+        changed,
+        [
+            ".amaga/audit.jsonl",
+            epoch_file.as_str(),
+            ".amaga/partitions/production/members",
+        ]
+    );
+    run_as(&repo, &bob_config, &["open", "p.env"]).assert_success();
+    assert_eq!(read(&repo, "p.env"), b"prod");
+}
+
+/// Test 61: `partition add` on a branch and `rotate --partition` on main merge cleanly into a
+/// stale partition, which `rotate --partition` then fixes.
+#[test]
+fn partition_add_on_branch_rotate_on_main() {
+    let (repo, identity_path, bob_config) = repo_with_alice_and_bob();
+    repo.run(&["partition", "create", "production", "alice"])
+        .assert_success();
+    std::fs::write(repo.path().join("p.env"), b"prod").unwrap();
+    repo.run(&["add", "--partition", "production", "p.env"])
+        .assert_success();
+    repo.run(&["close"]).assert_success();
+    repo.commit_all("base");
+    let main = current_branch(&repo);
+
+    repo.git(&["checkout", "-b", "feature"]).assert_success();
+    repo.run(&["partition", "add", "production", "bob"])
+        .assert_success();
+    repo.commit_all("feature adds bob");
+    repo.git(&["checkout", &main]).assert_success();
+    repo.run(&["rotate", "--partition", "production"])
+        .assert_success();
+    repo.commit_all("rotate production");
+    repo.git(&["merge", "--no-edit", "feature"])
+        .assert_success();
+
+    let status = repo.run(&["status"]);
+    status.assert_failure();
+    assert!(stdout(&status).contains("p.env.amaga (production): stale recipients"));
+    std::fs::write(repo.path().join("x.env"), b"x").unwrap();
+    let add = repo.run(&["add", "--partition", "production", "x.env"]);
+    add.assert_failure();
+    assert!(stderr(&add).contains("rotate --partition production"));
+
+    repo.run(&["rotate", "--partition", "production"])
+        .assert_success();
+    run_as(&repo, &bob_config, &["open", "p.env"]).assert_success();
+    let (header, _) = decrypt_file(&repo, &identity_path, "p.env.amaga");
+    assert!(header.exposed_to.is_empty());
 }

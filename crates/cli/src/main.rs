@@ -134,6 +134,22 @@ enum PartitionCommand {
         #[arg(required = true)]
         members: Vec<String>,
     },
+    /// Add members to a partition: re-wrap its current key to them (no secret is rewritten).
+    Add {
+        /// The partition.
+        name: String,
+        /// Members (names in `.amaga/users`) to add.
+        #[arg(required = true)]
+        members: Vec<String>,
+    },
+    /// Remove members from a partition, re-encrypt its secrets and flag the ones they could read.
+    Remove {
+        /// The partition.
+        name: String,
+        /// Members to remove.
+        #[arg(required = true)]
+        members: Vec<String>,
+    },
 }
 
 fn main() -> ExitCode {
@@ -192,6 +208,12 @@ fn run(dir: Option<PathBuf>, command: Command) -> Result<ExitCode, Error> {
         Command::Partition {
             command: PartitionCommand::Create { name, members },
         } => git_amaga_core::cmd_partition_create(dir, &name, &members)?,
+        Command::Partition {
+            command: PartitionCommand::Add { name, members },
+        } => git_amaga_core::cmd_partition_add(dir, &name, &members)?,
+        Command::Partition {
+            command: PartitionCommand::Remove { name, members },
+        } => print_rotation(&git_amaga_core::cmd_partition_remove(dir, &name, &members)?),
         Command::Rotate { partitions } => {
             print_rotation(&git_amaga_core::cmd_rotate(dir, &partitions)?)
         }

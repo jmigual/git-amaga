@@ -317,9 +317,18 @@ fn user_add_rewraps_epoch_only() {
             .is_empty()
     );
     let audit = audit_events(&repo);
-    let last = audit.last().unwrap();
-    assert!(last.contains("\"event\":\"user.added\""), "got {last:?}");
-    assert!(last.contains("\"user\":\"bob\""), "got {last:?}");
+    let added = &audit[audit.len() - 2];
+    assert!(added.contains("\"event\":\"user.added\""), "got {added:?}");
+    assert!(added.contains("\"user\":\"bob\""), "got {added:?}");
+    let granted = audit.last().unwrap();
+    assert!(
+        granted.contains("\"event\":\"partition.member_added\""),
+        "got {granted:?}"
+    );
+    assert!(
+        granted.contains("\"partition\":\"default\""),
+        "got {granted:?}"
+    );
     assert_eq!(user_files(&repo), ["alice.txt", "bob.txt"]);
 }
 
@@ -435,7 +444,7 @@ fn gpg_member_add_then_remove_flags_its_pgp_key() {
     );
     assert!(epoch_members(&repo, &identity_path)["bob"].contains(&format!("pgp:{}", asc.fpr)));
     let audit = audit_events(&repo);
-    let added = audit.last().unwrap();
+    let added = &audit[audit.len() - 2];
     assert!(
         added.contains(&format!("\"gpg_fpr\":\"{}\"", asc.primary_fpr())),
         "{added}"
@@ -469,7 +478,7 @@ fn user_add_resolves_an_email_from_the_gpg_keyring() {
         gpg_home.export_minimal(&bob)
     );
     let audit = audit_events(&repo);
-    assert!(audit.last().unwrap().contains(&bob));
+    assert!(audit[audit.len() - 2].contains(&bob));
 }
 
 /// Test 31: replacing a member's encryption subkey is a key change: secrets go stale and `rotate`

@@ -29,7 +29,10 @@ pub use commands::{cmd_add, cmd_close, cmd_init, cmd_keygen, cmd_open, cmd_seal}
 pub use dismiss::cmd_dismiss;
 pub use error::Error;
 pub use keyring::GpgKey;
-pub use membership::{cmd_partition_create, cmd_rotate, cmd_user_add, cmd_user_remove};
+pub use membership::{
+    cmd_partition_add, cmd_partition_create, cmd_partition_remove, cmd_rotate, cmd_user_add,
+    cmd_user_remove,
+};
 pub use outcome::{Level, Outcome, Reencrypted, Rotation, SecretStatus, StatusReport, Warning};
 pub use remove::cmd_remove;
 pub use status::cmd_status;

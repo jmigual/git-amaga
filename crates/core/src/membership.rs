@@ -170,6 +170,91 @@ pub fn cmd_partition_create(dir: &Path, name: &str, members: &[String]) -> Resul
     Ok(())
 }
 
+// The grant sequence (plan 7): list `names`, who must be users, in partition `p`, audit each, then
+// re-wrap `p`'s current epoch (same key) to its members. No secret is rewritten.
+fn grant(ctx: &mut Context, p: &str, names: &[String]) -> Result<(), Error> {
+    let partition = ctx
+        .partitions
+        .get_mut(p)
+        .ok_or_else(|| Error::UnknownPartition(p.to_string()))?;
+    partition.members.extend(names.iter().cloned());
+    partition::write_members(&ctx.root, p, &partition.members)?;
+    for name in names {
+        ctx.audit_partition("partition.member_added", p, Some(name))?;
+    }
+    let members = users::recipients(&ctx.partition_members(p)?);
+    let epoch = ctx.current_epoch(p)?.with_members(members);
+    ctx.write_epoch(p, &epoch)
+}
+
+/// `git-amaga partition add <p> <member>…` (plan 7): re-wraps `p`'s current epoch to the new
+/// members. No secret is rewritten.
+pub fn cmd_partition_add(dir: &Path, name: &str, members: &[String]) -> Result<(), Error> {
+    let mut ctx = Context::load(dir)?;
+    ctx.require_member(name)?;
+    let listed = &ctx.partition(name)?.members;
+    let mut added = Vec::new();
+    for member in members {
+        if !ctx.members.contains_key(member) {
+            return Err(Error::UserNotFound(member.clone()));
+        }
+        if listed.contains(member) {
+            return Err(Error::AlreadyInPartition {
+                user: member.clone(),
+                partition: name.to_string(),
+            });
+        }
+        if !added.contains(member) {
+            added.push(member.clone());
+        }
+    }
+    ctx.require_up_to_date(name)?;
+    grant(&mut ctx, name, &added)
+}
+
+/// `git-amaga partition remove <p> <member>…` (plan 7): re-encrypts `p`'s secrets under a new
+/// epoch without them. Removing oneself is allowed; the last member cannot be removed.
+pub fn cmd_partition_remove(dir: &Path, name: &str, members: &[String]) -> Result<Rotation, Error> {
+    let mut ctx = Context::load(dir)?;
+    ctx.require_member(name)?;
+    let listed = &ctx.partition(name)?.members;
+    if let Some(unlisted) = members.iter().find(|m| !listed.contains(*m)) {
+        return Err(Error::NotAPartitionMember {
+            user: unlisted.clone(),
+            partition: name.to_string(),
+        });
+    }
+    let stays = listed
+        .iter()
+        .any(|m| !members.contains(m) && ctx.members.contains_key(m));
+    if !stays {
+        return Err(Error::LastMember {
+            user: members.join(", "),
+            partition: name.to_string(),
+        });
+    }
+
+    let selected = BTreeSet::from([name.to_string()]);
+    let written = reencrypt(&mut ctx, &selected, |ctx| {
+        let partition = ctx
+            .partitions
+            .get_mut(name)
+            .ok_or_else(|| Error::UnknownPartition(name.to_string()))?;
+        for member in members {
+            partition.members.remove(member);
+        }
+        partition::write_members(&ctx.root, name, &partition.members)?;
+        for member in members {
+            ctx.audit_partition("partition.member_removed", name, Some(member))?;
+        }
+        Ok(())
+    })?;
+    Ok(Rotation {
+        written,
+        warnings: Vec::new(),
+    })
+}
+
 /// `git-amaga user add <name> <KEY>…` (plan 7): validates the keys, then re-wraps the current epoch
 /// to the members including the newcomer. No secret is rewritten (ADR-0015). Returns the new
 /// member's GPG key, if any.
@@ -194,19 +279,7 @@ pub fn cmd_user_add(dir: &Path, name: &str, keys: &[String]) -> Result<Option<Gp
         .as_ref()
         .map(|k| (k.fpr.as_str(), k.uid.as_str()));
     ctx.audit_event("user.added", Some(name), gpg)?;
-    let listed = &mut ctx
-        .partitions
-        .get_mut(partition::DEFAULT)
-        .expect("`default` is checked on load")
-        .members;
-    listed.insert(name.to_string());
-    partition::write_members(&ctx.root, partition::DEFAULT, listed)?;
-    let epoch = ctx
-        .current_epoch(partition::DEFAULT)?
-        .with_members(users::recipients(
-            &ctx.partition_members(partition::DEFAULT)?,
-        ));
-    ctx.write_epoch(partition::DEFAULT, &epoch)?;
+    grant(&mut ctx, partition::DEFAULT, &[name.to_string()])?;
     Ok(resolved.gpg)
 }
 
