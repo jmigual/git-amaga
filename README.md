@@ -247,11 +247,11 @@ Details are in [plan.md](docs/adrs/plan.md) section 8.
 ## Using the library
 
 The `git-amaga-core` crate (`crates/core`) has one function per command. It takes the directory
-to run in, returns typed results and never prints. It is not published on crates.io; depend on it
-from Git:
+to run in, returns typed results and never prints. It is published on
+[crates.io](https://crates.io/crates/git-amaga-core):
 
 ```toml
-git-amaga-core = { git = "https://github.com/jmigual/git-amaga" }
+git-amaga-core = "0.2"
 ```
 
 ```rust
