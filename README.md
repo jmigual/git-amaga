@@ -3,6 +3,7 @@
 Encrypted secret files in Git, shared with a team through age or GPG keys.
 
 [![CI](https://github.com/jmigual/git-amaga/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/jmigual/git-amaga/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/git-amaga.svg)](https://crates.io/crates/git-amaga)
 [![Latest release](https://img.shields.io/github/v/release/jmigual/git-amaga)](https://github.com/jmigual/git-amaga/releases/latest)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![MSRV 1.88](https://img.shields.io/badge/MSRV-1.88-orange.svg)](Cargo.toml)
@@ -95,6 +96,12 @@ chmod +x git-amaga && sudo mv git-amaga /usr/local/bin/
 Invoke-WebRequest -OutFile git-amaga.exe https://github.com/jmigual/git-amaga/releases/latest/download/git-amaga-x86_64-pc-windows-msvc.exe
 ```
 
+**From crates.io** (Rust 1.88+):
+
+```sh
+cargo install --locked git-amaga
+```
+
 **From source** (Rust 1.88+):
 
 ```sh
@@ -102,6 +109,8 @@ cargo install --locked --git https://github.com/jmigual/git-amaga git-amaga
 ```
 
 With `git-amaga` on your `PATH`, `git amaga <command>` works too.
+
+The library is published as [`git-amaga-core`](https://docs.rs/git-amaga-core).
 
 ## Quick start
 
