@@ -5,8 +5,8 @@ Encrypted secret files in Git, shared with a team through age or GPG keys.
 [![CI](https://github.com/jmigual/git-amaga/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/jmigual/git-amaga/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/git-amaga.svg)](https://crates.io/crates/git-amaga)
 [![Latest release](https://img.shields.io/github/v/release/jmigual/git-amaga)](https://github.com/jmigual/git-amaga/releases/latest)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![MSRV 1.88](https://img.shields.io/badge/MSRV-1.88-orange.svg)](Cargo.toml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/jmigual/git-amaga/blob/main/LICENSE)
+[![MSRV 1.88](https://img.shields.io/badge/MSRV-1.88-orange.svg)](https://github.com/jmigual/git-amaga/blob/main/Cargo.toml)
 
 > **Status: 0.2.0, not audited.** The on-disk formats and commands may still change before 1.0.
 > 0.2.0 (format version 2) cannot read repositories written by 0.1.0.
@@ -76,8 +76,8 @@ rm "$k"
 `tail` drops the one-line JSON header of each payload. A secret under an older epoch needs that
 epoch's file instead. GPG members need the tool, because the `pgp` age stanza is specific to it.
 
-Design decisions are in [`docs/adrs/`](docs/adrs/README.md) and the full specification (formats,
-commands, threat model) is in [`plan.md`](docs/adrs/plan.md).
+Design decisions are in [`docs/adrs/`](https://github.com/jmigual/git-amaga/blob/main/docs/adrs/README.md) and the full specification (formats,
+commands, threat model) is in [`plan.md`](https://github.com/jmigual/git-amaga/blob/main/docs/adrs/plan.md).
 
 ## Install
 
@@ -218,7 +218,7 @@ Epoch files are named by their public key, so branches never collide on them. Tw
 each run `rotate` or `user remove` conflict on `.amaga/current-epoch`, and two that each run
 `user add` conflict on the epoch file. Every command, `status` included, refuses until you take
 either side (`git checkout --ours -- <paths> && git add <paths>`) and run `git amaga rotate`.
-Details are in [plan.md](docs/adrs/plan.md) section 8.
+Details are in [plan.md](https://github.com/jmigual/git-amaga/blob/main/docs/adrs/plan.md) section 8.
 
 ## Security model and limitations
 
@@ -242,7 +242,7 @@ Details are in [plan.md](docs/adrs/plan.md) section 8.
 - Merging a branch that predates a removal brings secrets that are still under an older epoch;
   `status` reports them as stale and `rotate` flags every key of that epoch the new one lacks.
 - `dismiss` is a human assertion recorded in the audit log, not a check.
-- The full threat model is in [plan.md](docs/adrs/plan.md) section 4.
+- The full threat model is in [plan.md](https://github.com/jmigual/git-amaga/blob/main/docs/adrs/plan.md) section 4.
 
 ## Using the library
 
@@ -282,15 +282,15 @@ cargo test --workspace
 
 The workspace has two crates: `crates/core` (library `git-amaga-core`) and `crates/cli` (binary
 `git-amaga`). GPG tests skip with a notice when `gpg` is not installed. Contributor and agent
-conventions are in [`CLAUDE.md`](CLAUDE.md), design decisions in
-[`docs/adrs/`](docs/adrs/README.md) and the specification in [`plan.md`](docs/adrs/plan.md).
+conventions are in [`CLAUDE.md`](https://github.com/jmigual/git-amaga/blob/main/CLAUDE.md), design decisions in
+[`docs/adrs/`](https://github.com/jmigual/git-amaga/blob/main/docs/adrs/README.md) and the specification in [`plan.md`](https://github.com/jmigual/git-amaga/blob/main/docs/adrs/plan.md).
 
 ## Reporting security issues
 
 Report vulnerabilities privately through
 [GitHub private vulnerability reporting](https://github.com/jmigual/git-amaga/security/advisories/new)
-(see [SECURITY.md](SECURITY.md)), not in a public issue.
+(see [SECURITY.md](https://github.com/jmigual/git-amaga/blob/main/SECURITY.md)), not in a public issue.
 
 ## License
 
-MIT, see [LICENSE](LICENSE).
+MIT, see [LICENSE](https://github.com/jmigual/git-amaga/blob/main/LICENSE).
