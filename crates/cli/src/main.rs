@@ -63,6 +63,7 @@ enum Command {
         paths: Vec<String>,
     },
     /// Delete local plaintext once it is sealed.
+    #[command(visible_alias = "shred")]
     Close {
         /// Plaintext or `.amaga` paths to close (default: every secret whose plaintext exists).
         paths: Vec<String>,

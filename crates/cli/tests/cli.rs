@@ -244,9 +244,9 @@ fn roundtrip_text_and_binary_exact_bytes() {
     assert_eq!(std::fs::read(repo.path().join("secret.env")).unwrap(), body);
 }
 
-/// `unlock` and `lock` are aliases of `open` and `seal`.
+/// `unlock`, `lock` and `shred` are aliases of `open`, `seal` and `close`.
 #[test]
-fn unlock_and_lock_aliases() {
+fn unlock_lock_and_shred_aliases() {
     let (repo, _identity_path) = repo_with_alice();
     std::fs::write(repo.path().join("secret.env"), b"v1").unwrap();
     repo.run(&["add", "secret.env"]).assert_success();
@@ -259,7 +259,8 @@ fn unlock_and_lock_aliases() {
         sealed
     );
 
-    std::fs::remove_file(repo.path().join("secret.env")).unwrap();
+    repo.run(&["shred"]).assert_success();
+    assert!(!repo.path().join("secret.env").exists());
     repo.run(&["unlock"]).assert_success();
     assert_eq!(
         std::fs::read(repo.path().join("secret.env")).unwrap(),
