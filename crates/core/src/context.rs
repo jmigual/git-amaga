@@ -1,6 +1,7 @@
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::str::FromStr;
@@ -22,7 +23,7 @@ pub(crate) struct Context {
     pub(crate) base: secret::BaseMap,
     current: age::x25519::Recipient,
     epochs: RefCell<BTreeMap<String, Rc<Epoch>>>,
-    unreadable: RefCell<BTreeSet<String>>,
+    unreadable: RefCell<BTreeMap<String, Option<String>>>,
 }
 
 impl Context {
@@ -80,12 +81,23 @@ impl Context {
         })
     }
 
-    // Unwraps epoch `id` once per command; a failure is remembered in `unreadable` (plan 5.6).
+    // Unwraps epoch `id` once per command, success or failure (plan 5.6). `unreadable` keeps the
+    // message of a real failure, and `None` for an epoch that is simply not wrapped to us.
     fn epoch(&self, id: &str) -> Result<Rc<Epoch>, Error> {
         if let Some(epoch) = self.epochs.borrow().get(id) {
             return Ok(Rc::clone(epoch));
         }
         let path = epoch::file_path(id);
+        if let Some(failure) = self.unreadable.borrow().get(id) {
+            return Err(match failure {
+                Some(message) => Error::Io(io::Error::other(message.clone())),
+                None => Error::EpochUndecryptable {
+                    path,
+                    member: None,
+                    source: Box::new(Error::Decrypt(age::DecryptError::NoMatchingKeys)),
+                },
+            });
+        }
         let gpg_identity = gpg::GpgIdentity::new(self.gpg_fprs.clone());
         // Age identities first, then gpg (plan 5.5).
         let mut identities: Vec<&dyn age::Identity> = self
@@ -113,7 +125,8 @@ impl Context {
                 Ok(epoch)
             }
             Err(e) => {
-                self.unreadable.borrow_mut().insert(id.to_string());
+                let message = (!is_not_a_recipient(&e)).then(|| e.to_string());
+                self.unreadable.borrow_mut().insert(id.to_string(), message);
                 Err(e)
             }
         }
@@ -157,9 +170,6 @@ impl Context {
         // The first reason an epoch could not be unwrapped, other than "not wrapped to us".
         let mut unwrap_failure = None;
         for id in std::iter::once(current_id.clone()).chain(others) {
-            if self.unreadable.borrow().contains(&id) {
-                continue;
-            }
             let epoch = match self.epoch(&id) {
                 Ok(epoch) => epoch,
                 Err(e) => {

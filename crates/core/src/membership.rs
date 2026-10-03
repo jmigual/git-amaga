@@ -10,27 +10,28 @@ use crate::outcome::Reencrypted;
 use crate::{Error, git, keyring, secret, users};
 
 /// Plan 7.1: decrypts every secret first and writes nothing if any fails, then runs `change` (the
-/// membership change and its audit event, for `user add`/`user remove`; it may update
-/// `ctx.members`), then writes a new epoch for the current members, rewrites each secret under
-/// it, in order, and moves `current-epoch` last.
+/// membership change and its audit event, for `user remove`; it may update `ctx.members`), then
+/// writes a new epoch for the current members, rewrites each secret under it, in order, and moves
+/// `current-epoch` last.
 pub(crate) fn reencrypt_all(
     ctx: &mut Context,
     change: impl FnOnce(&mut Context) -> Result<(), Error>,
 ) -> Result<Vec<Reencrypted>, Error> {
+    let paths: Vec<String> = git::managed_secrets(&ctx.root)?
+        .into_iter()
+        .filter(|path| ctx.root.join(path).exists())
+        .collect();
+    if !paths.is_empty() {
+        // A current epoch that cannot be unwrapped aborts instead of failing every secret.
+        ctx.current_epoch()?;
+    }
     let mut decrypted = Vec::new();
     let mut failures = Vec::new();
-    for path in git::managed_secrets(&ctx.root)? {
-        if !ctx.root.join(&path).exists() {
-            continue;
-        }
+    for path in paths {
         match read_repo_file(&ctx.root, &path).and_then(|bytes| ctx.decrypt(&path, &bytes)) {
             Ok((header, body, epoch)) => decrypted.push((path, header, body, epoch)),
             Err(e) => failures.push(e.to_string()),
         }
-    }
-    if !decrypted.is_empty() {
-        // A current epoch that cannot be unwrapped aborts instead of failing every secret.
-        ctx.current_epoch()?;
     }
     if !failures.is_empty() {
         return Err(Error::ReencryptAborted(failures.join("\n")));

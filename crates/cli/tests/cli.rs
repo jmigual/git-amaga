@@ -1793,36 +1793,60 @@ fn one_gpg_decrypt_per_command() {
         std::fs::remove_file(repo.path().join(name)).unwrap();
     }
 
-    let bin_dir = tempfile::tempdir().unwrap();
-    let log = bin_dir.path().join("gpg.log");
-    let wrapper = bin_dir.path().join("gpg");
-    std::fs::write(
-        &wrapper,
-        format!(
-            "#!/bin/sh\necho \"$@\" >> '{}'\nexec '{}' \"$@\"\n",
-            log.display(),
-            common::find_on_path("gpg").display()
-        ),
-    )
-    .unwrap();
-    std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let path = std::env::join_paths(
-        std::iter::once(bin_dir.path().to_path_buf())
-            .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
-    )
-    .unwrap();
+    // A `gpg` on PATH that logs its arguments, and exits 2 on `--decrypt` if `fail_decrypt`.
+    let wrapper_env = |fail_decrypt: bool| {
+        let bin_dir = tempfile::tempdir().unwrap();
+        let fail = if fail_decrypt {
+            "case \"$*\" in *--decrypt*) exit 2;; esac\n"
+        } else {
+            ""
+        };
+        let wrapper = bin_dir.path().join("gpg");
+        std::fs::write(
+            &wrapper,
+            format!(
+                "#!/bin/sh\necho \"$@\" >> '{}'\n{fail}exec '{}' \"$@\"\n",
+                bin_dir.path().join("gpg.log").display(),
+                common::find_on_path("gpg").display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let path = std::env::join_paths(
+            std::iter::once(bin_dir.path().to_path_buf())
+                .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+        )
+        .unwrap();
+        (bin_dir, path)
+    };
+    let decrypts = |bin_dir: &tempfile::TempDir| {
+        let logged = std::fs::read_to_string(bin_dir.path().join("gpg.log")).unwrap();
+        (
+            logged.lines().filter(|l| l.contains("--decrypt")).count(),
+            logged,
+        )
+    };
+
+    for command in ["open", "status"] {
+        let (bin_dir, path) = wrapper_env(false);
+        let env = [
+            ("GNUPGHOME", gpg_home.path().as_os_str()),
+            ("PATH", path.as_os_str()),
+        ];
+        repo.run_with_env(&[command], &env).assert_success();
+        let (count, logged) = decrypts(&bin_dir);
+        assert_eq!(count, 1, "{command} ran gpg as: {logged}");
+    }
+
+    // A current epoch that cannot be unwrapped is tried once, not once per secret.
+    let (bin_dir, path) = wrapper_env(true);
     let env = [
         ("GNUPGHOME", gpg_home.path().as_os_str()),
         ("PATH", path.as_os_str()),
     ];
-
-    for command in ["open", "status"] {
-        let _ = std::fs::remove_file(&log);
-        repo.run_with_env(&[command], &env).assert_success();
-        let logged = std::fs::read_to_string(&log).unwrap();
-        let decrypts = logged.lines().filter(|l| l.contains("--decrypt")).count();
-        assert_eq!(decrypts, 1, "{command} ran gpg as: {logged}");
-    }
+    repo.run_with_env(&["rotate"], &env).assert_failure();
+    let (count, logged) = decrypts(&bin_dir);
+    assert_eq!(count, 1, "a failing rotate ran gpg as: {logged}");
 }
 
 /// Test 46: with the `age` crate alone, an epoch file and a secret decrypt as the escape hatch
@@ -1972,4 +1996,36 @@ fn parallel_rotations_conflict_on_current_epoch() {
     assert_status_error(&repo, "run git-amaga rotate");
     repo.run(&["rotate"]).assert_success();
     status_stdout(&repo);
+}
+
+/// A secret under an older epoch whose file cannot be unwrapped reports that epoch problem for
+/// every affected secret, not "no matching keys".
+#[test]
+fn unreadable_older_epoch_is_reported_for_every_secret_under_it() {
+    let (repo, _identity_path) = repo_with_alice();
+    for name in ["a.env", "b.env"] {
+        std::fs::write(repo.path().join(name), name).unwrap();
+        repo.run(&["add", name]).assert_success();
+    }
+    repo.commit_all("add secrets");
+    let old_epoch = common::current_epoch_id(&repo);
+    repo.run(&["rotate"]).assert_success();
+    repo.git(&["checkout", "HEAD", "--", "a.env.amaga", "b.env.amaga"])
+        .assert_success();
+    let epoch_path = repo.path().join(format!(".amaga/epochs/{old_epoch}.age"));
+    let mut bytes = std::fs::read(&epoch_path).unwrap();
+    let last = bytes.len() - 1;
+    bytes[last] ^= 0xFF;
+    std::fs::write(&epoch_path, bytes).unwrap();
+
+    let status = repo.run(&["status"]);
+    assert_eq!(status.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&status.stdout);
+    for name in ["a.env.amaga", "b.env.amaga"] {
+        let line = stdout
+            .lines()
+            .find(|l| l.starts_with(&format!("ERROR {name}:")))
+            .unwrap_or_else(|| panic!("no error line for {name}: {stdout:?}"));
+        assert!(line.contains(&old_epoch), "got {line:?}");
+    }
 }
