@@ -7,6 +7,10 @@ updates:
     groups:
       cargo:
         patterns: ["*"]
+    ignore:
+      # rPGP (pgp 0.20) takes rand 0.8 RNGs; move rand only together with pgp.
+      - dependency-name: rand
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
   - package-ecosystem: github-actions
     directory: /
     schedule:

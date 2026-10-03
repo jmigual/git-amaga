@@ -21,7 +21,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install GnuPG (Windows)
         if: runner.os == 'Windows'
         uses: ./.github/actions/install-gnupg
@@ -31,7 +31,7 @@ jobs:
       - name: Name the binary after its target
         shell: bash
         run: cp "target/${{ matrix.target }}/release/git-amaga${{ matrix.ext }}" "git-amaga-${{ matrix.target }}${{ matrix.ext }}"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: git-amaga-${{ matrix.target }}
           path: git-amaga-${{ matrix.target }}${{ matrix.ext }}
@@ -43,10 +43,12 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist
           merge-multiple: true
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           files: dist/*
+          # Tags like v1.2.0-rc.1 publish a pre-release, so they never become "latest".
+          prerelease: ${{ contains(github.ref_name, '-') }}
