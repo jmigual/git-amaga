@@ -29,13 +29,16 @@ members who use a GPG key.
 - **From source** (Rust 1.88+):
 
   ```sh
-  cargo install --locked --git https://github.com/jmigual/git-amaga
+  cargo install --locked --git https://github.com/jmigual/git-amaga git-amaga
   ```
 
   A static Linux build: `rustup target add x86_64-unknown-linux-musl`, then
   `cargo build --release --target x86_64-unknown-linux-musl`.
 
 With `git-amaga` on your `PATH`, `git amaga <command>` works too.
+
+To build on git-amaga from Rust, use the `git-amaga-core` crate (`crates/core`): one function per
+command, returning the results instead of printing them.
 
 ## Quick start
 
