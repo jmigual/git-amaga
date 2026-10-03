@@ -41,7 +41,7 @@ enum Command {
         /// Overwrite the refusal when `<path>.amaga` appears in git history.
         #[arg(long)]
         force: bool,
-        /// The partition to encrypt into (default: `default`).
+        /// The partition to encrypt into (default: the `amaga-partition` attribute, else `default`).
         #[arg(long, value_name = "NAME")]
         partition: Option<String>,
         /// Plaintext or `.amaga` paths to add.

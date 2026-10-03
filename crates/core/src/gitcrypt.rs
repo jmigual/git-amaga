@@ -110,19 +110,38 @@ fn strip_line(line: &str) -> Option<String> {
     if trimmed.is_empty() || trimmed.starts_with('#') {
         return Some(line.to_string());
     }
-    let indent = &body[..body.len() - trimmed.len()];
-    let (pattern, rest) = split_pattern(trimmed);
-    let tokens: Vec<&str> = rest.split_whitespace().collect();
-    let kept: Vec<&str> = tokens
+    let (_, rest) = split_pattern(trimmed);
+    let (tokens, trailing) = split_tokens(rest);
+    let kept: Vec<&(&str, &str)> = tokens
         .iter()
-        .copied()
-        .filter(|t| !is_git_crypt_token(t))
+        .filter(|(_, token)| !is_git_crypt_token(token))
         .collect();
     match (kept.len() == tokens.len(), kept.is_empty()) {
         (true, _) => Some(line.to_string()),
         (false, true) => None,
-        (false, false) => Some(format!("{indent}{pattern} {}{eol}", kept.join(" "))),
+        (false, false) => {
+            // The dropped tokens and the whitespace before them go; every other byte stays.
+            let head = &body[..body.len() - rest.len()];
+            let kept: String = kept
+                .iter()
+                .map(|(gap, token)| format!("{gap}{token}"))
+                .collect();
+            Some(format!("{head}{kept}{trailing}{eol}"))
+        }
     }
+}
+
+// `rest` as (whitespace before, token) pairs, and the whitespace after the last token.
+fn split_tokens(rest: &str) -> (Vec<(&str, &str)>, &str) {
+    let (mut tokens, mut remaining) = (Vec::new(), rest);
+    while let Some(start) = remaining.find(|c: char| !c.is_whitespace()) {
+        let (gap, after) = remaining.split_at(start);
+        let end = after.find(char::is_whitespace).unwrap_or(after.len());
+        let (token, next) = after.split_at(end);
+        tokens.push((gap, token));
+        remaining = next;
+    }
+    (tokens, remaining)
 }
 
 // The pattern is one token even when quoted (`"a b" -text`).
@@ -248,6 +267,18 @@ mod tests {
     fn comments_unrelated_lines_and_crlf_are_kept_byte_for_byte() {
         let input = "# filter=git-crypt stays\r\n\r\n*.txt text eol=lf filter=git-cryptic\r\n";
         assert_eq!(strip_git_crypt(input), input);
+    }
+
+    #[test]
+    fn whitespace_around_the_kept_attributes_is_preserved() {
+        assert_eq!(
+            strip_git_crypt("a\tfilter=git-crypt\t-text  text \n"),
+            "a\t-text  text \n"
+        );
+        assert_eq!(
+            strip_git_crypt("  a  -text   filter=git-crypt  \n"),
+            "  a  -text  \n"
+        );
     }
 
     #[test]
