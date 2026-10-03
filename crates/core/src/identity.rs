@@ -130,6 +130,7 @@ pub fn find_actor(
     }
 
     let mut gpg_absent = false;
+    let mut probe_error = None;
     let mut first_held = None;
     let mut gpg_fprs = Vec::new();
     for (name, member) in members {
@@ -142,13 +143,17 @@ pub fn find_actor(
             }
             Ok(false) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => gpg_absent = true,
-            Err(_) => {}
+            Err(e) => {
+                probe_error.get_or_insert(e);
+            }
         }
     }
 
-    match first_held {
-        Some(name) => Ok((name.clone(), gpg_fprs)),
-        None => Err(Error::NotAMember(member_summary(members, gpg_absent))),
+    match (first_held, probe_error) {
+        (Some(name), _) => Ok((name.clone(), gpg_fprs)),
+        // Report why gpg failed rather than a misleading "not a member".
+        (None, Some(e)) => Err(Error::Io(e)),
+        (None, None) => Err(Error::NotAMember(member_summary(members, gpg_absent))),
     }
 }
 
@@ -294,6 +299,29 @@ mod tests {
         let default_path = dir.path().join("identity.txt");
 
         assert_eq!(resolve_configured_identity_path(None, &default_path), None);
+    }
+
+    #[test]
+    fn find_actor_surfaces_a_gpg_probe_failure_instead_of_not_a_member() {
+        let asc =
+            crate::gpg::validate(include_str!("../tests/fixtures/valid_cv25519.asc")).unwrap();
+        let mut members = users::Members::new();
+        members.insert(
+            "bob".to_string(),
+            users::Member {
+                age_keys: Vec::new(),
+                asc: Some(asc),
+            },
+        );
+
+        let err = find_actor(&members, &[], |_| {
+            Err(std::io::Error::other("gpg: No agent running"))
+        })
+        .unwrap_err();
+        match err {
+            Error::Io(e) => assert!(e.to_string().contains("No agent running")),
+            other => panic!("expected Io, got {other:?}"),
+        }
     }
 
     #[test]

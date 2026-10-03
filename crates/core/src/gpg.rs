@@ -327,14 +327,36 @@ fn decrypt_with_gpg(
 }
 
 /// `Ok(true)` when gpg reports a secret key for `primary_fpr` (plan 5.5). `Err` means gpg could
-/// not be spawned; callers treat `NotFound` as "gpg absent".
+/// not be spawned (callers treat `NotFound` as "gpg absent") or failed for a reason other than
+/// the key being missing, e.g. gpg-agent could not start; the error carries gpg's stderr.
 pub fn is_held(primary_fpr: &str) -> io::Result<bool> {
-    let status = Command::new("gpg")
+    let output = Command::new("gpg")
+        // The classification below matches gpg's English message; gettext lets LANGUAGE override
+        // LC_ALL, so set both.
+        .env("LC_ALL", "C")
+        .env("LANGUAGE", "C")
         .args(["--list-secret-keys", "--with-colons", primary_fpr])
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()?;
-    Ok(status.success())
+        .output()?;
+    classify_secret_key_probe(
+        output.status.code(),
+        &String::from_utf8_lossy(&output.stderr),
+    )
+    .map_err(|stderr| {
+        io::Error::other(format!(
+            "gpg --list-secret-keys {primary_fpr} failed: {stderr}"
+        ))
+    })
+}
+
+/// Maps the exit code and stderr of `gpg --list-secret-keys <fpr>` to held / not held; any other
+/// outcome is `Err` with gpg's stderr.
+fn classify_secret_key_probe(code: Option<i32>, stderr: &str) -> Result<bool, String> {
+    match code {
+        Some(0) => Ok(true),
+        Some(2) if stderr.contains("No secret key") => Ok(false),
+        _ => Err(stderr.trim().to_string()),
+    }
 }
 
 // Fixture recipes: tests/fixtures/README.md (plan 11).
@@ -377,6 +399,28 @@ mod tests {
             println!("skipping {test_name}: gpg not on PATH");
             false
         }
+    }
+
+    #[test]
+    fn secret_key_probe_exit_zero_is_held() {
+        assert_eq!(classify_secret_key_probe(Some(0), ""), Ok(true));
+    }
+
+    #[test]
+    fn secret_key_probe_no_secret_key_is_not_held() {
+        let stderr = "gpg: error reading key: No secret key\n";
+        assert_eq!(classify_secret_key_probe(Some(2), stderr), Ok(false));
+    }
+
+    #[test]
+    fn secret_key_probe_other_failures_carry_stderr() {
+        let stderr = "gpg: can't connect to the gpg-agent: IPC connect call failed\n\
+                      gpg: error reading key: No agent running\n";
+        let err = classify_secret_key_probe(Some(2), stderr).unwrap_err();
+        assert!(err.contains("No agent running"));
+        // Killed by a signal, or any exit code other than gpg's "not found".
+        assert!(classify_secret_key_probe(None, "").is_err());
+        assert!(classify_secret_key_probe(Some(1), "No secret key").is_err());
     }
 
     #[test]
