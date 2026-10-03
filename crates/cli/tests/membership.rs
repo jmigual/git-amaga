@@ -820,23 +820,39 @@ fn interrupted_user_add_finished_by_rotate() {
 
     let before = std::fs::read(repo.path().join("secret.env.amaga")).unwrap();
     let before_audit = audit_events(&repo);
+    let epoch_file = repo
+        .path()
+        .join(git_amaga_core::epoch::file_path(&common::current_epoch_id(
+            &repo,
+        )));
+    let epoch_before = std::fs::read(&epoch_file).unwrap();
     std::fs::write(repo.path().join("new.env"), b"n").unwrap();
     std::fs::write(repo.path().join("secret.env"), b"v2").unwrap();
-    for args in [["add", "new.env"], ["seal", "secret.env"]] {
-        let refused = repo.run(&args);
+    let dave = x25519::Identity::generate().to_public().to_string();
+    let user_add_dave = ["user", "add", "dave", &dave];
+    let refused_commands: Vec<&[&str]> = vec![
+        &["add", "new.env"],
+        &["seal", "secret.env"],
+        &user_add_dave,
+        &["dismiss", "--user", "x"],
+    ];
+    for args in refused_commands {
+        let refused = repo.run(args);
         refused.assert_failure();
         assert!(
             stderr(&refused).contains("rotate"),
-            "got {:?}",
+            "{args:?}: got {:?}",
             stderr(&refused)
         );
     }
     assert!(!repo.path().join("new.env.amaga").exists());
+    assert_eq!(user_files(&repo), ["alice.txt", "carol.txt"]);
     assert_eq!(
         std::fs::read(repo.path().join("secret.env.amaga")).unwrap(),
         before
     );
     assert_eq!(audit_events(&repo), before_audit);
+    assert_eq!(std::fs::read(&epoch_file).unwrap(), epoch_before);
 
     std::fs::write(repo.path().join("secret.env"), b"v1").unwrap();
     repo.run(&["rotate"]).assert_success();
@@ -984,4 +1000,34 @@ fn dismiss_user_across_all_secrets() {
 
     repo.run(&["dismiss", "--user", "bob"]).assert_failure();
     assert_eq!(audit_events(&repo), before);
+}
+
+/// `user add` refuses while a member was removed by hand: re-wrapping an epoch that the removed
+/// key can still open would hide that key from the exposure record. Nothing is written.
+#[test]
+fn user_add_refuses_while_a_member_was_removed_by_hand() {
+    let (repo, _identity_path) = repo_with_alice();
+    write_member(&repo, "charlie");
+    add_secret(&repo, "secret.env", b"v1");
+    std::fs::remove_file(repo.path().join(".amaga/users/charlie.txt")).unwrap();
+    let epoch_file = repo
+        .path()
+        .join(git_amaga_core::epoch::file_path(&common::current_epoch_id(
+            &repo,
+        )));
+    let epoch_before = std::fs::read(&epoch_file).unwrap();
+    let audit_before = audit_events(&repo);
+    let dave = x25519::Identity::generate().to_public().to_string();
+
+    let refused = user_add(&repo, "dave", &dave);
+
+    refused.assert_failure();
+    assert!(
+        stderr(&refused).contains("rotate"),
+        "got {:?}",
+        stderr(&refused)
+    );
+    assert_eq!(std::fs::read(&epoch_file).unwrap(), epoch_before);
+    assert_eq!(user_files(&repo), ["alice.txt"]);
+    assert_eq!(audit_events(&repo), audit_before);
 }
