@@ -10,7 +10,8 @@ plaintext. Members hold age keys or GPG keys (a custom `pgp` age stanza).
   is package `git-amaga` (the binary). The core never prints; the CLI owns output and exit codes.
 - CLI: `crates/cli/src/main.rs` clap, dispatch and rendering of the core's results.
 - Core, under `crates/core/src/`: `lib.rs` module list and re-exports · `commands.rs` `keygen`,
-  `init`, `add`, `seal`, `open` and `close` · `status.rs` `status` · `dismiss.rs` `dismiss` · `epoch.rs` epoch files,
+  `init`, `add`, `seal`, `open` and `close` · `status.rs` `status` · `dismiss.rs` `dismiss` ·
+  `epoch.rs` epoch files,
   wrap/unwrap · `partition.rs` `.amaga/partitions/` (members, `current-epoch` pointers, the
   `amaga-partition` attribute) · `membership.rs` `rotate`, `user add` and `user remove`, and the
   shared re-encrypt · `partition_commands.rs` the `partition` commands · `import.rs`
@@ -22,7 +23,8 @@ plaintext. Members hold age keys or GPG keys (a custom `pgp` age stanza).
   `pgp` stanza, gpg subprocess · `users.rs` `.amaga/users/` loading · `keyring.rs` `KEY`
   resolution and gpg keyring lookup · `identity.rs` keygen,
   identity, actor · `paths.rs` path mapping, `.gitignore` block, atomic write · `git.rs` git
-  subprocess helpers · `audit.rs` JSONL events · `error.rs` the `Error` enum · `failure.rs` cached epoch-unwrap failures.
+  subprocess helpers · `audit.rs` JSONL events · `error.rs` the `Error` enum · `failure.rs`
+  cached epoch-unwrap failures.
 - Tests: unit tests beside the code; integration tests in `crates/cli/tests/cli.rs` and
   `crates/cli/tests/membership.rs`, `crates/cli/tests/partitions.rs`,
   `crates/cli/tests/import_git_crypt.rs` and `crates/cli/tests/repo_dir.rs` (`-C`; helpers in
@@ -47,7 +49,8 @@ plaintext. Members hold age keys or GPG keys (a custom `pgp` age stanza).
 - gpg tests use a short temp `GNUPGHOME` under `/tmp` (agent socket path limit), passed only to
   child processes (never `set_var`), skip with a notice when gpg is absent, and kill the agent on drop.
 - git-crypt: only the end-to-end import test needs the real `git-crypt`; it skips with a notice
-  when it is absent, unless `AMAGA_REQUIRE_GIT_CRYPT=1` (set on Linux CI), which makes it fail. Unit tests never run git (the checks set `GIT_DIR=/nonexistent`).
+  when it is absent, unless `AMAGA_REQUIRE_GIT_CRYPT=1` (set on Linux CI), which makes it fail.
+  Unit tests never run git (the checks set `GIT_DIR=/nonexistent`).
 
 ## Commits
 Small, signed, one logical unit each; every commit builds and passes the checks above.

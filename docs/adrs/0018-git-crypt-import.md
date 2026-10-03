@@ -15,7 +15,8 @@ rotated retroactively: everyone who held it can read the history.
   tracked or untracked-but-not-ignored file whose `filter` attribute is `git-crypt` or
   `git-crypt-<key>` (`git ls-files`, with and without `--others --exclude-standard`, +
   `git check-attr`). An untracked file that matches a git-crypt pattern is imported too, because
-  once the filter attribute is gone `git add -A` would stage it in clear. It refuses, listing the files, if any of them still
+  once the filter attribute is gone `git add -A` would stage it in clear. It refuses, listing
+  the files, if any of them still
   starts with `\0GITCRYPT\0`. No git-crypt crypto is reimplemented, and git-crypt need not be
   installed.
 - **Partitions (ADR-0017):** key `default` maps to partition `default`, and key `<key>` to
@@ -41,7 +42,8 @@ rotated retroactively: everyone who held it can read the history.
   7. deletes `.git-crypt/`.
 - **Staging:** `git rm --cached` is the one exception to "never stage" (plan §3). Once the filter
   attribute is gone, each unlocked file becomes a tracked plaintext modification, and
-  `git commit -a` would publish it. Untracking it in the same command closes that window (an untracked file needs no untracking). It only
+  `git commit -a` would publish it. Untracking it in the same command closes that window (an
+  untracked file needs no untracking). It only
   removes paths from the index; it never adds content.
 - The local git config (`filter.git-crypt*`, `diff.git-crypt*`) and `.git/git-crypt/` are left
   alone, so old commits still check out decrypted.
