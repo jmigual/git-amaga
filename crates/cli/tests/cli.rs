@@ -1776,7 +1776,6 @@ fn remove_dedupes_paths() {
 #[cfg(unix)]
 #[test]
 fn one_gpg_decrypt_per_command() {
-    use std::os::unix::fs::PermissionsExt;
     let repo = Repo::new();
     let Some(gpg_home) = common::GpgHome::new("one_gpg_decrypt_per_command") else {
         return;
@@ -1793,60 +1792,121 @@ fn one_gpg_decrypt_per_command() {
         std::fs::remove_file(repo.path().join(name)).unwrap();
     }
 
-    // A `gpg` on PATH that logs its arguments, and exits 2 on `--decrypt` if `fail_decrypt`.
-    let wrapper_env = |fail_decrypt: bool| {
-        let bin_dir = tempfile::tempdir().unwrap();
-        let fail = if fail_decrypt {
-            "case \"$*\" in *--decrypt*) exit 2;; esac\n"
-        } else {
-            ""
-        };
-        let wrapper = bin_dir.path().join("gpg");
-        std::fs::write(
-            &wrapper,
-            format!(
-                "#!/bin/sh\necho \"$@\" >> '{}'\n{fail}exec '{}' \"$@\"\n",
-                bin_dir.path().join("gpg.log").display(),
-                common::find_on_path("gpg").display()
-            ),
-        )
-        .unwrap();
-        std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let path = std::env::join_paths(
-            std::iter::once(bin_dir.path().to_path_buf())
-                .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
-        )
-        .unwrap();
-        (bin_dir, path)
-    };
-    let decrypts = |bin_dir: &tempfile::TempDir| {
-        let logged = std::fs::read_to_string(bin_dir.path().join("gpg.log")).unwrap();
-        (
-            logged.lines().filter(|l| l.contains("--decrypt")).count(),
-            logged,
-        )
-    };
-
     for command in ["open", "status"] {
-        let (bin_dir, path) = wrapper_env(false);
+        let (bin_dir, path) = gpg_wrapper(None);
         let env = [
             ("GNUPGHOME", gpg_home.path().as_os_str()),
             ("PATH", path.as_os_str()),
         ];
         repo.run_with_env(&[command], &env).assert_success();
-        let (count, logged) = decrypts(&bin_dir);
+        let (count, logged) = gpg_decrypts(&bin_dir);
         assert_eq!(count, 1, "{command} ran gpg as: {logged}");
     }
 
     // A current epoch that cannot be unwrapped is tried once, not once per secret.
-    let (bin_dir, path) = wrapper_env(true);
+    let (bin_dir, path) = gpg_wrapper(Some(0));
     let env = [
         ("GNUPGHOME", gpg_home.path().as_os_str()),
         ("PATH", path.as_os_str()),
     ];
-    repo.run_with_env(&["rotate"], &env).assert_failure();
-    let (count, logged) = decrypts(&bin_dir);
+    let rotate = repo.run_with_env(&["rotate"], &env);
+    rotate.assert_failure();
+    let (count, logged) = gpg_decrypts(&bin_dir);
     assert_eq!(count, 1, "a failing rotate ran gpg as: {logged}");
+    // The epoch failure aborts the command; it is not listed once per secret.
+    let stderr = String::from_utf8_lossy(&rotate.stderr);
+    assert!(!stderr.contains("cannot re-encrypt"), "got {stderr:?}");
+    assert!(stderr.contains(".amaga/epochs/"), "got {stderr:?}");
+}
+
+/// A gpg on PATH that logs its arguments, and exits 2 on every `--decrypt` after the first
+/// `succeed_first` ones (`None`: never fails). Returns its directory and a PATH using it.
+#[cfg(unix)]
+fn gpg_wrapper(succeed_first: Option<usize>) -> (tempfile::TempDir, std::ffi::OsString) {
+    use std::os::unix::fs::PermissionsExt;
+    let bin_dir = tempfile::tempdir().unwrap();
+    let log = bin_dir.path().join("gpg.log");
+    let fail = succeed_first.map_or(String::new(), |n| {
+        format!(
+            "case \"$*\" in *--decrypt*) [ \"$(grep -c -e --decrypt '{}')\" -gt {n} ] && exit 2;; esac\n",
+            log.display()
+        )
+    });
+    let wrapper = bin_dir.path().join("gpg");
+    std::fs::write(
+        &wrapper,
+        format!(
+            "#!/bin/sh\necho \"$@\" >> '{}'\n{fail}exec '{}' \"$@\"\n",
+            log.display(),
+            common::find_on_path("gpg").display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = std::env::join_paths(
+        std::iter::once(bin_dir.path().to_path_buf())
+            .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+    )
+    .unwrap();
+    (bin_dir, path)
+}
+
+/// How many `--decrypt` calls the wrapper saw, and its whole log.
+#[cfg(unix)]
+fn gpg_decrypts(bin_dir: &tempfile::TempDir) -> (usize, String) {
+    let logged = std::fs::read_to_string(bin_dir.path().join("gpg.log")).unwrap();
+    (
+        logged.lines().filter(|l| l.contains("--decrypt")).count(),
+        logged,
+    )
+}
+
+/// Test 45 (gpg, Unix only): an older epoch that fails to unwrap is tried once, and every secret
+/// under it reports it.
+#[cfg(unix)]
+#[test]
+fn failed_older_epoch_is_unwrapped_once() {
+    let repo = Repo::new();
+    let Some(gpg_home) = common::GpgHome::new("failed_older_epoch_is_unwrapped_once") else {
+        return;
+    };
+    let fpr = gpg_home.generate_key("Valid <valid@example.invalid>");
+    let key_path = repo.path().join("alice.asc");
+    std::fs::write(&key_path, gpg_home.export_minimal(&fpr)).unwrap();
+    repo.run(&["init", "alice", key_path.to_str().unwrap()])
+        .assert_success();
+    let gpg_env = gnupghome_env(&gpg_home);
+    for name in ["a.env", "b.env"] {
+        std::fs::write(repo.path().join(name), name).unwrap();
+        repo.run_with_env(&["add", name], &gpg_env).assert_success();
+    }
+    repo.commit_all("add secrets");
+    let old_epoch = common::current_epoch_id(&repo);
+    repo.run_with_env(&["rotate"], &gpg_env).assert_success();
+    repo.git(&["checkout", "HEAD", "--", "a.env.amaga", "b.env.amaga"])
+        .assert_success();
+
+    // The current epoch unwraps; the older one then fails.
+    let (bin_dir, path) = gpg_wrapper(Some(1));
+    let status = repo.run_with_env(
+        &["status"],
+        &[
+            ("GNUPGHOME", gpg_home.path().as_os_str()),
+            ("PATH", path.as_os_str()),
+        ],
+    );
+
+    assert_eq!(status.status.code(), Some(1));
+    let (count, logged) = gpg_decrypts(&bin_dir);
+    assert_eq!(count, 2, "gpg ran as: {logged}");
+    let stdout = String::from_utf8_lossy(&status.stdout);
+    for name in ["a.env.amaga", "b.env.amaga"] {
+        let line = stdout
+            .lines()
+            .find(|l| l.starts_with(&format!("ERROR {name}:")))
+            .unwrap_or_else(|| panic!("no error line for {name}: {stdout:?}"));
+        assert!(line.contains(&old_epoch), "got {line:?}");
+    }
 }
 
 /// Test 46: with the `age` crate alone, an epoch file and a secret decrypt as the escape hatch
