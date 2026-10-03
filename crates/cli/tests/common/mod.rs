@@ -23,7 +23,7 @@ impl Repo {
         let dir = tempfile::tempdir().expect("tempdir");
         let global_config = dir.path().join("gitconfig");
         std::fs::write(&global_config, "").expect("write empty global config");
-        let home = tempfile::tempdir().expect("tempdir");
+        let home = home_tempdir();
         let repo = Self {
             dir,
             global_config,
@@ -109,9 +109,22 @@ impl Drop for Repo {
         if std::fs::read_dir(self.gnupg_home.path())
             .is_ok_and(|mut entries| entries.next().is_some())
         {
-            kill_gpg_agent(self.gnupg_home.path());
+            kill_gpg_agent(self.gnupg_home.path(), Some(self.home.path()));
         }
     }
+}
+
+/// A fresh directory for the children's `HOME`/`USERPROFILE`. On Windows gpg-agent puts its socket
+/// under `%USERPROFILE%\AppData\Local\gnupg` and refuses a name over about 100 bytes, which a
+/// profile inside `%TEMP%` exceeds; `%PUBLIC%` (`C:\Users\Public`) is short and user-writable.
+fn home_tempdir() -> tempfile::TempDir {
+    #[cfg(windows)]
+    if let Some(dir) = std::env::var_os("PUBLIC")
+        .and_then(|public| tempfile::Builder::new().tempdir_in(public).ok())
+    {
+        return dir;
+    }
+    tempfile::tempdir().expect("tempdir")
 }
 
 /// A fresh, empty `GNUPGHOME` directory with a path short enough for gpg-agent's socket (limited
@@ -133,11 +146,17 @@ fn gnupg_tempdir() -> tempfile::TempDir {
     dir
 }
 
-fn kill_gpg_agent(gnupg_home: &Path) {
-    let _ = Command::new("gpgconf")
+/// `profile` is the `HOME`/`USERPROFILE` the agent's clients ran with: on Windows the agent's
+/// socket lives under it, so `gpgconf` only finds the agent with the same value.
+fn kill_gpg_agent(gnupg_home: &Path, profile: Option<&Path>) {
+    let mut command = Command::new("gpgconf");
+    command
         .env("GNUPGHOME", gnupg_home)
-        .args(["--kill", "gpg-agent"])
-        .status();
+        .args(["--kill", "gpg-agent"]);
+    if let Some(profile) = profile {
+        command.env("HOME", profile).env("USERPROFILE", profile);
+    }
+    let _ = command.status();
 }
 
 /// A repository with one age member `alice`, plus the identity file path.
@@ -270,7 +289,7 @@ impl GpgHome {
 
 impl Drop for GpgHome {
     fn drop(&mut self) {
-        kill_gpg_agent(self.path());
+        kill_gpg_agent(self.path(), None);
     }
 }
 
