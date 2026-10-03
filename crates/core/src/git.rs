@@ -283,12 +283,22 @@ pub fn check_attr(
             String::from_utf8_lossy(&output.stderr).trim().to_string(),
         ));
     }
-    Ok(parse_check_attr(&String::from_utf8_lossy(&output.stdout)))
+    let triples = parse_check_attr(&String::from_utf8_lossy(&output.stdout));
+    // Fail closed: a misaligned or short answer must not read as "no attribute".
+    if triples.len() != paths.len() * attrs.len() {
+        return Err(Error::Git("unexpected `git check-attr` output".into()));
+    }
+    Ok(triples)
 }
 
-// `-z` output: `path NUL attribute NUL value NUL` per pair.
+// `-z` output: `path NUL attribute NUL value NUL` per pair. A value can be empty (`attr=`), so
+// empty fields are kept.
 fn parse_check_attr(output: &str) -> Vec<(String, String, String)> {
-    let fields: Vec<&str> = output.split('\0').filter(|s| !s.is_empty()).collect();
+    let fields: Vec<&str> = output
+        .strip_suffix('\0')
+        .unwrap_or(output)
+        .split('\0')
+        .collect();
     let (triples, _) = fields.as_chunks::<3>();
     triples
         .iter()
@@ -299,6 +309,15 @@ fn parse_check_attr(output: &str) -> Vec<(String, String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_empty_attribute_value_does_not_shift_the_next_triple() {
+        let got = parse_check_attr("a\0filter\0\0b\0filter\0git-crypt\0");
+        let triple =
+            |path: &str, value: &str| (path.to_string(), "filter".to_string(), value.to_string());
+        assert_eq!(got, [triple("a", ""), triple("b", "git-crypt")]);
+        assert!(parse_check_attr("").is_empty());
+    }
 
     #[test]
     fn check_attr_output_is_one_triple_per_path_and_attribute() {

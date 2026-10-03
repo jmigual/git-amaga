@@ -37,6 +37,15 @@ fn read(repo: &Repo, path: &str) -> Vec<u8> {
 /// an unlocked git-crypt repository, committed. `holders` are `(git-crypt key, fingerprint)`
 /// pairs besides alice, who holds `default`. Returns the directory holding alice's identity file.
 fn simulated_repo(holders: &[(&str, &str)]) -> (Repo, tempfile::TempDir, PathBuf) {
+    simulated_repo_with(holders, "", &[])
+}
+
+/// Like [`simulated_repo`], with more `.gitattributes` lines and more tracked files.
+fn simulated_repo_with(
+    holders: &[(&str, &str)],
+    extra_attributes: &str,
+    extra_files: &[(&str, &str)],
+) -> (Repo, tempfile::TempDir, PathBuf) {
     let repo = Repo::new();
     let keys = tempfile::tempdir().unwrap();
     let identity_path = keys.path().join("identity.txt");
@@ -55,14 +64,21 @@ fn simulated_repo(holders: &[(&str, &str)]) -> (Repo, tempfile::TempDir, PathBuf
     }
     let gitattributes = repo.path().join(".gitattributes");
     let existing = std::fs::read_to_string(&gitattributes).unwrap();
-    std::fs::write(&gitattributes, format!("{existing}{ATTRIBUTES}")).unwrap();
+    std::fs::write(
+        &gitattributes,
+        format!("{existing}{ATTRIBUTES}{extra_attributes}"),
+    )
+    .unwrap();
     std::fs::create_dir(repo.path().join("prod")).unwrap();
     for (path, body) in [
         ("secret.env", "S=1\n"),
         ("prod/db.env", "DB=1\n"),
         ("a.key", "key\r\nbytes"),
         ("plain.txt", "plain\n"),
-    ] {
+    ]
+    .iter()
+    .chain(extra_files)
+    {
         std::fs::write(repo.path().join(path), body).unwrap();
     }
     let alice = alice_fpr();
@@ -274,4 +290,30 @@ fn import_real_git_crypt_repo() {
     assert!(repo.path().join(".amaga/users/dave.asc").exists());
     let (_, body) = decrypt_file(&repo, &identity_path, "secret.env.amaga");
     assert_eq!(body, b"S=1\nbinary\0bytes");
+}
+
+/// An attribute with an empty value (`filter=`) must not hide the files after it: every file with
+/// a git-crypt filter becomes a secret, and none is left behind in clear.
+#[test]
+fn import_covers_every_file_after_an_empty_attribute_value() {
+    let (repo, _keys, identity_path) = simulated_repo_with(
+        &[],
+        "b.txt filter=\nc.env filter=git-crypt diff=git-crypt\n",
+        &[("b.txt", "b\n"), ("c.env", "C_SECRET=1\n")],
+    );
+
+    repo.run(&["import-git-crypt"]).assert_success();
+
+    for (path, body) in [
+        ("a.key", &b"key\r\nbytes"[..]),
+        ("c.env", b"C_SECRET=1\n"),
+        ("secret.env", b"S=1\n"),
+        ("prod/db.env", b"DB=1\n"),
+    ] {
+        let (_, decrypted) = decrypt_file(&repo, &identity_path, &format!("{path}.amaga"));
+        assert_eq!(decrypted, body, "{path}");
+    }
+    let tracked = tracked_files(&repo);
+    assert!(!tracked.contains(&"c.env".to_string()), "{tracked:?}");
+    assert!(tracked.contains(&"b.txt".to_string()));
 }

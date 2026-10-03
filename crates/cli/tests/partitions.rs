@@ -498,17 +498,31 @@ fn partition_is_chosen_at_add_and_attribute_never_moves_it() {
     repo.run(&["status"]).assert_success();
 }
 
-/// A `set` attribute without a value is refused at `add`.
+/// An attribute that is set or unset without a value, empty, or not a partition name is refused
+/// at `add`, and nothing falls back to `default`.
 #[test]
 fn add_refuses_an_attribute_without_a_partition_name() {
     let (repo, _identity_path) = repo_with_alice();
     let attributes = repo.path().join(".gitattributes");
     let original = std::fs::read_to_string(&attributes).unwrap();
-    std::fs::write(&attributes, format!("{original}*.env amaga-partition\n")).unwrap();
     std::fs::write(repo.path().join("a.env"), b"a").unwrap();
 
-    repo.run(&["add", "a.env"]).assert_failure();
-    assert!(!repo.path().join("a.env.amaga").exists());
+    for attr in [
+        "amaga-partition",
+        "-amaga-partition",
+        "amaga-partition=Prod",
+        "amaga-partition=",
+    ] {
+        std::fs::write(&attributes, format!("{original}*.env {attr}\n")).unwrap();
+        let add = repo.run(&["add", "a.env"]);
+        add.assert_failure();
+        assert!(
+            stderr(&add).contains("amaga-partition"),
+            "{attr}: {}",
+            stderr(&add)
+        );
+        assert!(!repo.path().join("a.env.amaga").exists(), "{attr}");
+    }
 }
 
 /// `user remove` also re-encrypts a partition whose `members` no longer list the name but whose
