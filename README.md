@@ -147,8 +147,8 @@ Use `git amaga <command>` or `git-amaga <command>`.
 | `keygen [PATH]` | Create an age identity (default `~/.config/git-amaga/identity.txt`) and print its public key |
 | `init <name> [KEY…]` | Set up the repository with you as the first member; without a `KEY` it uses your age identity |
 | `add [--force] <path>…` | Encrypt a new secret and make sure its plaintext is ignored |
-| `seal [--force] [<path>…]` | Re-encrypt local edits |
-| `open [--force] [<path>…]` | Decrypt secrets to local plaintext |
+| `seal [--force] [<path>…]` | Re-encrypt local edits (alias `lock`) |
+| `open [--force] [<path>…]` | Decrypt secrets to local plaintext (alias `unlock`) |
 | `close [<path>…]` | Delete local plaintext that is already sealed |
 | `status` | Members, per-secret state, problems and secrets that need rotation; exits 1 on errors |
 | `user add <name> <KEY>…` | Add a member: re-wrap the current epoch key to them; no secret is rewritten |

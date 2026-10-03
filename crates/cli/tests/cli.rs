@@ -244,6 +244,29 @@ fn roundtrip_text_and_binary_exact_bytes() {
     assert_eq!(std::fs::read(repo.path().join("secret.env")).unwrap(), body);
 }
 
+/// `unlock` and `lock` are aliases of `open` and `seal`.
+#[test]
+fn unlock_and_lock_aliases() {
+    let (repo, _identity_path) = repo_with_alice();
+    std::fs::write(repo.path().join("secret.env"), b"v1").unwrap();
+    repo.run(&["add", "secret.env"]).assert_success();
+    let sealed = std::fs::read(repo.path().join("secret.env.amaga")).unwrap();
+
+    std::fs::write(repo.path().join("secret.env"), b"v2").unwrap();
+    repo.run(&["lock"]).assert_success();
+    assert_ne!(
+        std::fs::read(repo.path().join("secret.env.amaga")).unwrap(),
+        sealed
+    );
+
+    std::fs::remove_file(repo.path().join("secret.env")).unwrap();
+    repo.run(&["unlock"]).assert_success();
+    assert_eq!(
+        std::fs::read(repo.path().join("secret.env")).unwrap(),
+        b"v2"
+    );
+}
+
 /// Test 3: `add` refuses tracked plaintext and prints the `git rm --cached` remediation.
 #[test]
 fn add_refuses_tracked_plaintext() {

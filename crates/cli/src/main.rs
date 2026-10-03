@@ -45,6 +45,7 @@ enum Command {
         paths: Vec<String>,
     },
     /// Re-encrypt local plaintext edits.
+    #[command(visible_alias = "lock")]
     Seal {
         /// Seal an `Outdated`/`Conflict` plaintext, overwriting the repository version.
         #[arg(long)]
@@ -53,6 +54,7 @@ enum Command {
         paths: Vec<String>,
     },
     /// Decrypt secrets to local plaintext.
+    #[command(visible_alias = "unlock")]
     Open {
         /// Discard local edits and take the repository version.
         #[arg(long)]
