@@ -358,6 +358,8 @@ Licenses: `age`, `age-core`, `pgp` and `rand` are `MIT OR Apache-2.0`. Checked o
 
 Library plus a thin binary. Unit tests live in each file; integration tests live in `tests/`.
 
+File locations are superseded by the workspace split (section 14): the library is `crates/core/src/`, the binary `crates/cli/src/main.rs`.
+
 ```text
 src/main.rs      parse args (clap), call lib, map Error -> exit code
 src/lib.rs       command functions (one per subcommand)
@@ -487,3 +489,161 @@ the ordering above.
 ## 13. Deferred
 
 SSH recipients · `user key` subcommands · backup copy of a plaintext before `open` overwrites it · pre-commit hook that blocks tracked plaintext · `git diff` textconv for decrypted diffs · `--stage` · signed audit/commits integration · per-secret ACLs · passphrase-protected age identities / age plugins (`age-plugin-yubikey`; YubiKeys already work as GPG cards) · honouring `gpg.program` · warning before a GPG key expires · encrypting to an OpenPGP primary key that has no encryption subkey · one gpg call for many files · fetching GPG keys from a keyserver/WKD (`gpg --locate-keys`) at `init`/`user add` · macOS/aarch64 release targets.
+
+## 14. Workspace split (ADR-0014)
+
+Goal: a core library that others can call without terminal output, and a CLI whose output does
+not change. One coder worktree, four commits (14.5).
+
+### 14.1 Layout
+
+```text
+Cargo.toml                   virtual workspace (below); Cargo.lock stays at the root
+.cargo/config.toml           unchanged (read for builds run from the root)
+crates/core/Cargo.toml       package git-amaga-core, lib git_amaga_core
+crates/core/src/             today's src/ minus main.rs, plus outcome.rs (14.2)
+crates/core/tests/fixtures/  today's tests/fixtures/ incl. README.md; unit tests' include_str!("../tests/fixtures/…") stay valid
+crates/cli/Cargo.toml        package git-amaga, bin git-amaga (src/main.rs)
+crates/cli/src/main.rs       clap, dispatch, rendering (one file, ~200 lines)
+crates/cli/tests/            cli.rs, membership.rs, common/mod.rs
+```
+
+Root `Cargo.toml`:
+
+```toml
+[workspace]
+members = ["crates/core", "crates/cli"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "MIT"
+repository = "https://github.com/jmigual/git-amaga"
+
+[workspace.dependencies]
+git-amaga-core = { path = "crates/core" }
+# age, age-core, clap, pgp, rand, serde, serde_json, sha2, thiserror, tempfile:
+# moved verbatim from today's [dependencies]/[dev-dependencies] (versions and features as in 10.1)
+
+[profile.release]
+lto = true
+strip = true
+```
+
+Members set `version`, `edition`, `rust-version`, `license` and `repository` with
+`.workspace = true`, and list dependencies as `name.workspace = true`:
+- core: `age`, `age-core`, `pgp`, `rand`, `serde`, `serde_json`, `sha2`, `thiserror`; dev `tempfile`.
+- cli: `git-amaga-core`, `clap`; dev `age`, `tempfile` (the integration tests use both).
+
+Integration tests: the only edits are `git_amaga::` → `git_amaga_core::` and
+`include_str!("fixtures/` → `include_str!("../../core/tests/fixtures/`. `CARGO_BIN_EXE_git-amaga`
+still resolves, because the tests live in the binary's package.
+
+Install and CI:
+- With two packages in the repository, the cargo docs require the crate argument for `--git`.
+  README: `cargo install --locked --git https://github.com/jmigual/git-amaga git-amaga`.
+- `ci.yml`: `cargo clippy --workspace --all-targets -- -D warnings` and `cargo test --workspace`.
+  A virtual manifest already builds every member; the flag matches `CLAUDE.md`.
+- `release.yml`: unchanged. The binary is still `target/<target>/release/git-amaga[.exe]`.
+
+### 14.2 Core API
+
+`lib.rs` gets a one-line crate doc: commands act on the repository containing the current
+directory and never print. Public modules: `error`, `gpg`, `identity`, `secret`, `users`. Private
+modules: `audit`, `commands`, `context`, `git`, `keyring`, `membership`, `outcome`, `paths`,
+`remove`. Root re-exports: `Error`, `keyring::GpgKey`, the `outcome` types, and every `cmd_*`.
+
+```text
+cmd_keygen(path: Option<&Path>)           -> Result<age::x25519::Recipient, Error>
+cmd_init(name: &str, keys: &[String])     -> Result<Option<GpgKey>, Error>
+cmd_add(force: bool, paths: &[String])    -> Result<Outcome, Error>   changed: `.amaga` paths
+cmd_seal(force: bool, paths: &[String])   -> Result<Outcome, Error>   changed: `.amaga` paths
+cmd_open(force: bool, paths: &[String])   -> Result<Outcome, Error>   changed: plaintext paths
+cmd_close(paths: &[String])               -> Result<Outcome, Error>   changed: plaintext paths
+cmd_remove(paths: &[String])              -> Result<Outcome, Error>   changed: `.amaga` paths
+cmd_rotate()                              -> Result<Vec<Reencrypted>, Error>
+cmd_user_add(name: &str, keys: &[String]) -> Result<(Option<GpgKey>, Vec<Reencrypted>), Error>
+cmd_user_remove(name: &str)               -> Result<Vec<Reencrypted>, Error>
+cmd_status()                              -> Result<StatusReport, Error>
+```
+
+`outcome.rs` (illustrative; every pub item gets a one-line doc):
+
+```rust
+pub struct Outcome { pub changed: Vec<String>, pub warnings: Vec<Warning> }   // Default, Debug
+pub enum Warning {                                   // Debug + Display (the text after `warning: `)
+    PlaintextInHistory(String),                      // '{0}' already appears in git history
+    ExposureHistoryDropped(String),                  // '{0}' appears in git history; its exposure history is dropped
+    ExposureCleared { plaintext: String, members: usize },
+        // sealing '{plaintext}' with --force clears NEEDS ROTATION for {members} member(s); the local copy may still hold an old value
+    Skipped { path: String, error: Error },          // skipping '{path}': {error}
+}
+pub struct Reencrypted { pub path: String, pub exposed_to: Vec<String> }      // in write order
+pub enum Level { Error, Warn, Ok }                                           // Ord: Error first
+pub struct SecretStatus { pub level: Level, pub path: String, pub messages: Vec<String> }
+pub struct StatusReport { pub members: String, pub secrets: Vec<SecretStatus>, pub warnings: Vec<Warning> }
+impl StatusReport { pub fn error_count(&self) -> usize }   // > 0: `status` exits 1
+```
+
+Internal changes (no new behaviour):
+- `secret_paths_for(.., warnings: &mut Vec<Warning>)` pushes `Skipped` instead of printing.
+- `reencrypt_all` returns `Vec<Reencrypted>`, with `exposed_to` taken from the new header's
+  `exposed_to` keys.
+- `cmd_init` and `cmd_user_add` return `resolved.gpg` instead of printing it.
+- `secret_status` returns a `SecretStatus` holding today's message list, not yet joined. Unmerged
+  files without a worktree copy get `messages: [UNMERGED]`. `secrets` keeps today's stable sort
+  by level.
+- Delete `GpgKey::summary` (its format moves to the CLI) and `Error::StatusProblems` (no caller
+  left in the core). `identity::member_summary` stays, because `Error::NotAMember` uses it.
+
+Repository discovery stays on the process cwd, which drives git, `show_prefix`, relative `KEY`
+files and the `keygen` path. The CLI then behaves the same by construction; a `repo: &Path`
+parameter would have to reach all four (ADR-0014).
+
+### 14.3 Rendering contract
+
+On success, each stream's bytes are the same as today. The CLI prints a command's warnings
+first, then its lines.
+
+| Command | stdout | stderr |
+|---------|--------|--------|
+| keygen | `{public}` | `to join a repository, send this to a member: git-amaga user add <name> {public}` |
+| init, user add | `{name}: GPG key {fpr} "{uid}"` first, if the member has a GPG key | |
+| add / seal / remove | `added` / `sealed` / `removed {path}` per changed path | `warning: {w}` per warning |
+| open / close | `opened` / `closed {path}` | `warning: {w}` |
+| rotate, user add, user remove | `re-encrypted {path}`, or `re-encrypted {path} (NEEDS ROTATION: exposed to {a, b})` | |
+| status | `members: {members}`, then `{ERROR\|WARN\|ok} {path}: {messages joined by "; "}` | `warning: {w}`; if n > 0, `error: status found problems with {n} secret(s)` and exit 1 |
+| any error | | `error: {e}`, exit 1 (clap usage errors unchanged, exit 2) |
+
+Tokens the integration tests assert, none of which change:
+- stdout: keygen's bare key; `init`/`user add` primary fingerprint and `Alice <alice@example.invalid>`;
+  status `members: alice (age)`, `ok … in sync`, `ok … closed`, `ERROR …: unmerged` (incl. `sé.env.amaga`),
+  `ERROR a.env.amaga: 'a.env' is not a regular file`, `; not a regular file`,
+  `CRITICAL plaintext 'b.env' is tracked`, `` `text` attribute ``, `run git-amaga rotate`,
+  `WARN secret.env.amaga: NEEDS ROTATION: exposed to charlie`, two `NEEDS ROTATION: exposed to bob`,
+  `decryption error`, `ERROR` lines before `ok` lines.
+- stderr: `git-amaga user add <name> {key}`, `appears in git history`, `exposure history is dropped`,
+  `NEEDS ROTATION` (seal --force), and every `Error` text (unchanged, because `Error` keeps its `Display`).
+- exit code 1 from status problems and from errors.
+
+Known difference: a command that fails part-way prints only `error: {e}`, not the lines for the
+files it already wrote (ADR-0014).
+
+### 14.4 Checks (every commit)
+
+`cargo fmt --check` · `cargo clippy --workspace --all-targets -- -D warnings` ·
+`cargo test --workspace` · `GIT_DIR=/nonexistent cargo test --workspace`.
+
+### 14.5 Commits
+
+| Commit | Content | Acceptance |
+|--------|---------|------------|
+| 1 `workspace: move the library to crates/core and the binary to crates/cli` | `git mv` only, manifests, `Cargo.lock`, the two mechanical test edits, `git_amaga::` → `git_amaga_core::` in `main.rs`, the `ci.yml` flags. The core still prints. | Checks green. The number of passed tests matches the count before the move (sum the `test result` lines). `cargo install --locked --git file://<worktree> --branch <branch> git-amaga --root <scratch>` installs `bin/git-amaga`. `cargo build --release` yields `target/release/git-amaga`. |
+| 2 `core: return command results instead of printing; the CLI renders them` | `outcome.rs`, `commands.rs`, `membership.rs`, `remove.rs`, `context.rs`, `keyring.rs`, `error.rs`, `main.rs` (14.2, 14.3). Must be one commit, so the output moves atomically. | Checks green with the integration tests unedited. `grep -rn -e 'print!' -e 'println!' -e 'eprint' crates/core/src` finds only the two `#[cfg(test)]` skip notices (`gpg.rs`, `paths.rs`). A scratch transcript is identical for the commit-1 and commit-2 binaries. It covers keygen, init, add, add --force, seal --force on an exposed secret, open, close, status with a problem, user add, user remove, rotate and remove, recording stdout, stderr and the exit code per step, with `age1…` masked. |
+| 3 `core: keep git, paths, audit and the command modules private` | `lib.rs` visibility, crate doc, re-exports (14.2). | Checks green, with no new `dead_code` warnings. `cargo doc -p git-amaga-core --no-deps` shows only the public items in 14.2. |
+| 4 `docs: CLAUDE.md and README for the workspace` | `CLAUDE.md`: module map under `crates/core/src/` and `crates/cli/src/main.rs`, test and fixture paths, the checks from 14.4, and the rule "the core never prints; the CLI owns output and exit codes". `README.md`: the install line with `git-amaga`, and one sentence pointing library users to `git-amaga-core`. | Every path in both files exists (`ls` each). |
+
+Out of scope: publishing to crates.io (needs a `version` on the path dependency and a free crate
+name), a `repo: &Path` API, and a progress callback.
