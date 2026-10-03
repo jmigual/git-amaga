@@ -1,0 +1,6 @@
+[advisories]
+ignore = [
+    # rsa (via pgp): Marvin timing attack on RSA private-key operations. git-amaga only
+    # encrypts to RSA public keys; decryption runs in gpg. No fixed rsa release exists.
+    "RUSTSEC-2023-0071",
+]

@@ -11,6 +11,9 @@ updates:
       # rPGP (pgp 0.20) takes rand 0.8 RNGs; move rand only together with pgp.
       - dependency-name: rand
         update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      # age 0.12 uses sha2 0.10; a newer sha2 here would add a second copy without removing 0.10.
+      - dependency-name: sha2
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
   - package-ecosystem: github-actions
     directory: /
     schedule:
