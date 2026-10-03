@@ -15,10 +15,36 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust
         run: rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+      - uses: Swatinem/rust-cache@v2
+      # Git for Windows' MSYS gpg mangles a Windows GNUPGHOME, so put native gpg first on PATH.
+      - name: Install native GnuPG (Windows)
+        id: gnupg
+        if: runner.os == 'Windows'
+        timeout-minutes: 3
+        continue-on-error: true
+        run: |
+          $sw = [Diagnostics.Stopwatch]::StartNew()
+          $bin = "C:\Program Files (x86)\GnuPG\bin"
+          choco install gnupg -y --no-progress
+          if (-not (Test-Path "$bin\gpg.exe")) { throw "native gpg not installed" }
+          $bin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          "gnupg install took $($sw.Elapsed.TotalSeconds) s"
+      # Fallback: with no gpg on PATH the gpg tests print a skip notice instead of failing.
+      - name: Remove MSYS gpg from PATH (Windows, if native install failed)
+        if: runner.os == 'Windows' && steps.gnupg.outcome != 'success'
+        run: |
+          $keep = ($env:PATH -split ';') | Where-Object { $_ -and -not (Test-Path (Join-Path $_ 'gpg.exe')) }
+          "PATH=$($keep -join ';')" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: gpg version
+        shell: bash
+        run: |
+          command -v gpg || echo "no gpg on PATH"
+          gpg --version || true
       - run: cargo fmt --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace

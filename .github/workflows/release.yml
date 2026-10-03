@@ -19,8 +19,15 @@ jobs:
             target: x86_64-pc-windows-msvc
             ext: ".exe"
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+      - name: Install native GnuPG (Windows)
+        if: runner.os == 'Windows'
+        # Git for Windows' MSYS gpg mangles a Windows GNUPGHOME; put native gpg first on PATH.
+        run: |
+          "C:\Program Files (x86)\GnuPG\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          choco install gnupg -y --no-progress
       - run: rustup target add ${{ matrix.target }}
       - run: cargo test --locked
       - run: cargo build --locked --release --target ${{ matrix.target }}
@@ -35,6 +42,7 @@ jobs:
   publish:
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: write
     steps:
