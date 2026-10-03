@@ -248,12 +248,12 @@ fn import_exports_holder_from_keyring_and_names_it() {
 #[test]
 fn import_real_git_crypt_repo() {
     let name = "import_real_git_crypt_repo";
-    let Some(gpg_home) = GpgHome::new(name) else {
-        return;
-    };
     if !git_crypt_available(name) {
         return;
     }
+    let Some(gpg_home) = GpgHome::new(name) else {
+        return;
+    };
     let dave = gpg_home.generate_key("Dave <dave@example.invalid>");
     let env = [("GNUPGHOME", gpg_home.path().as_os_str())];
     let repo = Repo::new();

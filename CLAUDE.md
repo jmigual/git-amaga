@@ -47,7 +47,7 @@ plaintext. Members hold age keys or GPG keys (a custom `pgp` age stanza).
 - gpg tests use a short temp `GNUPGHOME` under `/tmp` (agent socket path limit), passed only to
   child processes (never `set_var`), skip with a notice when gpg is absent, and kill the agent on drop.
 - git-crypt: only the end-to-end import test needs the real `git-crypt`; it skips with a notice
-  when it is absent. Unit tests never run git (the checks set `GIT_DIR=/nonexistent`).
+  when it is absent, unless `AMAGA_REQUIRE_GIT_CRYPT=1` (set on Linux CI), which makes it fail. Unit tests never run git (the checks set `GIT_DIR=/nonexistent`).
 
 ## Commits
 Small, signed, one logical unit each; every commit builds and passes the checks above.

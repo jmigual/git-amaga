@@ -313,10 +313,16 @@ pub fn find_on_path(name: &str) -> PathBuf {
         .unwrap_or_else(|| panic!("{name} not found on PATH"))
 }
 
-/// Whether `git-crypt` is installed; prints a skip notice if it is not.
+/// Whether `git-crypt` is installed; prints a skip notice if it is not, or panics when
+/// `AMAGA_REQUIRE_GIT_CRYPT=1` (CI), so a missing install cannot pass as a silent skip.
 pub fn git_crypt_available(test_name: &str) -> bool {
     let available = Command::new("git-crypt").arg("--version").output().is_ok();
     if !available {
+        let required = std::env::var("AMAGA_REQUIRE_GIT_CRYPT").is_ok_and(|v| v == "1");
+        assert!(
+            !required,
+            "{test_name}: git-crypt is required but not on PATH"
+        );
         println!("skipping {test_name}: git-crypt not on PATH");
     }
     available
