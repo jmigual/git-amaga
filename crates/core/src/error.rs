@@ -269,6 +269,11 @@ pub enum Error {
     #[error("partition '{0}' already exists")]
     PartitionExists(String),
 
+    #[error(
+        "'{user}' is still listed in partition '{partition}', which would give a new member that name's access; run `git-amaga partition remove {partition} {user}` first"
+    )]
+    UserStillListed { user: String, partition: String },
+
     #[error("'{user}' is already in partition '{partition}'")]
     AlreadyInPartition { user: String, partition: String },
 

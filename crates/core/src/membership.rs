@@ -157,6 +157,16 @@ pub fn cmd_user_add(
     if member_files(&users_dir, name).next().is_some() {
         return Err(Error::UserExists(name.to_string()));
     }
+    if let Some(partition) = ctx
+        .partitions
+        .iter()
+        .find_map(|(p, partition)| partition.members.contains(name).then_some(p))
+    {
+        return Err(Error::UserStillListed {
+            user: name.to_string(),
+            partition: partition.clone(),
+        });
+    }
     let selected: BTreeSet<String> = match partitions.is_empty() {
         true => BTreeSet::from([partition::DEFAULT.to_string()]),
         false => partitions.iter().cloned().collect(),

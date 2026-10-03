@@ -514,3 +514,26 @@ fn user_remove_rotates_a_partition_whose_epoch_still_holds_the_user() {
         &bob
     ));
 }
+
+/// `user add` refuses a name that a `members` file still lists, so a stale name cannot give a new
+/// member that partition's access.
+#[test]
+fn user_add_refuses_a_name_still_listed_in_a_partition() {
+    let (repo, _identity_path) = repo_with_alice();
+    repo.run(&["partition", "create", "production", "alice"])
+        .assert_success();
+    let members = ".amaga/partitions/production/members";
+    std::fs::write(repo.path().join(members), "alice\ndave\n").unwrap();
+    let before = read(&repo, ".amaga/audit.jsonl");
+
+    let (dave_key, _config) = second_identity(&repo, "dave");
+    let add = repo.run(&["user", "add", "dave", &dave_key]);
+    add.assert_failure();
+    assert!(
+        stderr(&add).contains("partition remove production dave"),
+        "{}",
+        stderr(&add)
+    );
+    assert!(!repo.path().join(".amaga/users/dave.txt").exists());
+    assert_eq!(read(&repo, ".amaga/audit.jsonl"), before);
+}

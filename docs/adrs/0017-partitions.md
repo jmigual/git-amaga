@@ -40,6 +40,8 @@ member can unwrap every secret. Access must stay enforced by encryption, using s
     partitions the actor is in that list the name or whose current epoch was wrapped to it
     (so a rerun after an interruption or a hand edit of `members` still locks them out), and
     reports the other partitions that list the name as not rotated.
+  - `user add` refuses while the name is listed in any partition, so a name left behind by a
+    merge cannot give a different person that partition's access.
   - No command may leave a partition without members.
 - **Exposure** keeps its rule (ADR-0006): `next_header` compares the member sets of the old and
   the new epoch. Removing someone from P flags P's secrets. Moving a secret flags the members of
