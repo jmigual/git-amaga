@@ -22,6 +22,7 @@ struct ImportFile {
     sp: paths::SecretPath,
     bytes: Vec<u8>,
     key: String,
+    tracked: bool,
 }
 
 // The new members, and the member names holding each git-crypt key.
@@ -63,7 +64,8 @@ pub fn cmd_import_git_crypt(dir: &Path, names: &[String]) -> Result<Imported, Er
         ctx.audit("secret.added", &file.sp.plaintext)?;
         changed.push(file.sp.ciphertext.clone());
     }
-    let plaintexts: Vec<&str> = files.iter().map(|f| f.sp.plaintext.as_str()).collect();
+    let tracked = files.iter().filter(|f| f.tracked);
+    let plaintexts: Vec<&str> = tracked.map(|f| f.sp.plaintext.as_str()).collect();
     git::rm_cached(&ctx.root, &plaintexts)?;
     strip_attributes(&ctx)?;
     check_filters_gone(&ctx, &files)?;
@@ -85,12 +87,19 @@ pub fn cmd_import_git_crypt(dir: &Path, names: &[String]) -> Result<Imported, Er
     })
 }
 
-// Checks 3 to 5 (plan 7.5): the files with a git-crypt filter, read from the working tree.
+// Checks 3 to 5 (plan 7.5): the tracked and untracked unignored files with a git-crypt filter,
+// read from the working tree. An untracked one would otherwise be added in clear once the filter
+// is gone.
 fn read_files(ctx: &Context) -> Result<Vec<ImportFile>, Error> {
     let tracked = git::tracked_files(&ctx.root)?;
-    let tracked: Vec<&str> = tracked.iter().map(String::as_str).collect();
+    let untracked = git::untracked_files(&ctx.root)?;
+    let candidates: Vec<&str> = tracked
+        .iter()
+        .chain(&untracked)
+        .map(String::as_str)
+        .collect();
     let (mut files, mut locked) = (Vec::new(), Vec::new());
-    for (path, _, value) in git::check_attr(&ctx.root, &["filter"], &tracked)? {
+    for (path, _, value) in git::check_attr(&ctx.root, &["filter"], &candidates)? {
         let Some(key) = filter_key(&value) else {
             continue;
         };
@@ -102,6 +111,7 @@ fn read_files(ctx: &Context) -> Result<Vec<ImportFile>, Error> {
         match bytes.starts_with(LOCKED) {
             true => locked.push(path),
             false => files.push(ImportFile {
+                tracked: tracked.contains(&path),
                 sp,
                 bytes,
                 key: key.to_string(),

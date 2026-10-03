@@ -429,7 +429,7 @@ No `--batch`/pinentry concerns: neither call touches secret keys. Nothing is fet
 **Checks.** All of these run before anything is written, and each failure is one `Error` variant:
 1. Load as usual (identity, actor). The actor must be in `default`, and `default` must pass the stale guard.
 2. No managed secret exists yet (decision 19): `ImportNotFresh`.
-3. Files: `git ls-files -z`, then `git check-attr -z --stdin filter` over them. A file is imported when the value is `git-crypt` (key `default`) or `git-crypt-<key>`. If none is: `NothingToImport`.
+3. Files: `git ls-files -z` plus `git ls-files -z --others --exclude-standard` (an untracked file that matches a git-crypt pattern would otherwise be added in clear once the filter is gone), then `git check-attr -z --stdin filter` over them. A file is imported when the value is `git-crypt` (key `default`) or `git-crypt-<key>`. If none is: `NothingToImport`.
 4. Each file must pass path validation as a plaintext path (7), be a regular file in the working tree (`NotARegularFile`), and have no `<path>.amaga` (`CiphertextExists`). Files whose content starts with the 10 bytes `\0GITCRYPT\0` are collected over all files into `GitCryptLocked(paths)`, with the hint `git-crypt unlock`.
 5. No imported path may have staged changes (`git diff --cached --name-only -z`): `ImportStagedChanges(paths)`. `git rm --cached` would refuse them later.
 6. Partitions: each key maps to `default`, or to `<key>` lowercased. The name must match the name rule (`InvalidPartitionName`), no two keys may map to one name (`InvalidPartitionName`, naming both), and a partition other than `default` must not exist yet (`PartitionExists`).
@@ -445,7 +445,7 @@ No `--batch`/pinentry concerns: neither call touches secret keys. Nothing is fet
 2. New users: for each, the member file, then audit `user.added` (with `gpg_fpr`/`gpg_uid`).
 3. `default`: the `partition add` sequence for its new names. Every other partition: the `partition create` sequence.
 4. Every file: encrypt its working-tree bytes to its partition with `next_header(None, …)`, write `<path>.amaga`, record the base, audit `secret.added`. The history checks of `add` are skipped, because every path is in the git-crypt history by definition.
-5. One `git --literal-pathspecs rm --cached -q --pathspec-from-file=- --pathspec-file-nul` over every imported path (ADR-0018 explains why).
+5. One `git --literal-pathspecs rm --cached -q --pathspec-from-file=- --pathspec-file-nul` over every imported path that is tracked (ADR-0018 explains why).
 6. Every tracked `.gitattributes` (`git ls-files -z -- .gitattributes '*/.gitattributes'`) outside `.git-crypt/`: drop the tokens `filter=git-crypt`, `filter=git-crypt-*`, `diff=git-crypt` and `diff=git-crypt-*`. Delete a line left with only its pattern, and keep every other byte (comments, other attributes, CRLF). This is a pure function. A quoted pattern (`"a b" filter=…`) is one token.
 7. `git check-attr -z --stdin filter diff` over every imported path and its `.amaga` path. A value starting with `git-crypt` is `GitCryptAttributeRemains(paths)`, with the hint to remove it by hand (for example from `.git/info/attributes`). Everything else is already done at this point.
 8. Delete `.git-crypt/` from the working tree. Its index entries show as deleted, for the user to stage.

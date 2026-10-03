@@ -177,6 +177,12 @@ pub fn tracked_files(root: &Path) -> Result<Vec<String>, Error> {
     run_in(root, &["ls-files", "-z"]).map(|out| nul_separated(&out))
 }
 
+/// The untracked paths that are not ignored.
+pub fn untracked_files(root: &Path) -> Result<Vec<String>, Error> {
+    run_in(root, &["ls-files", "-z", "--others", "--exclude-standard"])
+        .map(|out| nul_separated(&out))
+}
+
 /// The tracked paths matching `pathspecs`.
 pub fn tracked_matching(root: &Path, pathspecs: &[&str]) -> Result<Vec<String>, Error> {
     let mut args = vec!["ls-files", "-z", "--"];

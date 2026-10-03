@@ -348,3 +348,23 @@ fn import_does_not_reuse_a_name_a_partition_still_lists() {
         b"alice\ndave-2\n"
     );
 }
+
+/// An untracked, unignored file that matches a git-crypt pattern is imported too, so it cannot be
+/// added in clear once the filter attribute is gone.
+#[test]
+fn import_covers_untracked_files_matching_a_pattern() {
+    let (repo, _keys, identity_path) = simulated_repo(&[]);
+    std::fs::write(repo.path().join("prod/new.env"), b"NEW_SECRET=1\n").unwrap();
+
+    let import = repo.run(&["import-git-crypt"]);
+    import.assert_success();
+
+    assert!(stdout(&import).contains("imported prod/new.env.amaga"));
+    let (_, body) = decrypt_file(&repo, &identity_path, "prod/new.env.amaga");
+    assert_eq!(body, b"NEW_SECRET=1\n");
+    repo.git(&["check-ignore", "-q", "prod/new.env"])
+        .assert_success();
+    repo.git(&["add", "-A"]).assert_success();
+    let staged = stdout(&repo.git(&["diff", "--cached", "--name-only"]));
+    assert!(!staged.lines().any(|l| l == "prod/new.env"), "{staged}");
+}
