@@ -203,7 +203,9 @@ impl GpgHome {
         self.dir.path()
     }
 
-    /// Imports a passphrase-less armored secret key.
+    /// Imports a passphrase-less armored secret key. Unix only in practice: gpg 2.5.24 on Windows
+    /// stores an imported Cv25519 subkey under the wrong keygrip (decrypt: "No secret key"), so
+    /// Windows tests use [`GpgHome::generate_key`] instead.
     pub fn import_secret_key(&self, armored_secret: &str) {
         let key_path = self.dir.path().join("import.asc");
         std::fs::write(&key_path, armored_secret).expect("write key fixture");

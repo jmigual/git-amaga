@@ -795,16 +795,10 @@ fn init_with_gpg_key_file() {
     let Some(gpg_home) = common::GpgHome::new("init_with_gpg_key_file") else {
         return;
     };
-    gpg_home.import_secret_key(include_str!(
-        "../../core/tests/fixtures/valid_cv25519.secret.asc"
-    ));
+    let fpr = gpg_home.generate_key("Valid <valid@example.invalid>");
 
     let key_path = repo.path().join("alice.asc");
-    std::fs::write(
-        &key_path,
-        include_str!("../../core/tests/fixtures/valid_cv25519.asc"),
-    )
-    .unwrap();
+    std::fs::write(&key_path, gpg_home.export_minimal(&fpr)).unwrap();
     repo.run(&["init", "alice", key_path.to_str().unwrap()])
         .assert_success();
     assert!(repo.path().join(".amaga/users/alice.asc").is_file());
@@ -886,16 +880,11 @@ fn gpg_decrypt_failure_writes_nothing() {
     let Some(gpg_home) = common::GpgHome::new("gpg_decrypt_failure_writes_nothing") else {
         return;
     };
-    gpg_home.import_secret_key(include_str!(
-        "../../core/tests/fixtures/valid_cv25519.secret.asc"
-    ));
+    let fpr = gpg_home.generate_key("Valid <valid@example.invalid>");
 
     let key_path = repo.path().join("alice.asc");
-    std::fs::write(
-        &key_path,
-        include_str!("../../core/tests/fixtures/valid_cv25519.asc"),
-    )
-    .unwrap();
+    let armored = gpg_home.export_minimal(&fpr);
+    std::fs::write(&key_path, &armored).unwrap();
     repo.run(&["init", "alice", key_path.to_str().unwrap()])
         .assert_success();
 
@@ -907,9 +896,7 @@ fn gpg_decrypt_failure_writes_nothing() {
     .assert_success();
     std::fs::remove_file(repo.path().join("secret.env")).unwrap();
 
-    let asc =
-        git_amaga_core::gpg::validate(include_str!("../../core/tests/fixtures/valid_cv25519.asc"))
-            .unwrap();
+    let asc = git_amaga_core::gpg::validate(&armored).unwrap();
     gpg_home.delete_secret_key(&asc.fpr);
 
     let open = repo.run_with_env(
