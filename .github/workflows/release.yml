@@ -31,7 +31,7 @@ jobs:
       - name: Name the binary after its target
         shell: bash
         run: cp "target/${{ matrix.target }}/release/git-amaga${{ matrix.ext }}" "git-amaga-${{ matrix.target }}${{ matrix.ext }}"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: git-amaga-${{ matrix.target }}
           path: git-amaga-${{ matrix.target }}${{ matrix.ext }}
