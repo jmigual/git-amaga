@@ -255,10 +255,15 @@ pub fn cmd_partition_remove(dir: &Path, name: &str, members: &[String]) -> Resul
     })
 }
 
-/// `git-amaga user add <name> <KEY>…` (plan 7): validates the keys, then re-wraps the current epoch
-/// to the members including the newcomer. No secret is rewritten (ADR-0015). Returns the new
-/// member's GPG key, if any.
-pub fn cmd_user_add(dir: &Path, name: &str, keys: &[String]) -> Result<Option<GpgKey>, Error> {
+/// `git-amaga user add [--partition <p>]… <name> <KEY>…` (plan 7): validates the keys, then
+/// re-wraps the current epoch of each partition (default: `default`) to the members including the
+/// newcomer. No secret is rewritten (ADR-0015). Returns the new member's GPG key, if any.
+pub fn cmd_user_add(
+    dir: &Path,
+    name: &str,
+    keys: &[String],
+    partitions: &[String],
+) -> Result<Option<GpgKey>, Error> {
     if !users::valid_name(name) {
         return Err(Error::InvalidMemberName(name.to_string()));
     }
@@ -267,7 +272,14 @@ pub fn cmd_user_add(dir: &Path, name: &str, keys: &[String]) -> Result<Option<Gp
     if member_files(&users_dir, name).next().is_some() {
         return Err(Error::UserExists(name.to_string()));
     }
-    ctx.require_up_to_date(partition::DEFAULT)?;
+    let selected: BTreeSet<String> = match partitions.is_empty() {
+        true => BTreeSet::from([partition::DEFAULT.to_string()]),
+        false => partitions.iter().cloned().collect(),
+    };
+    for p in &selected {
+        ctx.require_member(p)?;
+        ctx.require_up_to_date(p)?;
+    }
     let resolved = keyring::resolve(dir, keys)?;
     ctx.members
         .insert(name.to_string(), users::member_from_keys(&resolved));
@@ -279,7 +291,9 @@ pub fn cmd_user_add(dir: &Path, name: &str, keys: &[String]) -> Result<Option<Gp
         .as_ref()
         .map(|k| (k.fpr.as_str(), k.uid.as_str()));
     ctx.audit_event("user.added", Some(name), gpg)?;
-    grant(&mut ctx, partition::DEFAULT, &[name.to_string()])?;
+    for p in &selected {
+        grant(&mut ctx, p, &[name.to_string()])?;
+    }
     Ok(resolved.gpg)
 }
 

@@ -358,3 +358,43 @@ fn partition_add_on_branch_rotate_on_main() {
     let (header, _) = decrypt_file(&repo, &identity_path, "p.env.amaga");
     assert!(header.exposed_to.is_empty());
 }
+
+/// Test 62: `user add --partition` adds the member to that partition only.
+#[test]
+fn user_add_into_partition_only() {
+    let (repo, _identity_path) = repo_with_alice();
+    repo.run(&["partition", "create", "production", "alice"])
+        .assert_success();
+    std::fs::write(repo.path().join("p.env"), b"prod").unwrap();
+    repo.run(&["add", "--partition", "production", "p.env"])
+        .assert_success();
+    add_secret(&repo, "d.env", b"dev");
+    repo.run(&["close"]).assert_success();
+    let epoch = format!(".amaga/epochs/{}.age", current_epoch_id(&repo, "default"));
+    let default_before = (
+        read(&repo, &epoch),
+        current_epoch_id(&repo, "default"),
+        read(&repo, ".amaga/partitions/default/members"),
+    );
+
+    let (carol_key, carol_config) = second_identity(&repo, "carol");
+    repo.run(&[
+        "user",
+        "add",
+        "carol",
+        &carol_key,
+        "--partition",
+        "production",
+    ])
+    .assert_success();
+
+    run_as(&repo, &carol_config, &["open", "p.env"]).assert_success();
+    assert_eq!(read(&repo, "p.env"), b"prod");
+    run_as(&repo, &carol_config, &["open", "d.env"]).assert_failure();
+    let default_after = (
+        read(&repo, &epoch),
+        current_epoch_id(&repo, "default"),
+        read(&repo, ".amaga/partitions/default/members"),
+    );
+    assert_eq!(default_before, default_after);
+}

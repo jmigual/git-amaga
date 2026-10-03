@@ -116,6 +116,9 @@ enum UserCommand {
         /// gpg keyring (key ID, fingerprint, email or user ID).
         #[arg(required = true)]
         keys: Vec<String>,
+        /// A partition to add them to (repeatable; default: `default`).
+        #[arg(long = "partition", value_name = "NAME")]
+        partitions: Vec<String>,
     },
     /// Remove a member, re-encrypt the secrets of your partitions and flag the ones they could read.
     Remove {
@@ -198,9 +201,15 @@ fn run(dir: Option<PathBuf>, command: Command) -> Result<ExitCode, Error> {
             print_outcome("removed", git_amaga_core::cmd_remove(dir, &paths)?)
         }
         Command::User {
-            command: UserCommand::Add { name, keys },
+            command:
+                UserCommand::Add {
+                    name,
+                    keys,
+                    partitions,
+                },
         } => {
-            print_gpg_key(&name, git_amaga_core::cmd_user_add(dir, &name, &keys)?);
+            let gpg = git_amaga_core::cmd_user_add(dir, &name, &keys, &partitions)?;
+            print_gpg_key(&name, gpg);
         }
         Command::User {
             command: UserCommand::Remove { name },
