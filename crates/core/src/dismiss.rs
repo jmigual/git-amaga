@@ -16,35 +16,35 @@ pub fn cmd_dismiss(dir: &Path, users: &[String], args: &[String]) -> Result<Outc
         return Err(Error::DismissNoTarget);
     }
     let ctx = Context::load(dir)?;
-    ctx.require_up_to_date()?;
     let mut outcome = Outcome::default();
 
     let mut seen = BTreeSet::new();
     let mut targets = secret_paths_for(&ctx, args, false, &mut outcome.warnings)?;
     targets.retain(|sp| seen.insert(sp.ciphertext.clone()));
+    ctx.require_secrets_up_to_date(&targets)?;
     let mut decrypted = Vec::new();
     for sp in targets {
         let ciphertext = read_repo_file(&ctx.root, &sp.ciphertext)?;
-        let (header, body, epoch) = ctx.decrypt(&sp.ciphertext, &ciphertext)?;
-        decrypted.push((sp, header, body, epoch));
+        let found = ctx.decrypt(&sp.ciphertext, &ciphertext)?;
+        decrypted.push((sp, found));
     }
 
     if let Some(unknown) = users.iter().find(|user| {
         !decrypted
             .iter()
-            .any(|(_, header, ..)| header.exposed_to.contains_key(*user))
+            .any(|(_, found)| found.header.exposed_to.contains_key(*user))
     }) {
         return Err(Error::NotExposed(unknown.clone()));
     }
 
-    let current = ctx.current_epoch()?;
-    for (sp, old_header, body, old_epoch) in decrypted {
-        let names = selected(&old_header.exposed_to, users);
+    for (sp, old) in decrypted {
+        let names = selected(&old.header.exposed_to, users);
         if names.is_empty() {
             continue;
         }
-        let header = dismissed_header(&old_header, &old_epoch.members, &current.members, &names);
-        let ciphertext = ctx.encrypt(&header, &body)?;
+        let current = ctx.current_epoch(&old.partition)?;
+        let header = dismissed_header(&old.header, &old.epoch.members, &current.members, &names);
+        let ciphertext = ctx.encrypt(&old.partition, &header, &old.body)?;
         write_repo_file(&ctx.root, &sp.ciphertext, &ciphertext, None)?;
         for name in &names {
             audit::append(

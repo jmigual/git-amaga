@@ -2,9 +2,10 @@
 
 use std::path::Path;
 
-use crate::context::{Context, secret_paths_for};
+use crate::context::{Context, Decrypted, secret_paths_for};
 use crate::files::{read_plaintext, read_repo_file};
 use crate::outcome::{Level, SecretStatus, StatusReport};
+use crate::partition::DEFAULT;
 use crate::{Error, git, identity, paths, secret};
 
 const UNMERGED: &str = "unmerged; resolve the conflict and `git add` the file";
@@ -13,13 +14,12 @@ const UNMERGED: &str = "unmerged; resolve the conflict and `git add` the file";
 pub fn cmd_status(dir: &Path) -> Result<StatusReport, Error> {
     let ctx = Context::load_allowing_unmerged(dir)?;
     let unmerged = git::unmerged_paths(&ctx.root, &["*.amaga"])?;
-    let up_to_date = ctx.epoch_up_to_date()?;
 
     let mut warnings = Vec::new();
     let mut statuses = Vec::new();
     let secrets = secret_paths_for(&ctx, &[], false, &mut warnings)?;
     for sp in &secrets {
-        statuses.push(secret_status(&ctx, sp, &unmerged, up_to_date)?);
+        statuses.push(secret_status(&ctx, sp, &unmerged)?);
     }
     // Unmerged files that are not listed above (deleted from the worktree, or invalid paths).
     for path in unmerged
@@ -45,7 +45,6 @@ fn secret_status(
     ctx: &Context,
     sp: &paths::SecretPath,
     unmerged: &[String],
-    up_to_date: bool,
 ) -> Result<SecretStatus, Error> {
     let mut errors = Vec::new();
     let mut warnings = Vec::new();
@@ -75,9 +74,22 @@ fn secret_status(
             .and_then(|ciphertext| ctx.decrypt(&sp.ciphertext, &ciphertext));
         match decrypted {
             Err(e) => errors.push(without_path(e)),
-            Ok((header, body, epoch)) => {
-                if !up_to_date || epoch.id() != ctx.current_epoch()?.id() {
-                    errors.push("stale recipients; run git-amaga rotate".into());
+            Ok(Decrypted {
+                header,
+                body,
+                epoch,
+                partition,
+            }) => {
+                match stale(ctx, &partition, &epoch.id()) {
+                    Ok(true) => {
+                        let flag = match partition.as_str() {
+                            DEFAULT => String::new(),
+                            p => format!(" --partition {p}"),
+                        };
+                        errors.push(format!("stale recipients; run git-amaga rotate{flag}"));
+                    }
+                    Ok(false) => {}
+                    Err(e) => errors.push(e.to_string()),
                 }
                 if !header.exposed_to.is_empty() {
                     let names: Vec<&str> = header.exposed_to.keys().map(String::as_str).collect();
@@ -112,6 +124,11 @@ fn secret_status(
         path: sp.ciphertext.clone(),
         messages: errors,
     })
+}
+
+// Whether the secret is under an older epoch, or its partition is not up to date (plan 5.7).
+fn stale(ctx: &Context, partition: &str, epoch_id: &str) -> Result<bool, Error> {
+    Ok(!ctx.epoch_up_to_date(partition)? || ctx.current_epoch(partition)?.id() != epoch_id)
 }
 
 // The status line already starts with the secret's path; drop the copy inside the error.

@@ -212,8 +212,10 @@ pub enum Error {
     #[error("no member named '{0}' in .amaga/users")]
     UserNotFound(String),
 
-    #[error("'{0}' is the last member; removing them would leave nobody who can decrypt")]
-    LastMember(String),
+    #[error(
+        "'{user}' is the only member of partition '{partition}'; removing them would leave nobody who can decrypt it"
+    )]
+    LastMember { user: String, partition: String },
 
     /// Nothing was written; every failing secret is listed.
     #[error(
@@ -238,15 +240,23 @@ pub enum Error {
     RemoveRefused(String, PlaintextState),
 
     #[error(
-        ".amaga/current-epoch is missing (repository written by git-amaga 0.1.0, or `init` was interrupted); open the secrets with 0.1.0 and run `init` anew, or delete `.amaga/` and rerun `init`"
+        ".amaga/partitions/default/current-epoch is missing (repository written by git-amaga 0.1.0 or 0.2.0, or `init` was interrupted); open the secrets with that version and run `init` anew, or delete `.amaga/` and rerun `init`"
     )]
     NoEpoch,
 
     #[error("invalid epoch: {0}")]
     EpochInvalid(String),
 
-    #[error("`.amaga/users` differs from the current epoch; run `git-amaga rotate` first")]
-    EpochStale,
+    #[error(
+        "partition '{0}' differs from its current epoch; run `git-amaga rotate --partition {0}` first"
+    )]
+    EpochStale(String),
+
+    #[error("invalid partition {0} (see .amaga/partitions)")]
+    PartitionInvalid(String),
+
+    #[error("partition '{0}' does not exist")]
+    UnknownPartition(String),
 
     #[error(
         "unmerged epoch files must be resolved first: {0}\nrun `git checkout --ours -- <paths> && git add <paths>`, then `git-amaga rotate`"

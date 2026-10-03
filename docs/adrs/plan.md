@@ -593,7 +593,7 @@ Each test below must fail against an implementation lacking the behaviour:
 9. `close_refuses_unsealed`
 10. `status_flags_force_added_plaintext`
 11. `tampered_ciphertext_fails_and_writes_nothing`
-12. `user_add_rewraps_epoch_only`: after `user add bob`, every `.amaga` is byte-identical and only `users/bob.txt`, the current epoch file and `audit.jsonl` changed; bob opens the secret and can decrypt its committed version from the same epoch (decision 1).
+12. `user_add_rewraps_epoch_only`: after `user add bob`, every `.amaga` is byte-identical and only `users/bob.txt`, `partitions/default/members`, the current epoch file and `audit.jsonl` changed; bob opens the secret and can decrypt its committed version from the same epoch (decision 1).
 13. `user_remove_locks_out_and_flags_all`
 14. `seal_change_clears_only_that_file`
 15. `secret_added_after_removal_not_flagged`
@@ -629,7 +629,7 @@ Epoch keys (ADR-0015). Helpers that read a header unwrap the current epoch throu
 39. `rotate_before_user_add_hides_history`: commit a secret, `rotate`, `user add carol`; carol decrypts the current version but not the one committed before the `rotate`.
 40. `branch_secret_under_old_epoch_after_user_remove`: a branch adds a secret; main runs `user remove bob`; after the merge alice can `open` it, `status` reports it stale, and `rotate` flags bob.
 41. `parallel_rotations_conflict_on_current_epoch`: with no secrets, main and a branch each `rotate`; the branch then `add`s a secret. After the merge every command, `status` included, exits 1 naming `.amaga/partitions/default/current-epoch` (path since 16.3). After `git checkout --ours` + `git add` of it, `status` reports the secret stale, `rotate` succeeds and `status` exits 0.
-42. `member_added_on_branch_and_removal_on_main`: the branch runs `user add carol`, main `user remove bob`; the merge is clean; `status` exits 1 and `add` refuses with the rotate hint; after `rotate` carol opens every secret, bob is flagged and carol is not.
+42. `member_added_on_branch_and_removal_on_main`: a further member `bobby` sits between the two edits of `default/members`, which would otherwise touch adjacent lines and conflict (ADR-0017). The branch runs `user add carol`, main `user remove bob`; the merge is clean; `status` exits 1 and `add` refuses with the rotate hint; after `rotate` carol opens every secret, bob is flagged and carol is not.
 43. `member_not_in_old_epoch_cannot_read_its_secrets`: a branch adds a secret; main runs `rotate`, then `user add carol`; after the merge carol's `open` of that secret and her `rotate` exit 1 and write nothing; after alice's `rotate` carol opens it.
 44. `interrupted_user_add_finished_by_rotate`: write `users/carol.txt` by hand; `status` exits 1; `add`, `seal`, `user add dave` and `dismiss --user x` refuse with the rotate hint; after `rotate` carol opens every secret and nothing is flagged.
 45. `one_gpg_decrypt_per_command` (gpg, Unix only): a GPG member and three secrets; PATH holds a `gpg` wrapper that logs its arguments and runs the real gpg; `open` and `status` each log exactly one `--decrypt`.

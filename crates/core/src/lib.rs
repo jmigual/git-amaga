@@ -17,6 +17,7 @@ pub mod identity;
 mod keyring;
 mod membership;
 mod outcome;
+pub mod partition;
 mod paths;
 mod remove;
 pub mod secret;

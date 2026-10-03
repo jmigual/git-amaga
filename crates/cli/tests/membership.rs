@@ -8,7 +8,8 @@ use std::process::Output;
 
 use age::x25519;
 use common::{
-    OutputExt, Repo, current_epoch, decrypt_as, decrypt_file, load_identity, repo_with_alice,
+    OutputExt, Repo, current_branch, current_epoch, decrypt_as, decrypt_file, load_identity,
+    repo_with_alice, run_as, second_identity,
 };
 use git_amaga_core::secret::Header;
 
@@ -30,6 +31,7 @@ fn write_member_file(repo: &Repo, name: &str) -> x25519::Identity {
         format!("{}\n", identity.to_public()),
     )
     .unwrap();
+    common::join_default(repo, name);
     identity
 }
 
@@ -53,7 +55,7 @@ fn epoch_members(repo: &Repo, identity_path: &Path) -> git_amaga_core::secret::R
 /// The current epoch id and every epoch file id.
 fn epoch_state(repo: &Repo) -> (String, Vec<String>) {
     (
-        common::current_epoch_id(repo),
+        common::current_epoch_id(repo, "default"),
         git_amaga_core::epoch::list(repo.path()).unwrap(),
     )
 }
@@ -271,7 +273,7 @@ fn user_add_rewraps_epoch_only() {
     add_secret(&repo, "secret.env", b"v1");
     repo.commit_all("add secret");
     let secret_before = std::fs::read(repo.path().join("secret.env.amaga")).unwrap();
-    let epoch_id = common::current_epoch_id(&repo);
+    let epoch_id = common::current_epoch_id(&repo, "default");
     let bob = x25519::Identity::generate();
 
     user_add(&repo, "bob", &bob.to_public().to_string()).assert_success();
@@ -280,7 +282,7 @@ fn user_add_rewraps_epoch_only() {
         std::fs::read(repo.path().join("secret.env.amaga")).unwrap(),
         secret_before
     );
-    assert_eq!(common::current_epoch_id(&repo), epoch_id);
+    assert_eq!(common::current_epoch_id(&repo, "default"), epoch_id);
     let porcelain = String::from_utf8(repo.git(&["status", "--porcelain"]).stdout).unwrap();
     let mut changed: Vec<&str> = porcelain
         .lines()
@@ -294,6 +296,7 @@ fn user_add_rewraps_epoch_only() {
         [
             ".amaga/audit.jsonl",
             epoch_file.as_str(),
+            ".amaga/partitions/default/members",
             ".amaga/users/bob.txt"
         ]
     );
@@ -701,36 +704,6 @@ fn user_remove_with_a_broken_asc_and_a_valid_txt() {
     assert!(header.exposed_to["bob"].contains(&bob.to_public().to_string()));
 }
 
-/// A second identity for `repo`: its public key and a global git config that selects it.
-fn second_identity(repo: &Repo, name: &str) -> (String, std::path::PathBuf) {
-    let identity_path = repo.path().join(format!("{name}-identity.txt"));
-    let keygen = repo.run(&["keygen", identity_path.to_str().unwrap()]);
-    keygen.assert_success();
-    let config = repo.path().join(format!("{name}-gitconfig"));
-    // `git config` escapes the value; a raw Windows path's backslashes would be read as escapes.
-    repo.git(&[
-        "config",
-        "--file",
-        config.to_str().unwrap(),
-        "amaga.identity",
-        identity_path.to_str().unwrap(),
-    ])
-    .assert_success();
-    let key = String::from_utf8_lossy(&keygen.stdout).trim().to_string();
-    (key, config)
-}
-
-fn run_as(repo: &Repo, config: &Path, args: &[&str]) -> Output {
-    repo.run_with_env(args, &[("GIT_CONFIG_GLOBAL", config.as_os_str())])
-}
-
-fn current_branch(repo: &Repo) -> String {
-    String::from_utf8(repo.git(&["rev-parse", "--abbrev-ref", "HEAD"]).stdout)
-        .unwrap()
-        .trim()
-        .to_string()
-}
-
 /// Test 40: a secret a branch added under an epoch that `user remove` then replaced stays
 /// readable after the merge; it is stale, and `rotate` flags the removed member.
 #[test]
@@ -827,7 +800,7 @@ fn interrupted_user_add_finished_by_rotate() {
     let epoch_file = repo
         .path()
         .join(git_amaga_core::epoch::file_path(&common::current_epoch_id(
-            &repo,
+            &repo, "default",
         )));
     let epoch_before = std::fs::read(&epoch_file).unwrap();
     std::fs::write(repo.path().join("new.env"), b"n").unwrap();
@@ -871,13 +844,16 @@ fn interrupted_user_add_finished_by_rotate() {
 
 /// Test 42: a member added on a branch and a removal on main merge cleanly into a stale state;
 /// after `rotate` the newcomer reads everything, the removed member is flagged and the newcomer
-/// is not.
+/// is not. A member `bobby` sits between the two edits of `default/members`, so that they do not
+/// touch adjacent lines (which would conflict as text, ADR-0017).
 #[test]
 fn member_added_on_branch_and_removal_on_main() {
     let (repo, identity_path) = repo_with_alice();
     add_secret(&repo, "a.env", b"a1");
     let bob = x25519::Identity::generate().to_public().to_string();
     user_add(&repo, "bob", &bob).assert_success();
+    let bobby = x25519::Identity::generate().to_public().to_string();
+    user_add(&repo, "bobby", &bobby).assert_success();
     repo.commit_all("base");
     std::fs::remove_file(repo.path().join("a.env")).unwrap();
     let main = current_branch(&repo);
@@ -1017,7 +993,7 @@ fn user_add_refuses_while_a_member_was_removed_by_hand() {
     let epoch_file = repo
         .path()
         .join(git_amaga_core::epoch::file_path(&common::current_epoch_id(
-            &repo,
+            &repo, "default",
         )));
     let epoch_before = std::fs::read(&epoch_file).unwrap();
     let audit_before = audit_events(&repo);
