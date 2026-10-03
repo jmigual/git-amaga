@@ -595,3 +595,102 @@ fn non_members_get_not_in_partition_for_seal_dismiss_and_remove() {
         assert!(!err.contains("git rm"), "{args:?}: {err}");
     }
 }
+
+/// `user add --partition` runs the access check and the stale guard for each named partition,
+/// and writes nothing when one fails.
+#[test]
+fn user_add_partition_checks_access_and_staleness() {
+    let (repo, _identity_path, bob_config) = repo_with_alice_and_bob();
+    repo.run(&["partition", "create", "production", "alice"])
+        .assert_success();
+    let (carol_key, _carol_config) = second_identity(&repo, "carol");
+    let before = read(&repo, ".amaga/audit.jsonl");
+
+    // bob is not in `production`.
+    let denied = run_as(
+        &repo,
+        &bob_config,
+        &[
+            "user",
+            "add",
+            "carol",
+            &carol_key,
+            "--partition",
+            "production",
+        ],
+    );
+    denied.assert_failure();
+    assert!(
+        stderr(&denied).contains("not a member of partition 'production'"),
+        "{}",
+        stderr(&denied)
+    );
+
+    // `production` is stale after a hand edit, while `default` is fine.
+    let members = repo.path().join(".amaga/partitions/production/members");
+    std::fs::write(&members, "alice\nbob\n").unwrap();
+    let stale = repo.run(&[
+        "user",
+        "add",
+        "carol",
+        &carol_key,
+        "--partition",
+        "default",
+        "--partition",
+        "production",
+    ]);
+    stale.assert_failure();
+    assert!(
+        stderr(&stale).contains("rotate --partition production"),
+        "{}",
+        stderr(&stale)
+    );
+    assert!(!repo.path().join(".amaga/users/carol.txt").exists());
+    assert_eq!(read(&repo, ".amaga/audit.jsonl"), before);
+}
+
+/// `partition move` refuses a target the actor is not in or that is stale, and leaves a secret
+/// that is already in the target byte for byte.
+#[test]
+fn partition_move_checks_the_target_and_skips_secrets_already_there() {
+    let (repo, _identity_path, bob_config) = repo_with_alice_and_bob();
+    repo.run(&["partition", "create", "production", "alice"])
+        .assert_success();
+    std::fs::write(repo.path().join("p.env"), b"prod").unwrap();
+    repo.run(&["add", "--partition", "production", "p.env"])
+        .assert_success();
+    add_secret(&repo, "d.env", b"dev");
+    let (p_before, d_before) = (read(&repo, "p.env.amaga"), read(&repo, "d.env.amaga"));
+
+    let denied = run_as(
+        &repo,
+        &bob_config,
+        &["partition", "move", "production", "d.env"],
+    );
+    denied.assert_failure();
+    assert!(
+        stderr(&denied).contains("not a member of partition 'production'"),
+        "{}",
+        stderr(&denied)
+    );
+    assert_eq!(read(&repo, "d.env.amaga"), d_before);
+
+    repo.run(&["partition", "move", "production", "p.env", "d.env"])
+        .assert_success();
+    assert_eq!(read(&repo, "p.env.amaga"), p_before);
+    assert_ne!(read(&repo, "d.env.amaga"), d_before);
+
+    let members = repo.path().join(".amaga/partitions/production/members");
+    std::fs::write(&members, "alice\nbob\n").unwrap();
+    repo.run(&["partition", "move", "default", "d.env"])
+        .assert_success();
+    let d_back = read(&repo, "d.env.amaga");
+    let stale = repo.run(&["partition", "move", "production", "d.env"]);
+    stale.assert_failure();
+    assert!(
+        stderr(&stale).contains("rotate --partition production"),
+        "{}",
+        stderr(&stale)
+    );
+    assert_eq!(read(&repo, "d.env.amaga"), d_back);
+}
