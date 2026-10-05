@@ -21,7 +21,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install GnuPG (Windows)
         if: runner.os == 'Windows'
         uses: ./.github/actions/install-gnupg
@@ -31,7 +31,7 @@ jobs:
       - name: Name the binary after its target
         shell: bash
         run: cp "target/${{ matrix.target }}/release/git-amaga${{ matrix.ext }}" "git-amaga-${{ matrix.target }}${{ matrix.ext }}"
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: git-amaga-${{ matrix.target }}
           path: git-amaga-${{ matrix.target }}${{ matrix.ext }}
@@ -43,11 +43,11 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v8
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           path: dist
           merge-multiple: true
-      - uses: softprops/action-gh-release@v3
+      - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           files: dist/*
           # Tags like v1.2.0-rc.1 publish a pre-release, so they never become "latest".
@@ -60,7 +60,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Check the tag matches the workspace version
         run: |
           version=$(cargo metadata --no-deps --format-version 1 --locked | jq -r '.packages[] | select(.name == "git-amaga") | .version')
