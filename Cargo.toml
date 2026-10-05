@@ -3,14 +3,14 @@ members = ["crates/core", "crates/cli"]
 resolver = "3"
 
 [workspace.package]
-version = "0.3.0"
+version = "0.3.1"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT"
 repository = "https://github.com/jmigual/git-amaga"
 
 [workspace.dependencies]
-git-amaga-core = { path = "crates/core", version = "=0.3.0" }
+git-amaga-core = { path = "crates/core", version = "=0.3.1" }
 age = "0.12.1"
 age-core = "0.12.0"
 clap = { version = "4.6.7", features = ["derive"] }
