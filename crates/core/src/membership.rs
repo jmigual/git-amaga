@@ -24,7 +24,15 @@ pub(crate) fn reencrypt(
 ) -> Result<Vec<Reencrypted>, Error> {
     let mut failures = Vec::new();
     let mut targets = Vec::new();
-    for path in git::managed_secrets(&ctx.root)? {
+    for entry in git::managed_secrets(&ctx.root)? {
+        // Its partition is unknown, so it might be one of `selected`'s.
+        let path = match entry {
+            Ok(path) => path,
+            Err(path) => {
+                failures.push(Error::PathNotUtf8(path).to_string());
+                continue;
+            }
+        };
         if !ctx.root.join(&path).exists() {
             continue;
         }

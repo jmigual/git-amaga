@@ -37,9 +37,13 @@ pub fn cmd_import_git_crypt(dir: &Path, names: &[String]) -> Result<Imported, Er
     let mut ctx = Context::load(dir)?;
     ctx.require_member(DEFAULT)?;
     ctx.require_up_to_date(DEFAULT)?;
+    // A name that is not UTF-8 cannot be checked, so it counts as a secret.
     let has_secrets = git::managed_secrets(&ctx.root)?
         .iter()
-        .any(|path| ctx.root.join(path).exists());
+        .any(|entry| match entry {
+            Ok(path) => ctx.root.join(path).exists(),
+            Err(_) => true,
+        });
     if has_secrets {
         return Err(Error::ImportNotFresh);
     }

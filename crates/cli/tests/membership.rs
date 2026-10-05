@@ -244,6 +244,35 @@ fn rotate_with_undecryptable_secret_changes_nothing() {
     assert_eq!(audit_events(&repo), before_audit);
 }
 
+/// A secret whose name is not UTF-8 is reported by `status` and makes `rotate` refuse, instead of
+/// being left out and staying under the old epoch.
+#[cfg(target_os = "linux")]
+#[test]
+fn non_utf8_secret_is_reported_and_blocks_rotate() {
+    use std::os::unix::ffi::OsStrExt;
+
+    let (repo, _identity_path) = repo_with_alice();
+    add_secret(&repo, "a.env", b"a1");
+    add_secret(&repo, "b.env", b"b1");
+    let odd = (repo.path()).join(std::ffi::OsStr::from_bytes(b"caf\xe9.env.amaga"));
+    std::fs::rename(repo.path().join("b.env.amaga"), &odd).unwrap();
+    let before = std::fs::read(&odd).unwrap();
+    let before_epoch = common::current_epoch_id(&repo, "default");
+
+    let status = repo.run(&["status"]);
+    assert!(stderr(&status).contains("not valid UTF-8"), "{status:?}");
+    let rotate = repo.run(&["rotate"]);
+    rotate.assert_failure();
+    assert!(stderr(&rotate).contains("not valid UTF-8"), "{rotate:?}");
+    assert_eq!(std::fs::read(&odd).unwrap(), before);
+    assert_eq!(common::current_epoch_id(&repo, "default"), before_epoch);
+
+    // Once deleted, it is skipped like a deleted UTF-8 secret, even while still tracked.
+    repo.commit_all("odd name");
+    std::fs::remove_file(&odd).unwrap();
+    repo.run(&["rotate"]).assert_success();
+}
+
 fn user_files(repo: &Repo) -> Vec<String> {
     let mut names: Vec<String> = std::fs::read_dir(repo.path().join(".amaga/users"))
         .unwrap()

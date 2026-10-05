@@ -326,4 +326,8 @@ pub enum Error {
 
     #[error("'{0}' is not exposed in any of the selected secrets")]
     NotExposed(String),
+
+    /// Git listed a path whose name is not UTF-8; shown lossily.
+    #[error("path '{0}' is not valid UTF-8; rename it")]
+    PathNotUtf8(String),
 }
