@@ -99,9 +99,17 @@ fn write_identity(dir: &Path, path: Option<&Path>) -> Result<(PathBuf, x25519::R
         identity.to_string().expose_secret()
     );
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
+        fs::create_dir_all(parent).map_err(|source| Error::IoPath {
+            path: parent.display().to_string(),
+            source,
+        })?;
     }
-    paths::atomic_write(&path, contents.as_bytes(), Some(0o600))?;
+    paths::atomic_write(&path, contents.as_bytes(), Some(0o600)).map_err(|source| {
+        Error::IoPath {
+            path: path.display().to_string(),
+            source,
+        }
+    })?;
 
     Ok((path, public))
 }
@@ -396,6 +404,16 @@ mod tests {
 
         let err = write_identity(dir.path(), Some(&path)).unwrap_err();
         assert!(matches!(err, Error::IdentityExists(_)));
+    }
+
+    #[test]
+    fn write_identity_names_the_directory_it_cannot_create() {
+        let dir = tempfile::tempdir().unwrap();
+        let blocker = dir.path().join("blocker");
+        fs::write(&blocker, "").unwrap();
+
+        let err = write_identity(dir.path(), Some(&blocker.join("identity.txt"))).unwrap_err();
+        assert!(matches!(err, Error::IoPath { .. }));
     }
 
     #[cfg(unix)]

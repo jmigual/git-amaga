@@ -198,7 +198,10 @@ pub fn ensure_gitignore_line(gitignore_path: &Path, line: &str) -> Result<(), Er
             lines.push(GITIGNORE_END);
         }
     }
-    atomic_write(gitignore_path, &join_lines(&lines), None)?;
+    atomic_write(gitignore_path, &join_lines(&lines), None).map_err(|source| Error::IoPath {
+        path: gitignore_path.display().to_string(),
+        source,
+    })?;
     Ok(())
 }
 
@@ -234,7 +237,10 @@ pub fn ensure_lines_present(path: &Path, lines: &[&str]) -> Result<(), Error> {
     }
 
     file_lines.extend(missing);
-    atomic_write(path, &join_lines(&file_lines), None)?;
+    atomic_write(path, &join_lines(&file_lines), None).map_err(|source| Error::IoPath {
+        path: path.display().to_string(),
+        source,
+    })?;
     Ok(())
 }
 

@@ -46,11 +46,16 @@ pub fn append(path: &Path, actor: &str, event: &Event) -> Result<(), Error> {
     // Serializing a struct of plain strings cannot fail: no maps, no non-UTF8 keys.
     .expect("audit event serialization is infallible");
 
+    let io_error = |source| Error::IoPath {
+        path: path.display().to_string(),
+        source,
+    };
     let mut file = fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(path)?;
-    writeln!(file, "{line}")?;
+        .open(path)
+        .map_err(io_error)?;
+    writeln!(file, "{line}").map_err(io_error)?;
     Ok(())
 }
 
@@ -156,6 +161,21 @@ mod tests {
         assert!(lines[1].contains("\"path\":\"secrets/prod.env\""));
         assert!(lines[1].contains("\"partition\":\"production\""));
         assert!(!lines[0].contains("\"partition\""));
+    }
+
+    #[test]
+    fn append_names_the_file_it_cannot_open() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("missing").join("audit.jsonl");
+
+        let event = Event {
+            event: "init",
+            ..Default::default()
+        };
+        assert!(matches!(
+            append(&path, "alice", &event),
+            Err(Error::IoPath { .. })
+        ));
     }
 
     #[test]

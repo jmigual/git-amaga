@@ -326,4 +326,7 @@ pub enum Error {
 
     #[error("'{0}' is not exposed in any of the selected secrets")]
     NotExposed(String),
+
+    #[error("repository is not initialized (run `git-amaga init`)")]
+    NotInitialized,
 }

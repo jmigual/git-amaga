@@ -34,8 +34,12 @@ pub fn load(users_dir: &Path) -> Result<Members, Error> {
 pub(crate) fn load_tolerating(users_dir: &Path, tolerated: Option<&str>) -> Result<Members, Error> {
     let mut members: Members = BTreeMap::new();
 
-    for entry in fs::read_dir(users_dir)? {
-        let entry = entry?;
+    let entries = fs::read_dir(users_dir).map_err(|source| match source.kind() {
+        std::io::ErrorKind::NotFound => Error::NotInitialized,
+        _ => io_path(users_dir, source),
+    })?;
+    for entry in entries {
+        let entry = entry.map_err(|source| io_path(users_dir, source))?;
         let path = entry.path();
         let file_name = entry.file_name().to_string_lossy().into_owned();
         let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
@@ -119,20 +123,26 @@ pub(crate) fn member_from_keys(keys: &ResolvedKeys) -> Member {
     }
 }
 
+fn io_path(path: &Path, source: std::io::Error) -> Error {
+    Error::IoPath {
+        path: path.display().to_string(),
+        source,
+    }
+}
+
 /// Writes `<name>.txt` and/or `<name>.asc` (the `.asc` byte for byte) into `users_dir`.
 pub(crate) fn write_member(users_dir: &Path, name: &str, keys: &ResolvedKeys) -> Result<(), Error> {
     if !keys.age_keys.is_empty() {
         let lines: Vec<String> = keys.age_keys.iter().map(|k| k.to_string()).collect();
         let contents = format!("{}\n", lines.join("\n"));
-        paths::atomic_write(
-            &users_dir.join(format!("{name}.txt")),
-            contents.as_bytes(),
-            None,
-        )?;
+        let txt = users_dir.join(format!("{name}.txt"));
+        paths::atomic_write(&txt, contents.as_bytes(), None)
+            .map_err(|source| io_path(&txt, source))?;
     }
     if let Some(key) = &keys.gpg {
         let asc = users_dir.join(format!("{name}.asc"));
-        paths::atomic_write(&asc, key.armored.as_bytes(), None)?;
+        paths::atomic_write(&asc, key.armored.as_bytes(), None)
+            .map_err(|source| io_path(&asc, source))?;
     }
     Ok(())
 }
@@ -151,7 +161,7 @@ pub(crate) fn valid_name(name: &str) -> bool {
 }
 
 fn parse_age_keys(path: &Path) -> Result<Vec<x25519::Recipient>, Error> {
-    let contents = fs::read_to_string(path)?;
+    let contents = fs::read_to_string(path).map_err(|source| io_path(path, source))?;
     contents
         .lines()
         .map(|line| line.trim_end_matches('\r').trim())
@@ -200,6 +210,25 @@ mod tests {
 
     fn write(dir: &Path, name: &str, contents: &str) {
         fs::write(dir.join(name), contents).unwrap();
+    }
+
+    #[test]
+    fn write_member_names_the_file_it_cannot_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let keys = ResolvedKeys {
+            age_keys: vec![x25519::Identity::generate().to_public()],
+            gpg: None,
+        };
+
+        let err = write_member(&dir.path().join("missing"), "alice", &keys).unwrap_err();
+        assert!(matches!(err, Error::IoPath { .. }));
+    }
+
+    #[test]
+    fn a_missing_users_dir_is_not_initialized() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = load(&dir.path().join("users")).err().unwrap();
+        assert!(matches!(err, Error::NotInitialized));
     }
 
     #[test]

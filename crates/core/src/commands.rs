@@ -56,7 +56,10 @@ pub fn cmd_init(dir: &Path, name: &str, keys: &[String]) -> Result<Option<GpgKey
     paths::ensure_gitignore_line(&root.join(".gitignore"), "*.amaga-tmp")?;
 
     let users_dir = amaga_dir.join("users");
-    fs::create_dir_all(&users_dir)?;
+    fs::create_dir_all(&users_dir).map_err(|source| Error::IoPath {
+        path: users_dir.display().to_string(),
+        source,
+    })?;
     users::write_member(&users_dir, name, &resolved)?;
 
     let members = users::Members::from([(name.to_string(), users::member_from_keys(&resolved))]);
