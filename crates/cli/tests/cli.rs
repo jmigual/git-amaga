@@ -12,6 +12,9 @@ fn keygen_writes_identity_refuses_overwrite_and_sets_global_identity() {
     let public_key = String::from_utf8_lossy(&keygen.stdout).trim().to_string();
     assert!(public_key.starts_with("age1"), "got {public_key:?}");
     assert!(identity_path.is_file());
+    for stream in [&keygen.stdout, &keygen.stderr] {
+        assert!(!String::from_utf8_lossy(stream).contains("AGE-SECRET-KEY"));
+    }
 
     #[cfg(unix)]
     {
@@ -346,6 +349,30 @@ fn seal_refuses_outdated_plaintext_after_pull() {
         pulled,
         "seal --force must write the local (stale) plaintext back"
     );
+}
+
+/// `seal --force` fails on `b.env` after it has read the changed plaintext of `a.env`; that
+/// plaintext must not reach the output.
+#[test]
+fn failed_seal_force_keeps_plaintext_out_of_output() {
+    let (repo, _identity_path) = repo_with_alice();
+    for name in ["a.env", "b.env"] {
+        std::fs::write(repo.path().join(name), b"v1").unwrap();
+        repo.run(&["add", name]).assert_success();
+    }
+    std::fs::write(repo.path().join("a.env"), b"TOPSECRET-PLAINTEXT").unwrap();
+    // Keep the age header (label and stanzas) readable and break the payload.
+    let broken = repo.path().join("b.env.amaga");
+    let mut bytes = std::fs::read(&broken).unwrap();
+    *bytes.last_mut().unwrap() ^= 1;
+    std::fs::write(&broken, bytes).unwrap();
+
+    let seal = repo.run(&["seal", "--force", "a.env", "b.env"]);
+
+    seal.assert_failure();
+    for stream in [&seal.stdout, &seal.stderr] {
+        assert!(!String::from_utf8_lossy(stream).contains("TOPSECRET-PLAINTEXT"));
+    }
 }
 
 /// Test 7: `open` replaces unmodified plaintext after the ciphertext changed.
