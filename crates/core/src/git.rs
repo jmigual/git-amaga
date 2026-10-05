@@ -1,5 +1,6 @@
 //! Runs `git` as a subprocess, never through a shell (plan 10.2).
 
+use std::collections::{BTreeSet, HashSet};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -304,11 +305,36 @@ pub fn is_ignored(root: &Path, path: &str) -> Result<bool, Error> {
     )
 }
 
-/// Whether `git check-attr` reports the `text` attribute of `path` as `unset`.
-pub fn text_is_unset(root: &Path, path: &str) -> Result<bool, Error> {
-    Ok(run_in(root, &["check-attr", "text", "--", path])?
-        .trim_ascii_end()
-        .ends_with(b": unset"))
+/// The `paths` that are tracked, from one `git ls-files`.
+pub fn tracked_among(root: &Path, paths: &[&str]) -> Result<BTreeSet<String>, Error> {
+    let out = run_in(root, &["ls-files", "-z"])?;
+    let tracked: HashSet<&[u8]> = nul_fields(&out).collect();
+    Ok(paths
+        .iter()
+        .filter(|path| tracked.contains(path.as_bytes()))
+        .map(|path| path.to_string())
+        .collect())
+}
+
+/// [`is_ignored`] for every one of `paths`, from one `git check-ignore`: the ignored ones.
+pub fn ignored_among(root: &Path, paths: &[&str]) -> Result<BTreeSet<String>, Error> {
+    let args = ["check-ignore", "-z", "--stdin", "--no-index"];
+    let input: Vec<u8> = paths
+        .iter()
+        .flat_map(|p| format!("./{p}\0").into_bytes())
+        .collect();
+    let output = output_with_stdin(root, &args, &input)?;
+    // Exit 1 means none is ignored.
+    if !matches!(output.status.code(), Some(0 | 1)) {
+        return Err(git_error(&output));
+    }
+    // Each ignored path is echoed as given.
+    let ignored: HashSet<&[u8]> = nul_fields(&output.stdout).collect();
+    Ok(paths
+        .iter()
+        .filter(|path| ignored.contains(format!("./{path}").as_bytes()))
+        .map(|path| path.to_string())
+        .collect())
 }
 
 /// `(path, attribute, value)` for each of `attrs` on each of `paths`, from `git check-attr`. The

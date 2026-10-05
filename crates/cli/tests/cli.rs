@@ -1410,6 +1410,45 @@ fn status_lists_members_and_healthy_secrets() {
     );
 }
 
+/// `status` runs as many git processes for three secrets as for one.
+#[cfg(unix)]
+#[test]
+fn status_runs_git_a_fixed_number_of_times() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (repo, _identity_path) = repo_with_alice();
+    let shim = tempfile::tempdir().unwrap();
+    let log = shim.path().join("log");
+    let script = format!(
+        "#!/bin/sh\necho >> '{}'\nexec '{}' \"$@\"\n",
+        log.display(),
+        common::find_on_path("git").display()
+    );
+    let git = shim.path().join("git");
+    std::fs::write(&git, script).unwrap();
+    std::fs::set_permissions(&git, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = std::env::join_paths(
+        std::iter::once(shim.path().to_path_buf())
+            .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+    )
+    .unwrap();
+    let git_runs = || {
+        let _ = std::fs::remove_file(&log);
+        repo.run_with_env(&["status"], &[("PATH", &path)])
+            .assert_success();
+        std::fs::read_to_string(&log).unwrap().lines().count()
+    };
+
+    std::fs::write(repo.path().join("a.env"), b"a").unwrap();
+    repo.run(&["add", "a.env"]).assert_success();
+    let one = git_runs();
+    for name in ["b.env", "c.env"] {
+        std::fs::write(repo.path().join(name), b"v").unwrap();
+        repo.run(&["add", name]).assert_success();
+    }
+    assert_eq!(git_runs(), one);
+}
+
 /// Test 10: a force-added (tracked) plaintext is a critical error.
 #[test]
 fn status_flags_force_added_plaintext() {

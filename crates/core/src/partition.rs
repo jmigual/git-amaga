@@ -34,6 +34,11 @@ pub(crate) fn attribute(root: &Path, plaintext: &str) -> Result<Option<String>, 
     let Some((_, _, value)) = attrs.into_iter().next() else {
         return Ok(None);
     };
+    attribute_value(plaintext, value)
+}
+
+/// [`attribute`] for the `value` `git check-attr` already reported for `plaintext`.
+pub(crate) fn attribute_value(plaintext: &str, value: String) -> Result<Option<String>, Error> {
     match value.as_str() {
         "unspecified" => Ok(None),
         v if users::valid_name(v) && v != "set" && v != "unset" => Ok(Some(value)),

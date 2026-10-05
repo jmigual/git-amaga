@@ -1,5 +1,6 @@
 //! `git-amaga status` (plan 7.2).
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use crate::context::{Context, Decrypted};
@@ -29,8 +30,9 @@ pub fn cmd_status(dir: &Path) -> Result<StatusReport, Error> {
     }
     let mut statuses = Vec::new();
     let secrets = all_secret_paths(&ctx, false, &mut warnings)?;
+    let checks = GitChecks::load(&ctx.root, &secrets)?;
     for sp in &secrets {
-        statuses.push(secret_status(&ctx, sp, &unmerged)?);
+        statuses.push(secret_status(&ctx, sp, &unmerged, &checks));
     }
     // Unmerged files that are not listed above (deleted from the worktree, or invalid paths).
     for path in unmerged
@@ -53,29 +55,63 @@ pub fn cmd_status(dir: &Path) -> Result<StatusReport, Error> {
     })
 }
 
+// What git says about every secret, read with a fixed number of git processes.
+struct GitChecks {
+    // Ciphertexts whose `text` attribute is unset.
+    text_unset: BTreeSet<String>,
+    tracked: BTreeSet<String>,
+    ignored: BTreeSet<String>,
+    // Plaintext -> its `amaga-partition` value.
+    partition_attr: BTreeMap<String, String>,
+}
+
+impl GitChecks {
+    fn load(root: &Path, secrets: &[paths::SecretPath]) -> Result<Self, Error> {
+        let ciphertexts: Vec<&str> = secrets.iter().map(|sp| sp.ciphertext.as_str()).collect();
+        let plaintexts: Vec<&str> = secrets.iter().map(|sp| sp.plaintext.as_str()).collect();
+        // `check_attr` answers once per path, in order.
+        let text = git::check_attr(root, &["text"], &ciphertexts)?;
+        let text_unset = (ciphertexts.iter().zip(text))
+            .filter(|(_, (.., value))| value == "unset")
+            .map(|(path, _)| path.to_string())
+            .collect();
+        let attrs = git::check_attr(root, &["amaga-partition"], &plaintexts)?;
+        let partition_attr = (plaintexts.iter().zip(attrs))
+            .map(|(path, (.., value))| (path.to_string(), value))
+            .collect();
+        Ok(Self {
+            text_unset,
+            tracked: git::tracked_among(root, &plaintexts)?,
+            ignored: git::ignored_among(root, &plaintexts)?,
+            partition_attr,
+        })
+    }
+}
+
 // The messages of one secret. Undecryptable secrets report no state, and a secret of a partition
 // that does not list the actor only gets the checks that need no key.
 fn secret_status(
     ctx: &Context,
     sp: &paths::SecretPath,
     unmerged: &[String],
-) -> Result<SecretStatus, Error> {
+    checks: &GitChecks,
+) -> SecretStatus {
     let mut errors = Vec::new();
     let mut warnings = Vec::new();
     let mut ok = "in sync";
     let mut partition = String::new();
     let plaintext = &sp.plaintext;
 
-    if !git::text_is_unset(&ctx.root, &sp.ciphertext)? {
+    if !checks.text_unset.contains(&sp.ciphertext) {
         errors.push("`text` attribute is not unset; add `*.amaga binary` to .gitattributes".into());
     }
-    if git::is_tracked(&ctx.root, plaintext)? {
+    if checks.tracked.contains(plaintext) {
         let fix = format!("run `git rm --cached -- {plaintext}`");
         errors.push(format!(
             "CRITICAL plaintext '{plaintext}' is tracked; {fix}"
         ));
     }
-    if !git::is_ignored(&ctx.root, plaintext)? {
+    if !checks.ignored.contains(plaintext) {
         let fix = "run `git-amaga seal` or `open`, or add it to .gitignore";
         errors.push(format!(
             "CRITICAL plaintext '{plaintext}' is not ignored; {fix}"
@@ -93,7 +129,8 @@ fn secret_status(
             Err(e) => errors.push(without_path(e)),
             Ok((ciphertext, label)) => {
                 partition = label;
-                match partition::attribute(&ctx.root, plaintext) {
+                let value = checks.partition_attr[plaintext].clone();
+                match partition::attribute_value(plaintext, value) {
                     Ok(Some(attr)) if attr != partition => errors.push(format!(
                         "in partition {partition}, but .gitattributes says {attr}; run git-amaga partition move {attr} {plaintext}, or fix .gitattributes"
                     )),
@@ -120,12 +157,12 @@ fn secret_status(
     if errors.is_empty() {
         errors.push(ok.into());
     }
-    Ok(SecretStatus {
+    SecretStatus {
         level,
         path: sp.ciphertext.clone(),
         partition,
         messages: errors,
-    })
+    }
 }
 
 // The checks that need the secret decrypted; returns the plain state when nothing is wrong.
