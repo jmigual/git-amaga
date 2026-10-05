@@ -1116,8 +1116,10 @@ full. Struct and function names are illustrative unless 14.2 fixes them.
   - `membership.rs`:
     - `reencrypt` takes the partition set (7.1); `rotate` passes every partition.
     - `user add` adds the name to `default/members` before re-wrapping `default`.
-    - `user remove` edits the `members` files of the partitions it re-encrypts, deletes the user files, then edits the other partitions' `members` files (those the actor is not in) after the pointers. `LastMember` becomes
-      `LastMember { user, partition }`, checked against every partition.
+    - `user remove` edits the `members` files of the partitions it re-encrypts, deletes the user
+      files, then edits the other partitions' `members` files (those the actor is not in) after the
+      pointers. `LastMember` becomes `LastMember { user, partition }`, checked against every
+      partition.
   - `error.rs`: `PartitionInvalid(String)`, `UnknownPartition`, and `EpochStale(String)`, which
     now names the partition.
 - Test edits:
