@@ -39,3 +39,13 @@ jobs:
       - run: cargo test --workspace --locked
         env:
           GIT_DIR: /nonexistent
+
+  msrv:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Keep 1.88 in sync with rust-version in Cargo.toml.
+      - run: rustup toolchain install 1.88 --profile minimal
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - run: cargo +1.88 check --workspace --all-targets --locked
