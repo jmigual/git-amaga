@@ -469,7 +469,7 @@ fn user_add_resolves_an_email_from_the_gpg_keyring() {
 
     let add = repo.run_with_env(
         &["user", "add", "bob", "bob@example.invalid"],
-        &[("GNUPGHOME", gpg_home.path().as_os_str())],
+        &gpg_home.env(),
     );
     add.assert_success();
 

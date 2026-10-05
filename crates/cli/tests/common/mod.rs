@@ -46,6 +46,11 @@ impl Repo {
         self.dir.path()
     }
 
+    /// The `HOME`/`USERPROFILE` the children run with.
+    pub fn home(&self) -> &Path {
+        self.home.path()
+    }
+
     fn isolate(&self, command: &mut Command, cwd: &Path) {
         // A hook or `rebase -x` exports GIT_DIR, GIT_INDEX_FILE, ...; children must not inherit
         // them.
@@ -328,10 +333,11 @@ pub fn git_crypt_available(test_name: &str) -> bool {
     available
 }
 
-/// A throwaway `GNUPGHOME` for gpg tests; the agent is killed on drop. Pass the path to children
-/// only.
+/// A throwaway `GNUPGHOME` and profile (`HOME`/`USERPROFILE`) for gpg tests; every agent started
+/// under them is killed on drop. Pass [`GpgHome::env`] to children, never bare `GNUPGHOME`.
 pub struct GpgHome {
     dir: tempfile::TempDir,
+    profile: tempfile::TempDir,
 }
 
 impl GpgHome {
@@ -343,7 +349,23 @@ impl GpgHome {
         }
         Some(Self {
             dir: gnupg_tempdir(),
+            profile: home_tempdir(),
         })
+    }
+
+    /// The environment gpg and the binary need to use this keyring and agent, and nothing else.
+    pub fn env(&self) -> Vec<(&'static str, &std::ffi::OsStr)> {
+        vec![
+            ("GNUPGHOME", self.dir.path().as_os_str()),
+            ("HOME", self.profile.path().as_os_str()),
+            ("USERPROFILE", self.profile.path().as_os_str()),
+        ]
+    }
+
+    fn gpg(&self) -> Command {
+        let mut command = Command::new("gpg");
+        command.envs(self.env());
+        command
     }
 
     pub fn path(&self) -> &Path {
@@ -356,8 +378,8 @@ impl GpgHome {
     pub fn import_secret_key(&self, armored_secret: &str) {
         let key_path = self.dir.path().join("import.asc");
         std::fs::write(&key_path, armored_secret).expect("write key fixture");
-        let status = Command::new("gpg")
-            .env("GNUPGHOME", self.path())
+        let status = self
+            .gpg()
             .args(["--batch", "--import"])
             .arg(&key_path)
             .status()
@@ -368,8 +390,8 @@ impl GpgHome {
     /// Generates a passphrase-less ed25519/cv25519 key for `uid`; returns its primary
     /// fingerprint.
     pub fn generate_key(&self, uid: &str) -> String {
-        let output = Command::new("gpg")
-            .env("GNUPGHOME", self.path())
+        let output = self
+            .gpg()
             .args(["--batch", "--passphrase", "", "--status-fd", "1"])
             .args(["--quick-gen-key", uid, "default", "default", "never"])
             .output()
@@ -391,8 +413,8 @@ impl GpgHome {
         let import_path = self.dir.path().join("revoke.asc");
         std::fs::write(&import_path, cert.replace(":-----BEGIN", "-----BEGIN"))
             .expect("write revocation certificate");
-        let status = Command::new("gpg")
-            .env("GNUPGHOME", self.path())
+        let status = self
+            .gpg()
             .args(["--batch", "--import"])
             .arg(&import_path)
             .status()
@@ -402,8 +424,8 @@ impl GpgHome {
 
     /// The armored export-minimal public key for `fpr`, as stored in `.amaga/users/<name>.asc`.
     pub fn export_minimal(&self, fpr: &str) -> String {
-        let output = Command::new("gpg")
-            .env("GNUPGHOME", self.path())
+        let output = self
+            .gpg()
             .args(["--armor", "--export", "--export-options", "export-minimal"])
             .arg(fpr)
             .output()
@@ -414,8 +436,8 @@ impl GpgHome {
 
     /// Certifies `signee` with `signer` (a third-party certification on the signee's user IDs).
     pub fn certify(&self, signer: &str, signee: &str) {
-        let status = Command::new("gpg")
-            .env("GNUPGHOME", self.path())
+        let status = self
+            .gpg()
             .args(["--batch", "--yes", "--pinentry-mode", "loopback"])
             .args(["--passphrase", "", "--local-user", signer])
             .args(["--quick-sign-key", signee])
@@ -426,8 +448,8 @@ impl GpgHome {
 
     /// Deletes one key's secret material (`<fpr>!`), keeping the rest of the key.
     pub fn delete_secret_key(&self, fpr: &str) {
-        let status = Command::new("gpg")
-            .env("GNUPGHOME", self.path())
+        let status = self
+            .gpg()
             .args(["--batch", "--yes", "--delete-secret-keys"])
             .arg(format!("{fpr}!"))
             .status()
@@ -438,7 +460,7 @@ impl GpgHome {
 
 impl Drop for GpgHome {
     fn drop(&mut self) {
-        kill_gpg_agent(self.path(), None);
+        kill_gpg_agent(self.path(), Some(self.profile.path()));
     }
 }
 

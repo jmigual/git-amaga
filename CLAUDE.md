@@ -41,7 +41,8 @@ plaintext. Members hold age keys or GPG keys (a custom `pgp` age stanza).
   reference it as `ADR-NNNN` (or a plan section as `plan 5.1`).
 - Keep files focused: split a module once it passes ~400 lines excluding tests.
 - One `Error` variant per user-actionable failure; unit tests assert on variants, not message text.
-  Integration tests may assert on stable stderr tokens (the binary exits 1 for every error).
+  Integration tests may assert on stable stderr tokens (the binary exits 1 for every error;
+  clap usage errors exit 2).
 
 ## Test isolation
 - Never touch the real git config, `HOME` or `~/.gnupg`. Integration tests set

@@ -223,7 +223,7 @@ fn import_exports_holder_from_keyring_and_names_it() {
         return;
     };
     let dave = gpg_home.generate_key("Dave Smith <dave.smith@example.invalid>");
-    let env = [("GNUPGHOME", gpg_home.path().as_os_str())];
+    let env = gpg_home.env();
 
     let (repo, _keys, _identity_path) = simulated_repo(&[("default", &dave)]);
     let import = repo.run_with_env(&["import-git-crypt"], &env);
@@ -255,7 +255,7 @@ fn import_real_git_crypt_repo() {
         return;
     };
     let dave = gpg_home.generate_key("Dave <dave@example.invalid>");
-    let env = [("GNUPGHOME", gpg_home.path().as_os_str())];
+    let env = gpg_home.env();
     let repo = Repo::new();
     let keys = tempfile::tempdir().unwrap();
     let identity_path = keys.path().join("identity.txt");
@@ -327,7 +327,7 @@ fn import_does_not_reuse_a_name_a_partition_still_lists() {
         return;
     };
     let dave = gpg_home.generate_key("Dave <dave@example.invalid>");
-    let env = [("GNUPGHOME", gpg_home.path().as_os_str())];
+    let env = gpg_home.env();
     let (repo, _keys, _identity_path) = simulated_repo(&[("Prod", &dave)]);
     let members = repo.path().join(".amaga/partitions/default/members");
     std::fs::write(&members, "alice\ndave\n").unwrap();
