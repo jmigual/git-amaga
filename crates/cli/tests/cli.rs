@@ -12,6 +12,9 @@ fn keygen_writes_identity_refuses_overwrite_and_sets_global_identity() {
     let public_key = String::from_utf8_lossy(&keygen.stdout).trim().to_string();
     assert!(public_key.starts_with("age1"), "got {public_key:?}");
     assert!(identity_path.is_file());
+    for stream in [&keygen.stdout, &keygen.stderr] {
+        assert!(!String::from_utf8_lossy(stream).contains("AGE-SECRET-KEY"));
+    }
 
     #[cfg(unix)]
     {
@@ -53,6 +56,16 @@ fn keygen_with_relative_path_stores_absolute_identity() {
         "expected an absolute path, got {stored:?}"
     );
     assert!(std::path::Path::new(&stored).is_file());
+}
+
+#[test]
+fn keygen_without_a_path_writes_the_default_identity_under_home() {
+    let repo = Repo::new();
+
+    repo.run(&["keygen"]).assert_success();
+
+    let default = repo.home().join(".config/git-amaga/identity.txt");
+    assert!(default.is_file(), "expected {default:?}");
 }
 
 #[test]
@@ -283,6 +296,29 @@ fn add_refuses_tracked_plaintext() {
     assert!(!repo.path().join("secret.env.amaga").exists());
 }
 
+/// `add` checks every path before writing: a bad path later in the list adds nothing.
+#[test]
+fn add_refuses_a_later_bad_path_before_writing_any() {
+    let (repo, _identity_path) = repo_with_alice();
+
+    std::fs::write(repo.path().join("a.env"), b"a").unwrap();
+    std::fs::write(repo.path().join("b.env"), b"b").unwrap();
+    repo.git(&["add", "b.env"]).assert_success();
+
+    repo.run(&["add", "a.env", "b.env"]).assert_failure();
+    assert!(!repo.path().join("a.env.amaga").exists());
+}
+
+/// `add` given the same path twice adds it once.
+#[test]
+fn add_ignores_a_repeated_path() {
+    let (repo, _identity_path) = repo_with_alice();
+
+    std::fs::write(repo.path().join("a.env"), b"a").unwrap();
+    repo.run(&["add", "a.env", "a.env"]).assert_success();
+    assert!(repo.path().join("a.env.amaga").exists());
+}
+
 /// Test 4: `add` makes the plaintext ignored.
 #[test]
 fn add_makes_plaintext_ignored() {
@@ -336,6 +372,30 @@ fn seal_refuses_outdated_plaintext_after_pull() {
         pulled,
         "seal --force must write the local (stale) plaintext back"
     );
+}
+
+/// `seal --force` fails on `b.env` after it has read the changed plaintext of `a.env`; that
+/// plaintext must not reach the output.
+#[test]
+fn failed_seal_force_keeps_plaintext_out_of_output() {
+    let (repo, _identity_path) = repo_with_alice();
+    for name in ["a.env", "b.env"] {
+        std::fs::write(repo.path().join(name), b"v1").unwrap();
+        repo.run(&["add", name]).assert_success();
+    }
+    std::fs::write(repo.path().join("a.env"), b"TOPSECRET-PLAINTEXT").unwrap();
+    // Keep the age header (label and stanzas) readable and break the payload.
+    let broken = repo.path().join("b.env.amaga");
+    let mut bytes = std::fs::read(&broken).unwrap();
+    *bytes.last_mut().unwrap() ^= 1;
+    std::fs::write(&broken, bytes).unwrap();
+
+    let seal = repo.run(&["seal", "--force", "a.env", "b.env"]);
+
+    seal.assert_failure();
+    for stream in [&seal.stdout, &seal.stderr] {
+        assert!(!String::from_utf8_lossy(stream).contains("TOPSECRET-PLAINTEXT"));
+    }
 }
 
 /// Test 7: `open` replaces unmodified plaintext after the ciphertext changed.
@@ -817,18 +877,12 @@ fn init_with_gpg_key_file() {
     assert!(repo.path().join(".amaga/users/alice.asc").is_file());
 
     std::fs::write(repo.path().join("secret.env"), b"hello").unwrap();
-    repo.run_with_env(
-        &["add", "secret.env"],
-        &[("GNUPGHOME", gpg_home.path().as_os_str())],
-    )
-    .assert_success();
+    repo.run_with_env(&["add", "secret.env"], &gpg_home.env())
+        .assert_success();
 
     std::fs::remove_file(repo.path().join("secret.env")).unwrap();
-    repo.run_with_env(
-        &["open", "secret.env"],
-        &[("GNUPGHOME", gpg_home.path().as_os_str())],
-    )
-    .assert_success();
+    repo.run_with_env(&["open", "secret.env"], &gpg_home.env())
+        .assert_success();
     assert_eq!(
         std::fs::read(repo.path().join("secret.env")).unwrap(),
         b"hello"
@@ -875,14 +929,10 @@ fn age_member_seals_for_gpg_member_without_gpg() {
     std::fs::remove_file(repo.path().join("secret.env")).unwrap();
     let empty_global = repo.path().join("bob-gitconfig");
     std::fs::write(&empty_global, "").unwrap();
-    repo.run_with_env(
-        &["open", "secret.env"],
-        &[
-            ("GNUPGHOME", gpg_home.path().as_os_str()),
-            ("GIT_CONFIG_GLOBAL", empty_global.as_os_str()),
-        ],
-    )
-    .assert_success();
+    let mut env = gpg_home.env();
+    env.push(("GIT_CONFIG_GLOBAL", empty_global.as_os_str()));
+    repo.run_with_env(&["open", "secret.env"], &env)
+        .assert_success();
     assert_eq!(
         std::fs::read(repo.path().join("secret.env")).unwrap(),
         b"v2"
@@ -905,30 +955,20 @@ fn gpg_decrypt_failure_writes_nothing() {
         .assert_success();
 
     std::fs::write(repo.path().join("secret.env"), b"hello").unwrap();
-    repo.run_with_env(
-        &["add", "secret.env"],
-        &[("GNUPGHOME", gpg_home.path().as_os_str())],
-    )
-    .assert_success();
+    repo.run_with_env(&["add", "secret.env"], &gpg_home.env())
+        .assert_success();
     std::fs::remove_file(repo.path().join("secret.env")).unwrap();
 
     let asc = git_amaga_core::gpg::validate(&armored).unwrap();
     gpg_home.delete_secret_key(&asc.fpr);
 
-    let open = repo.run_with_env(
-        &["open", "secret.env"],
-        &[("GNUPGHOME", gpg_home.path().as_os_str())],
-    );
+    let open = repo.run_with_env(&["open", "secret.env"], &gpg_home.env());
     open.assert_failure();
     let stderr = String::from_utf8_lossy(&open.stderr);
     assert!(stderr.contains("gpg decryption failed"), "got {stderr:?}");
     assert!(stderr.contains(".amaga/epochs/"), "got {stderr:?}");
     assert!(stderr.contains("member alice"), "got {stderr:?}");
     assert!(!repo.path().join("secret.env").exists());
-}
-
-fn gnupghome_env(home: &common::GpgHome) -> [(&'static str, &std::ffi::OsStr); 1] {
-    [("GNUPGHOME", home.path().as_os_str())]
 }
 
 /// Test 33 (gpg): a unique email resolves to exactly that key, not the `malice@` substring match.
@@ -941,10 +981,7 @@ fn init_gpg_key_by_unique_email() {
     let alice = gpg_home.generate_key("Alice <alice@example.invalid>");
     gpg_home.generate_key("Malice <malice@example.invalid>");
 
-    let init = repo.run_with_env(
-        &["init", "alice", "alice@example.invalid"],
-        &gnupghome_env(&gpg_home),
-    );
+    let init = repo.run_with_env(&["init", "alice", "alice@example.invalid"], &gpg_home.env());
     init.assert_success();
 
     let stored = std::fs::read_to_string(repo.path().join(".amaga/users/alice.asc")).unwrap();
@@ -982,10 +1019,7 @@ fn gpg_lookup_refuses_ambiguous_email() {
     let one = gpg_home.generate_key("Alice One <dup@example.invalid>");
     let two = gpg_home.generate_key("Alice Two <dup@example.invalid>");
 
-    let init = repo.run_with_env(
-        &["init", "alice", "dup@example.invalid"],
-        &gnupghome_env(&gpg_home),
-    );
+    let init = repo.run_with_env(&["init", "alice", "dup@example.invalid"], &gpg_home.env());
 
     init.assert_failure();
     let stderr = String::from_utf8_lossy(&init.stderr);
@@ -1007,11 +1041,8 @@ fn gpg_lookup_skips_a_revoked_key_under_the_same_email() {
     gpg_home.revoke_key(&old);
     let new = gpg_home.generate_key("Alice New <dup@example.invalid>");
 
-    repo.run_with_env(
-        &["init", "alice", "dup@example.invalid"],
-        &gnupghome_env(&gpg_home),
-    )
-    .assert_success();
+    repo.run_with_env(&["init", "alice", "dup@example.invalid"], &gpg_home.env())
+        .assert_success();
 
     let stored = std::fs::read_to_string(repo.path().join(".amaga/users/alice.asc")).unwrap();
     assert_eq!(
@@ -1032,10 +1063,7 @@ fn gpg_lookup_reports_when_only_a_revoked_key_matches() {
     let old = gpg_home.generate_key("Alice Old <old@example.invalid>");
     gpg_home.revoke_key(&old);
 
-    let init = repo.run_with_env(
-        &["init", "alice", "old@example.invalid"],
-        &gnupghome_env(&gpg_home),
-    );
+    let init = repo.run_with_env(&["init", "alice", "old@example.invalid"], &gpg_home.env());
 
     init.assert_failure();
     let stderr = String::from_utf8_lossy(&init.stderr);
@@ -1056,7 +1084,7 @@ fn missing_asc_file_says_the_file_does_not_exist() {
     };
     gpg_home.generate_key("Alice <alice@example.invalid>");
 
-    let init = repo.run_with_env(&["init", "alice", "alcie.asc"], &gnupghome_env(&gpg_home));
+    let init = repo.run_with_env(&["init", "alice", "alcie.asc"], &gpg_home.env());
 
     init.assert_failure();
     let stderr = String::from_utf8_lossy(&init.stderr);
@@ -1073,10 +1101,7 @@ fn gpg_lookup_unknown_key_errors() {
     };
     gpg_home.generate_key("Alice <alice@example.invalid>");
 
-    let init = repo.run_with_env(
-        &["init", "bob", "bob@example.invalid"],
-        &gnupghome_env(&gpg_home),
-    );
+    let init = repo.run_with_env(&["init", "bob", "bob@example.invalid"], &gpg_home.env());
 
     init.assert_failure();
     let stderr = String::from_utf8_lossy(&init.stderr);
@@ -1098,7 +1123,7 @@ fn gpg_lookup_exports_minimal() {
     let signer = gpg_home.generate_key("Signer <signer@example.invalid>");
     gpg_home.certify(&signer, &alice);
 
-    repo.run_with_env(&["init", "alice", &alice], &gnupghome_env(&gpg_home))
+    repo.run_with_env(&["init", "alice", &alice], &gpg_home.env())
         .assert_success();
 
     let stored = std::fs::read_to_string(repo.path().join(".amaga/users/alice.asc")).unwrap();
@@ -1270,6 +1295,24 @@ fn add_refuses_tracked_plaintext_with_a_leading_colon() {
     assert!(!repo.path().join(":x.env.amaga").exists());
 }
 
+/// Glob characters are literal: a tracked `abc.env`, also in history, does not make `add a*.env`
+/// refuse or warn.
+#[cfg(unix)]
+#[test]
+fn add_treats_glob_characters_as_literal() {
+    let (repo, _identity_path) = repo_with_alice();
+    std::fs::write(repo.path().join("abc.env"), b"tracked").unwrap();
+    repo.git(&["add", "abc.env"]).assert_success();
+    repo.git(&["commit", "-m", "abc"]).assert_success();
+
+    std::fs::write(repo.path().join("a*.env"), b"v1").unwrap();
+    let add = repo.run(&["add", "a*.env"]);
+    add.assert_success();
+    let stderr = String::from_utf8_lossy(&add.stderr);
+    assert!(!stderr.contains("git history"), "got {stderr:?}");
+    assert!(repo.path().join("a*.env.amaga").exists());
+}
+
 /// Without paths, listed `*.amaga` files that are not valid secret paths are skipped.
 #[test]
 fn commands_without_paths_skip_invalid_managed_paths() {
@@ -1390,6 +1433,45 @@ fn status_lists_members_and_healthy_secrets() {
         stdout.contains("ok secret.env.amaga: in sync"),
         "got {stdout:?}"
     );
+}
+
+/// `status` runs as many git processes for three secrets as for one.
+#[cfg(unix)]
+#[test]
+fn status_runs_git_a_fixed_number_of_times() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (repo, _identity_path) = repo_with_alice();
+    let shim = tempfile::tempdir().unwrap();
+    let log = shim.path().join("log");
+    let script = format!(
+        "#!/bin/sh\necho >> '{}'\nexec '{}' \"$@\"\n",
+        log.display(),
+        common::find_on_path("git").display()
+    );
+    let git = shim.path().join("git");
+    std::fs::write(&git, script).unwrap();
+    std::fs::set_permissions(&git, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = std::env::join_paths(
+        std::iter::once(shim.path().to_path_buf())
+            .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+    )
+    .unwrap();
+    let git_runs = || {
+        let _ = std::fs::remove_file(&log);
+        repo.run_with_env(&["status"], &[("PATH", &path)])
+            .assert_success();
+        std::fs::read_to_string(&log).unwrap().lines().count()
+    };
+
+    std::fs::write(repo.path().join("a.env"), b"a").unwrap();
+    repo.run(&["add", "a.env"]).assert_success();
+    let one = git_runs();
+    for name in ["b.env", "c.env"] {
+        std::fs::write(repo.path().join(name), b"v").unwrap();
+        repo.run(&["add", name]).assert_success();
+    }
+    assert_eq!(git_runs(), one);
 }
 
 /// Test 10: a force-added (tracked) plaintext is a critical error.
@@ -1814,17 +1896,15 @@ fn one_gpg_decrypt_per_command() {
         .assert_success();
     for name in ["a.env", "b.env", "c.env"] {
         std::fs::write(repo.path().join(name), name).unwrap();
-        repo.run_with_env(&["add", name], &gnupghome_env(&gpg_home))
+        repo.run_with_env(&["add", name], &gpg_home.env())
             .assert_success();
         std::fs::remove_file(repo.path().join(name)).unwrap();
     }
 
     for command in ["open", "status"] {
         let (bin_dir, path) = gpg_wrapper(None);
-        let env = [
-            ("GNUPGHOME", gpg_home.path().as_os_str()),
-            ("PATH", path.as_os_str()),
-        ];
+        let mut env = gpg_home.env();
+        env.push(("PATH", path.as_os_str()));
         repo.run_with_env(&[command], &env).assert_success();
         let (count, logged) = gpg_decrypts(&bin_dir);
         assert_eq!(count, 1, "{command} ran gpg as: {logged}");
@@ -1832,10 +1912,8 @@ fn one_gpg_decrypt_per_command() {
 
     // A current epoch that cannot be unwrapped is tried once, not once per secret.
     let (bin_dir, path) = gpg_wrapper(Some(0));
-    let env = [
-        ("GNUPGHOME", gpg_home.path().as_os_str()),
-        ("PATH", path.as_os_str()),
-    ];
+    let mut env = gpg_home.env();
+    env.push(("PATH", path.as_os_str()));
     let rotate = repo.run_with_env(&["rotate"], &env);
     rotate.assert_failure();
     let (count, logged) = gpg_decrypts(&bin_dir);
@@ -1902,7 +1980,7 @@ fn failed_older_epoch_is_unwrapped_once() {
     std::fs::write(&key_path, gpg_home.export_minimal(&fpr)).unwrap();
     repo.run(&["init", "alice", key_path.to_str().unwrap()])
         .assert_success();
-    let gpg_env = gnupghome_env(&gpg_home);
+    let gpg_env = gpg_home.env();
     for name in ["a.env", "b.env"] {
         std::fs::write(repo.path().join(name), name).unwrap();
         repo.run_with_env(&["add", name], &gpg_env).assert_success();
@@ -1915,13 +1993,9 @@ fn failed_older_epoch_is_unwrapped_once() {
 
     // The current epoch unwraps; the older one then fails.
     let (bin_dir, path) = gpg_wrapper(Some(1));
-    let status = repo.run_with_env(
-        &["status"],
-        &[
-            ("GNUPGHOME", gpg_home.path().as_os_str()),
-            ("PATH", path.as_os_str()),
-        ],
-    );
+    let mut env = gpg_home.env();
+    env.push(("PATH", path.as_os_str()));
+    let status = repo.run_with_env(&["status"], &env);
 
     assert_eq!(status.status.code(), Some(1));
     let (count, logged) = gpg_decrypts(&bin_dir);

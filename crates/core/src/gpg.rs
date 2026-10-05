@@ -326,37 +326,48 @@ fn decrypt_with_gpg(
     Ok(FileKey::new(Box::new(key)))
 }
 
-/// `Ok(true)` when gpg reports a secret key for `primary_fpr` (plan 5.5). `Err` means gpg could
-/// not be spawned (callers treat `NotFound` as "gpg absent") or failed for a reason other than
-/// the key being missing, e.g. gpg-agent could not start; the error carries gpg's stderr.
-pub fn is_held(primary_fpr: &str) -> io::Result<bool> {
-    let output = Command::new("gpg")
-        // The classification below matches gpg's English message; gettext lets LANGUAGE override
-        // LC_ALL, so set both.
-        .env("LC_ALL", "C")
-        .env("LANGUAGE", "C")
-        .args(["--list-secret-keys", "--with-colons", primary_fpr])
-        .stdout(Stdio::null())
-        .output()?;
-    classify_secret_key_probe(
-        output.status.code(),
-        &String::from_utf8_lossy(&output.stderr),
-    )
-    .map_err(|stderr| {
-        io::Error::other(format!(
-            "gpg --list-secret-keys {primary_fpr} failed: {stderr}"
-        ))
-    })
+/// The primary fingerprints of the secret keys in the local gpg keyring, from one
+/// `gpg --list-secret-keys` call (plan 5.5). `Err` means gpg could not be spawned (callers treat
+/// `NotFound` as "gpg absent") or failed, e.g. gpg-agent could not start; it carries gpg's stderr.
+pub fn held_fingerprints() -> io::Result<HashSet<String>> {
+    list_held_fingerprints(None)
 }
 
-/// Maps the exit code and stderr of `gpg --list-secret-keys <fpr>` to held / not held; any other
-/// outcome is `Err` with gpg's stderr.
-fn classify_secret_key_probe(code: Option<i32>, stderr: &str) -> Result<bool, String> {
-    match code {
-        Some(0) => Ok(true),
-        Some(2) if stderr.contains("No secret key") => Ok(false),
-        _ => Err(stderr.trim().to_string()),
+fn list_held_fingerprints(gnupghome: Option<&std::path::Path>) -> io::Result<HashSet<String>> {
+    let mut command = Command::new("gpg");
+    command.args(["--list-secret-keys", "--with-colons"]);
+    if let Some(home) = gnupghome {
+        command.env("GNUPGHOME", home);
     }
+    let output = command.output()?;
+    if !output.status.success() {
+        return Err(io::Error::other(format!(
+            "gpg --list-secret-keys failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    Ok(primary_fingerprints(&String::from_utf8_lossy(
+        &output.stdout,
+    )))
+}
+
+// In `--with-colons` output the `fpr` record right after a `sec` record is the primary key's;
+// those after `ssb` records are subkeys'.
+fn primary_fingerprints(listing: &str) -> HashSet<String> {
+    let mut fprs = HashSet::new();
+    let mut after_sec = false;
+    for line in listing.lines() {
+        let mut fields = line.split(':');
+        match fields.next() {
+            Some("sec") => after_sec = true,
+            Some("fpr") if after_sec => {
+                after_sec = false;
+                fprs.extend(fields.nth(8).filter(|f| !f.is_empty()).map(str::to_string));
+            }
+            _ => {}
+        }
+    }
+    fprs
 }
 
 // Fixture recipes: tests/fixtures/README.md (plan 11).
@@ -402,25 +413,48 @@ mod tests {
     }
 
     #[test]
-    fn secret_key_probe_exit_zero_is_held() {
-        assert_eq!(classify_secret_key_probe(Some(0), ""), Ok(true));
+    fn primary_fingerprints_skips_subkeys() {
+        let listing = "sec:u:255:22:AAAA:1700000000:::u:::scESC:::::ed25519:::0:\n\
+fpr:::::::::1111111111111111111111111111111111111111:\n\
+grp:::::::::GRIP1:\n\
+uid:u::::1700000000::HASH1::Alice <a@x>::::::::::0:\n\
+ssb:u:255:18:BBBB:1700000000::::::e:::::cv25519::\n\
+fpr:::::::::2222222222222222222222222222222222222222:\n\
+sec:u:255:22:CCCC:1700000001:::u:::scESC:::::ed25519:::0:\n\
+fpr:::::::::3333333333333333333333333333333333333333:\n";
+        assert_eq!(
+            primary_fingerprints(listing),
+            HashSet::from([
+                "1111111111111111111111111111111111111111".to_string(),
+                "3333333333333333333333333333333333333333".to_string(),
+            ])
+        );
+        assert!(primary_fingerprints("").is_empty());
     }
 
     #[test]
-    fn secret_key_probe_no_secret_key_is_not_held() {
-        let stderr = "gpg: error reading key: No secret key\n";
-        assert_eq!(classify_secret_key_probe(Some(2), stderr), Ok(false));
-    }
+    #[cfg(unix)]
+    fn held_fingerprints_lists_imported_secret_keys_only() {
+        if !gpg_available("held_fingerprints_lists_imported_secret_keys_only") {
+            return;
+        }
+        let gnupghome = tempfile::Builder::new().tempdir_in("/tmp").unwrap();
+        let _guard = GpgAgentGuard(gnupghome.path().to_path_buf());
+        std::fs::set_permissions(
+            gnupghome.path(),
+            std::os::unix::fs::PermissionsExt::from_mode(0o700),
+        )
+        .unwrap();
+        assert!(
+            list_held_fingerprints(Some(gnupghome.path()))
+                .unwrap()
+                .is_empty()
+        );
 
-    #[test]
-    fn secret_key_probe_other_failures_carry_stderr() {
-        let stderr = "gpg: can't connect to the gpg-agent: IPC connect call failed\n\
-                      gpg: error reading key: No agent running\n";
-        let err = classify_secret_key_probe(Some(2), stderr).unwrap_err();
-        assert!(err.contains("No agent running"));
-        // Killed by a signal, or any exit code other than gpg's "not found".
-        assert!(classify_secret_key_probe(None, "").is_err());
-        assert!(classify_secret_key_probe(Some(1), "No secret key").is_err());
+        import_secret_key(gnupghome.path(), fixture("valid_cv25519_secret"));
+        let held = list_held_fingerprints(Some(gnupghome.path())).unwrap();
+        let asc = validate(fixture("valid_cv25519")).unwrap();
+        assert_eq!(held, HashSet::from([asc.primary_fpr()]));
     }
 
     #[test]

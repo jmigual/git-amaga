@@ -326,4 +326,19 @@ pub enum Error {
 
     #[error("'{0}' is not exposed in any of the selected secrets")]
     NotExposed(String),
+
+    /// Git listed a path whose name is not UTF-8; shown lossily.
+    #[error("path '{0}' is not valid UTF-8; rename it")]
+    PathNotUtf8(String),
+
+    /// Recovering from an interrupted import with `git reset --hard` would lose them (plan 7.5).
+    #[error("these files have unstaged changes; commit or stash them first: {0}")]
+    ImportUnstagedChanges(String),
+
+    #[error("repository is not initialized (run `git-amaga init`)")]
+    NotInitialized,
+
+    /// Never echoes the value: it is secret key material.
+    #[error("an age secret key was given where a public key is expected (use the `age1…` line)")]
+    AgeSecretKeyGiven,
 }

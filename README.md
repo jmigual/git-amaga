@@ -8,8 +8,8 @@ Encrypted secret files in Git, shared with a team through age or GPG keys.
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/jmigual/git-amaga/blob/main/LICENSE)
 [![MSRV 1.88](https://img.shields.io/badge/MSRV-1.88-orange.svg)](https://github.com/jmigual/git-amaga/blob/main/Cargo.toml)
 
-> **Status: 0.2.0, not audited.** The on-disk formats and commands may still change before 1.0.
-> 0.2.0 (format version 2) cannot read repositories written by 0.1.0.
+> **Status: 0.3.0, not audited.** The on-disk formats and commands may still change before 1.0.
+> 0.2.0 and later (format version 2) cannot read repositories written by 0.1.0.
 > Read [Security model and limitations](#security-model-and-limitations) before trusting it with
 > production secrets.
 
@@ -71,7 +71,7 @@ events are appended to `.amaga/audit.jsonl`, and plaintext paths are kept in a m
 re-encrypt the secrets of the partitions they cover; `user add` and `partition add` only re-wrap
 a current epoch. Epoch files are never deleted.
 
-This is format version 2 (0.2.0). It cannot read repositories written by 0.1.0 (format version
+This is format version 2 (since 0.2.0). It cannot read repositories written by 0.1.0 (format version
 1): open the secrets with 0.1.0, then run `init` anew.
 
 **Escape hatch for age members:** the tool is not needed to read a secret. Two `age -d`
@@ -353,6 +353,7 @@ fn main() -> Result<(), git_amaga_core::Error> {
 cargo fmt --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
+GIT_DIR=/nonexistent cargo test --workspace
 ```
 
 The workspace has two crates: `crates/core` (library `git-amaga-core`) and `crates/cli` (binary

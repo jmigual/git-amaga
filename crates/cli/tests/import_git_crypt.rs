@@ -204,6 +204,25 @@ fn import_refuses_locked_or_staged_files_and_writes_nothing() {
     assert_eq!(snapshot(&repo), staged_before);
 }
 
+/// An unstaged change to an imported file is refused too: the documented recovery from an
+/// interrupted import, `git reset --hard`, would discard it.
+#[test]
+fn import_refuses_unstaged_changes_and_writes_nothing() {
+    let (repo, _keys, _identity_path) = simulated_repo(&[]);
+    std::fs::write(repo.path().join("prod/db.env"), b"DB=2\n").unwrap();
+    let before = snapshot(&repo);
+
+    let import = repo.run(&["import-git-crypt"]);
+
+    import.assert_failure();
+    assert!(
+        stderr(&import).contains("prod/db.env"),
+        "{}",
+        stderr(&import)
+    );
+    assert_eq!(snapshot(&repo), before);
+}
+
 /// Test 67: a repository that already has a secret is refused.
 #[test]
 fn import_refuses_repo_with_secrets() {
@@ -223,7 +242,7 @@ fn import_exports_holder_from_keyring_and_names_it() {
         return;
     };
     let dave = gpg_home.generate_key("Dave Smith <dave.smith@example.invalid>");
-    let env = [("GNUPGHOME", gpg_home.path().as_os_str())];
+    let env = gpg_home.env();
 
     let (repo, _keys, _identity_path) = simulated_repo(&[("default", &dave)]);
     let import = repo.run_with_env(&["import-git-crypt"], &env);
@@ -255,7 +274,7 @@ fn import_real_git_crypt_repo() {
         return;
     };
     let dave = gpg_home.generate_key("Dave <dave@example.invalid>");
-    let env = [("GNUPGHOME", gpg_home.path().as_os_str())];
+    let env = gpg_home.env();
     let repo = Repo::new();
     let keys = tempfile::tempdir().unwrap();
     let identity_path = keys.path().join("identity.txt");
@@ -327,7 +346,7 @@ fn import_does_not_reuse_a_name_a_partition_still_lists() {
         return;
     };
     let dave = gpg_home.generate_key("Dave <dave@example.invalid>");
-    let env = [("GNUPGHOME", gpg_home.path().as_os_str())];
+    let env = gpg_home.env();
     let (repo, _keys, _identity_path) = simulated_repo(&[("Prod", &dave)]);
     let members = repo.path().join(".amaga/partitions/default/members");
     std::fs::write(&members, "alice\ndave\n").unwrap();

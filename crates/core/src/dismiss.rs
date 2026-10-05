@@ -3,12 +3,13 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
+use crate::Error;
+use crate::audit::Event;
 use crate::context::Context;
 use crate::files::{read_repo_file, write_repo_file};
 use crate::outcome::Outcome;
 use crate::secret::{self, Header, Recipients};
 use crate::selection::secret_paths_for;
-use crate::{Error, audit};
 
 /// `git-amaga dismiss [--user <name>]… [<path>…]` (plan 7): clears `exposed_to` for `users` (all
 /// members if empty) in the named secrets (all if none), without a plaintext change.
@@ -48,15 +49,12 @@ pub fn cmd_dismiss(dir: &Path, users: &[String], args: &[String]) -> Result<Outc
         let ciphertext = ctx.encrypt(&old.partition, &header, &old.body)?;
         write_repo_file(&ctx.root, &sp.ciphertext, &ciphertext, None)?;
         for name in &names {
-            audit::append(
-                &ctx.root.join(".amaga/audit.jsonl"),
-                &ctx.actor,
-                "exposure.dismissed",
-                Some(&sp.plaintext),
-                Some(name),
-                None,
-                None,
-            )?;
+            ctx.record(&Event {
+                event: "exposure.dismissed",
+                path: Some(&sp.plaintext),
+                user: Some(name),
+                ..Default::default()
+            })?;
         }
         outcome.changed.push(sp.ciphertext);
     }

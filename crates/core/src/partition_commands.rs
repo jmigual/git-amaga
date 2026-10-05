@@ -3,6 +3,7 @@
 use std::collections::BTreeSet;
 use std::path::Path;
 
+use crate::audit::Event;
 use crate::context::{Context, write_epoch};
 use crate::epoch::Epoch;
 use crate::files::{read_repo_file, write_repo_file};
@@ -10,7 +11,7 @@ use crate::membership::reencrypt;
 use crate::outcome::{Outcome, Rotation};
 use crate::partition::{self, Partition};
 use crate::selection::secret_paths_for;
-use crate::{Error, audit, secret, users};
+use crate::{Error, secret, users};
 
 /// `git-amaga partition create <p> <member>…` (plan 7): a new partition with a new epoch wrapped
 /// to the members. The actor need not be listed.
@@ -174,15 +175,12 @@ pub fn cmd_partition_move(dir: &Path, name: &str, args: &[String]) -> Result<Out
         let header = secret::next_header(old_epoch, false, &current.members);
         let ciphertext = ctx.encrypt(name, &header, &old.body)?;
         write_repo_file(&ctx.root, &sp.ciphertext, &ciphertext, None)?;
-        audit::append(
-            &ctx.root.join(".amaga/audit.jsonl"),
-            &ctx.actor,
-            "secret.moved",
-            Some(&sp.plaintext),
-            None,
-            Some(name),
-            None,
-        )?;
+        ctx.record(&Event {
+            event: "secret.moved",
+            path: Some(&sp.plaintext),
+            partition: Some(name),
+            ..Default::default()
+        })?;
         outcome.changed.push(sp.ciphertext);
     }
     Ok(outcome)

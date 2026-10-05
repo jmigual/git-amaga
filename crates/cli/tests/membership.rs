@@ -244,6 +244,35 @@ fn rotate_with_undecryptable_secret_changes_nothing() {
     assert_eq!(audit_events(&repo), before_audit);
 }
 
+/// A secret whose name is not UTF-8 is reported by `status` and makes `rotate` refuse, instead of
+/// being left out and staying under the old epoch.
+#[cfg(target_os = "linux")]
+#[test]
+fn non_utf8_secret_is_reported_and_blocks_rotate() {
+    use std::os::unix::ffi::OsStrExt;
+
+    let (repo, _identity_path) = repo_with_alice();
+    add_secret(&repo, "a.env", b"a1");
+    add_secret(&repo, "b.env", b"b1");
+    let odd = (repo.path()).join(std::ffi::OsStr::from_bytes(b"caf\xe9.env.amaga"));
+    std::fs::rename(repo.path().join("b.env.amaga"), &odd).unwrap();
+    let before = std::fs::read(&odd).unwrap();
+    let before_epoch = common::current_epoch_id(&repo, "default");
+
+    let status = repo.run(&["status"]);
+    assert!(stderr(&status).contains("not valid UTF-8"), "{status:?}");
+    let rotate = repo.run(&["rotate"]);
+    rotate.assert_failure();
+    assert!(stderr(&rotate).contains("not valid UTF-8"), "{rotate:?}");
+    assert_eq!(std::fs::read(&odd).unwrap(), before);
+    assert_eq!(common::current_epoch_id(&repo, "default"), before_epoch);
+
+    // Once deleted, it is skipped like a deleted UTF-8 secret, even while still tracked.
+    repo.commit_all("odd name");
+    std::fs::remove_file(&odd).unwrap();
+    repo.run(&["rotate"]).assert_success();
+}
+
 fn user_files(repo: &Repo) -> Vec<String> {
     let mut names: Vec<String> = std::fs::read_dir(repo.path().join(".amaga/users"))
         .unwrap()
@@ -469,7 +498,7 @@ fn user_add_resolves_an_email_from_the_gpg_keyring() {
 
     let add = repo.run_with_env(
         &["user", "add", "bob", "bob@example.invalid"],
-        &[("GNUPGHOME", gpg_home.path().as_os_str())],
+        &gpg_home.env(),
     );
     add.assert_success();
 
@@ -545,6 +574,48 @@ fn user_remove_locks_out_and_flags_all() {
     let last = audit.last().unwrap();
     assert!(last.contains("\"event\":\"user.removed\""), "got {last:?}");
     assert!(last.contains("\"user\":\"bob\""), "got {last:?}");
+}
+
+/// A `user remove` interrupted after its change step (user file deleted, name unlisted) but
+/// before the pointer moved is finished by a rerun, which locks the member out.
+#[test]
+fn user_remove_rerun_after_interruption_locks_out() {
+    let (repo, _identity_path, bob) = repo_with_two_members();
+    std::fs::remove_file(repo.path().join(".amaga/users/bob.txt")).unwrap();
+    let members = repo.path().join(".amaga/partitions/default/members");
+    std::fs::write(&members, "alice\n").unwrap();
+
+    repo.run(&["user", "remove", "bob"]).assert_success();
+
+    let id = common::current_epoch_id(&repo, "default");
+    assert!(!common::can_unwrap(&repo, &id, &bob));
+    for name in ["a.env.amaga", "b.env.amaga"] {
+        let ciphertext = std::fs::read(repo.path().join(name)).unwrap();
+        assert!(decrypt_as(&repo, &ciphertext, &bob).is_err(), "{name}");
+    }
+}
+
+/// A user file `user remove` cannot delete is named in the error.
+#[cfg(unix)]
+#[test]
+fn user_remove_names_a_user_file_it_cannot_delete() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (repo, _identity_path, _bob) = repo_with_two_members();
+    let users = repo.path().join(".amaga/users");
+    let mode = |mode| std::fs::set_permissions(&users, std::fs::Permissions::from_mode(mode));
+    mode(0o555).unwrap();
+    if std::fs::write(users.join("probe"), b"").is_ok() {
+        mode(0o755).unwrap();
+        eprintln!("skipping: running as a user that ignores directory permissions");
+        return;
+    }
+
+    let remove = repo.run(&["user", "remove", "bob"]);
+    mode(0o755).unwrap();
+
+    remove.assert_failure();
+    assert!(stderr(&remove).contains("bob.txt"), "{}", stderr(&remove));
 }
 
 /// Test 14: sealing an edit clears the flag only on that file, and re-encryption never clears it.

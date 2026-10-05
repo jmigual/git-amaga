@@ -1,11 +1,11 @@
 //! age identity loading and `keygen` (plan 5.5).
 
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use age::secrecy::ExposeSecret;
 use age::x25519;
-use pgp::types::KeyDetails;
 
 use crate::error::Error;
 use crate::git;
@@ -99,9 +99,17 @@ fn write_identity(dir: &Path, path: Option<&Path>) -> Result<(PathBuf, x25519::R
         identity.to_string().expose_secret()
     );
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
+        fs::create_dir_all(parent).map_err(|source| Error::IoPath {
+            path: parent.display().to_string(),
+            source,
+        })?;
     }
-    paths::atomic_write(&path, contents.as_bytes(), Some(0o600))?;
+    paths::atomic_write(&path, contents.as_bytes(), Some(0o600)).map_err(|source| {
+        Error::IoPath {
+            path: path.display().to_string(),
+            source,
+        }
+    })?;
 
     Ok((path, public))
 }
@@ -109,11 +117,12 @@ fn write_identity(dir: &Path, path: Option<&Path>) -> Result<(PathBuf, x25519::R
 /// The member whose age key matches an identity, else the first member holding a GPG key
 /// (plan 5.5).
 /// Also returns the held GPG subkey fingerprints (empty, without probing gpg, on an age match).
-/// `is_held` is injected so tests need no real gpg.
+/// `held` lists the primary fingerprints of the local secret keys and is called at most once; it
+/// is injected so tests need no real gpg.
 pub fn find_actor(
     members: &users::Members,
     age_identities: &[x25519::Identity],
-    is_held: impl Fn(&str) -> std::io::Result<bool>,
+    held: impl FnOnce() -> std::io::Result<HashSet<String>>,
 ) -> Result<(String, Vec<String>), Error> {
     let age_publics: Vec<String> = age_identities
         .iter()
@@ -131,21 +140,21 @@ pub fn find_actor(
 
     let mut gpg_absent = false;
     let mut probe_error = None;
+    let mut held_fprs = HashSet::new();
+    if members.values().any(|m| m.asc.is_some()) {
+        match held() {
+            Ok(fprs) => held_fprs = fprs,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => gpg_absent = true,
+            Err(e) => probe_error = Some(e),
+        }
+    }
     let mut first_held = None;
     let mut gpg_fprs = Vec::new();
     for (name, member) in members {
         let Some(asc) = &member.asc else { continue };
-        let primary_fpr = format!("{:X}", asc.key.primary_key.fingerprint());
-        match is_held(&primary_fpr) {
-            Ok(true) => {
-                first_held.get_or_insert(name);
-                gpg_fprs.extend(asc.subkey_fprs());
-            }
-            Ok(false) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => gpg_absent = true,
-            Err(e) => {
-                probe_error.get_or_insert(e);
-            }
+        if held_fprs.contains(&asc.primary_fpr()) {
+            first_held.get_or_insert(name);
+            gpg_fprs.extend(asc.subkey_fprs());
         }
     }
 
@@ -197,7 +206,7 @@ mod tests {
             },
         );
 
-        let (actor, gpg_fprs) = find_actor(&members, std::slice::from_ref(&identity), |_| {
+        let (actor, gpg_fprs) = find_actor(&members, std::slice::from_ref(&identity), || {
             panic!("gpg should not be probed when an age identity matches")
         })
         .unwrap();
@@ -209,6 +218,7 @@ mod tests {
     fn find_actor_falls_back_to_held_gpg_member() {
         let asc =
             crate::gpg::validate(include_str!("../tests/fixtures/valid_cv25519.asc")).unwrap();
+        let held = asc.primary_fpr();
         let mut members = users::Members::new();
         members.insert(
             "bob".to_string(),
@@ -218,14 +228,14 @@ mod tests {
             },
         );
 
-        let (actor, _) = find_actor(&members, &[], |_| Ok(true)).unwrap();
+        let (actor, _) = find_actor(&members, &[], || Ok(HashSet::from([held]))).unwrap();
         assert_eq!(actor, "bob");
     }
 
     #[test]
     fn find_actor_returns_every_subkey_fpr_of_held_gpg_members_only() {
         let held = crate::gpg::validate(include_str!("../tests/fixtures/two_subkeys.asc")).unwrap();
-        let held_primary = format!("{:X}", held.key.primary_key.fingerprint());
+        let held_primary = held.primary_fpr();
         let all_subkeys = held.subkey_fprs();
         assert!(all_subkeys.len() > 1);
         let other = crate::gpg::validate(include_str!("../tests/fixtures/valid_rsa.asc")).unwrap();
@@ -245,12 +255,38 @@ mod tests {
             },
         );
 
-        let (actor, mut fprs) = find_actor(&members, &[], |fpr| Ok(fpr == held_primary)).unwrap();
+        let (actor, mut fprs) =
+            find_actor(&members, &[], || Ok(HashSet::from([held_primary]))).unwrap();
         fprs.sort();
         let mut expected = all_subkeys;
         expected.sort();
         assert_eq!(actor, "alice");
         assert_eq!(fprs, expected);
+    }
+
+    #[test]
+    fn find_actor_lists_the_gpg_keyring_once_for_all_members() {
+        let mut members = users::Members::new();
+        for (name, fixture) in [
+            ("alice", include_str!("../tests/fixtures/valid_cv25519.asc")),
+            ("bob", include_str!("../tests/fixtures/valid_rsa.asc")),
+        ] {
+            members.insert(
+                name.to_string(),
+                users::Member {
+                    age_keys: Vec::new(),
+                    asc: Some(crate::gpg::validate(fixture).unwrap()),
+                },
+            );
+        }
+
+        let calls = std::cell::Cell::new(0);
+        let result = find_actor(&members, &[], || {
+            calls.set(calls.get() + 1);
+            Ok(HashSet::new())
+        });
+        assert!(matches!(result, Err(Error::NotAMember(_))));
+        assert_eq!(calls.get(), 1);
     }
 
     #[test]
@@ -265,7 +301,7 @@ mod tests {
             },
         );
 
-        let err = find_actor(&members, &[], |_| Ok(false)).unwrap_err();
+        let err = find_actor(&members, &[], || Ok(HashSet::new())).unwrap_err();
         match err {
             Error::NotAMember(summary) => assert!(summary.contains("alice")),
             other => panic!("expected NotAMember, got {other:?}"),
@@ -314,7 +350,7 @@ mod tests {
             },
         );
 
-        let err = find_actor(&members, &[], |_| {
+        let err = find_actor(&members, &[], || {
             Err(std::io::Error::other("gpg: No agent running"))
         })
         .unwrap_err();
@@ -337,7 +373,7 @@ mod tests {
             },
         );
 
-        let err = find_actor(&members, &[], |_| {
+        let err = find_actor(&members, &[], || {
             Err(std::io::Error::from(std::io::ErrorKind::NotFound))
         })
         .unwrap_err();
@@ -396,6 +432,16 @@ mod tests {
 
         let err = write_identity(dir.path(), Some(&path)).unwrap_err();
         assert!(matches!(err, Error::IdentityExists(_)));
+    }
+
+    #[test]
+    fn write_identity_names_the_directory_it_cannot_create() {
+        let dir = tempfile::tempdir().unwrap();
+        let blocker = dir.path().join("blocker");
+        fs::write(&blocker, "").unwrap();
+
+        let err = write_identity(dir.path(), Some(&blocker.join("identity.txt"))).unwrap_err();
+        assert!(matches!(err, Error::IoPath { .. }));
     }
 
     #[cfg(unix)]

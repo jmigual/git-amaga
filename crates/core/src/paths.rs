@@ -80,6 +80,29 @@ fn is_absolute_like(arg: &str) -> bool {
     bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
 }
 
+fn is_managed_name(component: &str) -> bool {
+    component.eq_ignore_ascii_case(".git")
+        || component.eq_ignore_ascii_case(".amaga")
+        || (cfg!(windows) && is_ntfs_alias(component))
+}
+
+// Other spellings NTFS resolves to `.git` or `.amaga`: trailing dots and spaces are dropped, an
+// alternate data stream (`:`) names the same file, and `GIT~1`..`GIT~4` are 8.3 short names (as
+// in git's own check). Pure so it
+// is tested on every platform; `is_managed_name` applies it on Windows only, where a name like
+// `.git.` is not an ordinary file.
+fn is_ntfs_alias(component: &str) -> bool {
+    let stem = component.split(':').next().unwrap_or_default();
+    let stem = stem.trim_end_matches(['.', ' ']);
+    let stem = stem.to_ascii_lowercase();
+    let short = |name: &str| {
+        stem.strip_prefix(name)
+            .and_then(|rest| rest.strip_prefix('~'))
+            .is_some_and(|digit| matches!(digit, "1" | "2" | "3" | "4"))
+    };
+    stem == ".git" || stem == ".amaga" || short("git") || short("amaga")
+}
+
 /// Maps a `<path>` argument (plaintext or `.amaga` form) to repository-relative paths (plan 7):
 /// resolved against `prefix`; rejects paths outside the repo, with control characters, under
 /// `.git/`/`.amaga/`, or whose plaintext name ends in `.amaga`/`.amaga-tmp`.
@@ -108,10 +131,7 @@ pub fn resolve_arg(prefix: &str, arg: &str) -> Result<SecretPath, Error> {
     if components.is_empty() {
         return Err(Error::PathOutsideRepo(arg.to_string()));
     }
-    if components
-        .iter()
-        .any(|c| c.eq_ignore_ascii_case(".git") || c.eq_ignore_ascii_case(".amaga"))
-    {
+    if components.iter().any(|c| is_managed_name(c)) {
         return Err(Error::PathManaged(arg.to_string()));
     }
 
@@ -198,7 +218,10 @@ pub fn ensure_gitignore_line(gitignore_path: &Path, line: &str) -> Result<(), Er
             lines.push(GITIGNORE_END);
         }
     }
-    atomic_write(gitignore_path, &join_lines(&lines), None)?;
+    atomic_write(gitignore_path, &join_lines(&lines), None).map_err(|source| Error::IoPath {
+        path: gitignore_path.display().to_string(),
+        source,
+    })?;
     Ok(())
 }
 
@@ -234,7 +257,10 @@ pub fn ensure_lines_present(path: &Path, lines: &[&str]) -> Result<(), Error> {
     }
 
     file_lines.extend(missing);
-    atomic_write(path, &join_lines(&file_lines), None)?;
+    atomic_write(path, &join_lines(&file_lines), None).map_err(|source| Error::IoPath {
+        path: path.display().to_string(),
+        source,
+    })?;
     Ok(())
 }
 
@@ -342,6 +368,46 @@ mod tests {
             resolve_arg("", ".GIT/config").err().unwrap(),
             Error::PathManaged(_)
         ));
+    }
+
+    #[test]
+    fn ntfs_aliases_of_the_managed_directories_are_recognised() {
+        for name in [
+            ".git.",
+            ".git ",
+            ".GIT. .",
+            "GIT~1",
+            "git~1 .",
+            "GIT~4",
+            "amaga~3",
+            ".git::$INDEX_ALLOCATION",
+            ".amaga.",
+            "AMAGA~1",
+        ] {
+            assert!(is_ntfs_alias(name), "{name:?}");
+        }
+        for name in [
+            ".gitignore",
+            ".github",
+            "a.git",
+            "git~10",
+            "git~5",
+            "amaga~0",
+            "git",
+            "prod.env",
+        ] {
+            assert!(!is_ntfs_alias(name), "{name:?}");
+        }
+    }
+
+    #[test]
+    fn resolve_arg_applies_the_ntfs_aliases_on_windows_only() {
+        let result = resolve_arg("", ".git./config");
+        if cfg!(windows) {
+            assert!(matches!(result.err().unwrap(), Error::PathManaged(_)));
+        } else {
+            assert!(result.is_ok());
+        }
     }
 
     #[test]
