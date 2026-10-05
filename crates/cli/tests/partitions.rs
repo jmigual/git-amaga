@@ -293,6 +293,33 @@ fn user_remove_rerun_after_interruption_still_warns() {
     ));
 }
 
+/// `user remove` of a user listed only in partitions the actor is not in re-encrypts nothing;
+/// the name is unlisted and reported.
+#[test]
+fn user_remove_of_a_user_only_in_other_partitions_unlists_and_warns() {
+    let (repo, _alice_identity, _bob_config) = repo_with_alice_and_bob();
+    let (carol_key, _carol_config) = second_identity(&repo, "carol");
+    repo.run(&["user", "add", "carol", &carol_key])
+        .assert_success();
+    repo.run(&["partition", "create", "production", "bob", "carol"])
+        .assert_success();
+    repo.run(&["partition", "remove", "default", "bob"])
+        .assert_success();
+
+    let remove = repo.run(&["user", "remove", "bob"]);
+    remove.assert_success();
+    assert!(
+        stderr(&remove).contains("production"),
+        "{}",
+        stderr(&remove)
+    );
+    assert_eq!(
+        read(&repo, ".amaga/partitions/production/members"),
+        b"carol\n"
+    );
+    assert!(!repo.path().join(".amaga/users/bob.txt").exists());
+}
+
 /// Test 58: the last member of a partition cannot be removed by `user remove`.
 #[test]
 fn last_partition_member_cannot_be_removed_by_user_remove() {
