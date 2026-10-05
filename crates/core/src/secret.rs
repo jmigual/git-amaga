@@ -220,7 +220,7 @@ fn hash_to_hex(h: &Hash) -> String {
 }
 
 fn hash_from_hex(s: &str) -> Option<Hash> {
-    if s.len() != 64 {
+    if s.len() != 64 || !s.is_ascii() {
         return None;
     }
     let mut out = [0u8; 32];
@@ -233,8 +233,8 @@ fn hash_from_hex(s: &str) -> Option<Hash> {
 /// Loads the base file (plan 5.5). A missing file is empty, and an unparseable line is skipped:
 /// a lost entry only degrades that path to the safe `Conflict` state.
 pub fn load_base(path: &Path) -> Result<BaseMap, Error> {
-    let contents = match std::fs::read_to_string(path) {
-        Ok(c) => c,
+    let contents = match std::fs::read(path) {
+        Ok(c) => String::from_utf8_lossy(&c).into_owned(),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(BaseMap::new()),
         Err(source) => {
             return Err(Error::IoPath {
@@ -618,5 +618,22 @@ mod tests {
         let loaded = load_base(&path).unwrap();
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded["secrets/b.env"], hash(b"b"));
+    }
+
+    #[test]
+    fn load_base_skips_non_ascii_and_non_utf8_lines() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("amaga-base");
+        // 64 bytes, but the 2-byte slices of the old parser split a character.
+        let non_ascii = format!("a{}a", "\u{e9}".repeat(31));
+        let mut contents = format!("{non_ascii} secrets/a.env\n").into_bytes();
+        contents.extend_from_slice(b"\xff\xfe secrets/b.env\n");
+        contents
+            .extend_from_slice(format!("{} secrets/c.env\n", hash_to_hex(&hash(b"c"))).as_bytes());
+        std::fs::write(&path, contents).unwrap();
+
+        let loaded = load_base(&path).unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded["secrets/c.env"], hash(b"c"));
     }
 }
