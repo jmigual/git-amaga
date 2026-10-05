@@ -236,6 +236,63 @@ fn user_remove_rotates_only_the_actors_partitions() {
     assert_eq!(header.exposed_to.keys().collect::<Vec<_>>(), ["bob"]);
 }
 
+/// An interrupted `user remove` leaves the partitions the actor is not in still listing the
+/// user, so the rerun reports them again.
+#[cfg(unix)]
+#[test]
+fn user_remove_rerun_after_interruption_still_warns() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (repo, _alice_identity, _bob_config) = repo_with_alice_and_bob();
+    let (carol_key, carol_config) = second_identity(&repo, "carol");
+    repo.run(&["user", "add", "carol", &carol_key])
+        .assert_success();
+    repo.run(&["partition", "create", "production", "bob", "carol"])
+        .assert_success();
+    std::fs::write(repo.path().join("p.env"), b"prod").unwrap();
+    let production = ["add", "--partition", "production", "p.env"];
+    run_as(&repo, &carol_config, &production).assert_success();
+    add_secret(&repo, "d.env", b"dev");
+    let epochs = repo.path().join(".amaga/epochs");
+
+    // Restores the mode on drop so a panic cannot leave a read-only directory that the temp
+    // dir cleanup fails on.
+    struct Restore(PathBuf);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let _ = std::fs::set_permissions(&self.0, std::fs::Permissions::from_mode(0o755));
+        }
+    }
+
+    std::fs::set_permissions(&epochs, std::fs::Permissions::from_mode(0o555)).unwrap();
+    let restore = Restore(epochs.clone());
+    if std::fs::write(epochs.join("probe"), b"").is_ok() {
+        eprintln!("skipping: running as a user that ignores directory permissions");
+        return;
+    }
+
+    repo.run(&["user", "remove", "bob"]).assert_failure();
+    assert_eq!(
+        read(&repo, ".amaga/partitions/production/members"),
+        b"bob\ncarol\n"
+    );
+
+    drop(restore);
+    let rerun = repo.run(&["user", "remove", "bob"]);
+    rerun.assert_success();
+    assert!(stderr(&rerun).contains("production"), "{}", stderr(&rerun));
+    assert_eq!(
+        read(&repo, ".amaga/partitions/production/members"),
+        b"carol\n"
+    );
+    let bob = load_identity(&repo.path().join("bob-identity.txt"));
+    assert!(!can_unwrap(
+        &repo,
+        &current_epoch_id(&repo, "default"),
+        &bob
+    ));
+}
+
 /// Test 58: the last member of a partition cannot be removed by `user remove`.
 #[test]
 fn last_partition_member_cannot_be_removed_by_user_remove() {

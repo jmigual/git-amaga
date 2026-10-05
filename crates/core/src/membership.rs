@@ -222,13 +222,9 @@ pub fn cmd_user_remove(dir: &Path, name: &str) -> Result<Rotation, Error> {
     if files.is_empty() && selected.is_empty() && others.is_empty() {
         return Err(Error::UserNotFound(name.to_string()));
     }
-    let warnings = others
-        .into_iter()
-        .map(Warning::PartitionNotRotated)
-        .collect();
     let written = reencrypt(&mut ctx, &selected, |ctx| {
         for (p, partition) in &mut ctx.partitions {
-            if partition.members.remove(name) {
+            if partition.members.remove(name) && !others.contains(p) {
                 partition::write_members(&ctx.root, p, &partition.members)?;
             }
         }
@@ -241,6 +237,14 @@ pub fn cmd_user_remove(dir: &Path, name: &str) -> Result<Rotation, Error> {
         ctx.members.remove(name);
         ctx.audit_event("user.removed", Some(name), None)
     })?;
+    // Unlisted last, so an interrupted run leaves them for the rerun to report (plan 7.1).
+    for p in &others {
+        partition::write_members(&ctx.root, p, &ctx.partitions[p].members)?;
+    }
+    let warnings = others
+        .into_iter()
+        .map(Warning::PartitionNotRotated)
+        .collect();
     Ok(Rotation { written, warnings })
 }
 
