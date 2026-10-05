@@ -94,12 +94,12 @@ enum Command {
         #[arg(long = "partition", value_name = "NAME")]
         partitions: Vec<String>,
     },
-    /// Clear NEEDS ROTATION without changing the plaintext.
+    /// Clear NEEDS ROTATION without changing the plaintext. Name at least one path or --user.
     Dismiss {
-        /// Members to dismiss (default: every member flagged in the selected secrets).
+        /// Members to dismiss (with paths only: every member flagged in those secrets).
         #[arg(long = "user", value_name = "NAME")]
         users: Vec<String>,
-        /// Plaintext or `.amaga` paths (default: every secret).
+        /// Plaintext or `.amaga` paths (with --user only: every secret).
         paths: Vec<String>,
     },
     /// Migrate an unlocked git-crypt repository: its files become secrets and its key holders
