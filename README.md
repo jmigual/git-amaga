@@ -110,6 +110,12 @@ chmod +x git-amaga && sudo mv git-amaga /usr/local/bin/
 Invoke-WebRequest -OutFile git-amaga.exe https://github.com/jmigual/git-amaga/releases/latest/download/git-amaga-x86_64-pc-windows-msvc.exe
 ```
 
+**With [cargo-binstall](https://github.com/cargo-bins/cargo-binstall)** (downloads the prebuilt binary):
+
+```sh
+cargo binstall git-amaga
+```
+
 **From crates.io** (Rust 1.88+):
 
 ```sh
