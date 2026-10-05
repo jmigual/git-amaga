@@ -22,6 +22,15 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # publish and crates-io both need build, so a mismatch stops the whole release.
+      - name: Check the tag matches the workspace version
+        if: runner.os == 'Linux'
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 --locked | jq -r '.packages[] | select(.name == "git-amaga") | .version')
+          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "tag $GITHUB_REF_NAME does not match workspace version v$version" >&2
+            exit 1
+          fi
       - name: Install GnuPG (Windows)
         if: runner.os == 'Windows'
         uses: ./.github/actions/install-gnupg
@@ -61,13 +70,6 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Check the tag matches the workspace version
-        run: |
-          version=$(cargo metadata --no-deps --format-version 1 --locked | jq -r '.packages[] | select(.name == "git-amaga") | .version')
-          if [ "$GITHUB_REF_NAME" != "v$version" ]; then
-            echo "tag $GITHUB_REF_NAME does not match workspace version v$version" >&2
-            exit 1
-          fi
       # If core uploads and the CLI then fails, a re-run fails on core with "already exists":
       # recover by hand with `cargo publish -p git-amaga --locked`.
       - run: cargo publish --workspace --locked
