@@ -98,10 +98,14 @@ pub fn cmd_add(
     let mut ctx = Context::load(dir)?;
     let mut outcome = Outcome::default();
 
-    // Every partition is checked before anything is written (plan 5.7, 7).
+    // Every path and partition is checked before anything is written (plan 5.7, 7).
+    let mut seen = BTreeSet::new();
     let mut chosen = Vec::new();
     for arg in args {
         let sp = paths::resolve_arg(&ctx.prefix, arg)?;
+        if !seen.insert(sp.ciphertext.clone()) {
+            continue;
+        }
         let partition = match partition {
             Some(p) => p.to_string(),
             None => partition::attribute(&ctx.root, &sp.plaintext)?
@@ -109,10 +113,6 @@ pub fn cmd_add(
         };
         ctx.require_member(&partition)?;
         ctx.require_up_to_date(&partition)?;
-        chosen.push((sp, partition));
-    }
-
-    for (sp, partition) in chosen {
         let meta =
             fs::symlink_metadata(ctx.root.join(&sp.plaintext)).map_err(|source| Error::IoPath {
                 path: sp.plaintext.clone(),
@@ -140,7 +140,10 @@ pub fn cmd_add(
                 .warnings
                 .push(Warning::ExposureHistoryDropped(sp.ciphertext.clone()));
         }
+        chosen.push((sp, partition));
+    }
 
+    for (sp, partition) in chosen {
         ensure_ignored(&ctx.root, &sp.plaintext)?;
         let body = read_repo_file(&ctx.root, &sp.plaintext)?;
         let header = secret::next_header(None, false, &ctx.current_epoch(&partition)?.members);
