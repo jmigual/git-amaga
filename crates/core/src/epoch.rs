@@ -127,7 +127,12 @@ pub fn list(root: &Path) -> Result<Vec<String>, Error> {
     };
     let mut ids = Vec::new();
     for entry in entries {
-        let name = entry?.file_name();
+        let name = entry
+            .map_err(|source| Error::IoPath {
+                path: DIR.into(),
+                source,
+            })?
+            .file_name();
         if let Some(id) = name.to_str().and_then(|n| n.strip_suffix(".age"))
             && x25519::Recipient::from_str(id).is_ok_and(|key| key.to_string() == id)
         {

@@ -334,4 +334,11 @@ pub enum Error {
     /// Recovering from an interrupted import with `git reset --hard` would lose them (plan 7.5).
     #[error("these files have unstaged changes; commit or stash them first: {0}")]
     ImportUnstagedChanges(String),
+
+    #[error("repository is not initialized (run `git-amaga init`)")]
+    NotInitialized,
+
+    /// Never echoes the value: it is secret key material.
+    #[error("an age secret key was given where a public key is expected (use the `age1…` line)")]
+    AgeSecretKeyGiven,
 }

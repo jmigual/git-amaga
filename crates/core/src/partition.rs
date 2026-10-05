@@ -69,7 +69,7 @@ pub fn load(root: &Path, users: &Members) -> Result<Partitions, Error> {
     match fs::read_dir(root.join(DIR)) {
         Ok(entries) => {
             for entry in entries {
-                let entry = entry?;
+                let entry = entry.map_err(io_error(DIR.into()))?;
                 names.push((entry.file_name().to_string_lossy().into_owned(), entry));
             }
         }

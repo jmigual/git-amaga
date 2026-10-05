@@ -296,6 +296,29 @@ fn add_refuses_tracked_plaintext() {
     assert!(!repo.path().join("secret.env.amaga").exists());
 }
 
+/// `add` checks every path before writing: a bad path later in the list adds nothing.
+#[test]
+fn add_refuses_a_later_bad_path_before_writing_any() {
+    let (repo, _identity_path) = repo_with_alice();
+
+    std::fs::write(repo.path().join("a.env"), b"a").unwrap();
+    std::fs::write(repo.path().join("b.env"), b"b").unwrap();
+    repo.git(&["add", "b.env"]).assert_success();
+
+    repo.run(&["add", "a.env", "b.env"]).assert_failure();
+    assert!(!repo.path().join("a.env.amaga").exists());
+}
+
+/// `add` given the same path twice adds it once.
+#[test]
+fn add_ignores_a_repeated_path() {
+    let (repo, _identity_path) = repo_with_alice();
+
+    std::fs::write(repo.path().join("a.env"), b"a").unwrap();
+    repo.run(&["add", "a.env", "a.env"]).assert_success();
+    assert!(repo.path().join("a.env.amaga").exists());
+}
+
 /// Test 4: `add` makes the plaintext ignored.
 #[test]
 fn add_makes_plaintext_ignored() {

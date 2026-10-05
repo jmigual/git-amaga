@@ -2,6 +2,7 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
 
+use crate::audit::Event;
 use crate::context::{Context, Decrypted, write_epoch};
 use crate::epoch::Epoch;
 use crate::files::{ensure_ignored, read_plaintext, read_repo_file, write_repo_file};
@@ -55,7 +56,10 @@ pub fn cmd_init(dir: &Path, name: &str, keys: &[String]) -> Result<Option<GpgKey
     paths::ensure_gitignore_line(&root.join(".gitignore"), "*.amaga-tmp")?;
 
     let users_dir = amaga_dir.join("users");
-    fs::create_dir_all(&users_dir)?;
+    fs::create_dir_all(&users_dir).map_err(|source| Error::IoPath {
+        path: users_dir.display().to_string(),
+        source,
+    })?;
     users::write_member(&users_dir, name, &resolved)?;
 
     let members = users::Members::from([(name.to_string(), users::member_from_keys(&resolved))]);
@@ -72,11 +76,12 @@ pub fn cmd_init(dir: &Path, name: &str, keys: &[String]) -> Result<Option<GpgKey
     audit::append(
         &amaga_dir.join("audit.jsonl"),
         name,
-        "init",
-        None,
-        None,
-        None,
-        gpg_info,
+        &Event {
+            event: "init",
+            gpg_fpr: gpg_info.map(|(fpr, _)| fpr),
+            gpg_uid: gpg_info.map(|(_, uid)| uid),
+            ..Default::default()
+        },
     )?;
 
     Ok(resolved.gpg)
@@ -93,10 +98,14 @@ pub fn cmd_add(
     let mut ctx = Context::load(dir)?;
     let mut outcome = Outcome::default();
 
-    // Every partition is checked before anything is written (plan 5.7, 7).
+    // Every path and partition is checked before anything is written (plan 5.7, 7).
+    let mut seen = BTreeSet::new();
     let mut chosen = Vec::new();
     for arg in args {
         let sp = paths::resolve_arg(&ctx.prefix, arg)?;
+        if !seen.insert(sp.ciphertext.clone()) {
+            continue;
+        }
         let partition = match partition {
             Some(p) => p.to_string(),
             None => partition::attribute(&ctx.root, &sp.plaintext)?
@@ -104,10 +113,6 @@ pub fn cmd_add(
         };
         ctx.require_member(&partition)?;
         ctx.require_up_to_date(&partition)?;
-        chosen.push((sp, partition));
-    }
-
-    for (sp, partition) in chosen {
         let meta =
             fs::symlink_metadata(ctx.root.join(&sp.plaintext)).map_err(|source| Error::IoPath {
                 path: sp.plaintext.clone(),
@@ -135,7 +140,10 @@ pub fn cmd_add(
                 .warnings
                 .push(Warning::ExposureHistoryDropped(sp.ciphertext.clone()));
         }
+        chosen.push((sp, partition));
+    }
 
+    for (sp, partition) in chosen {
         ensure_ignored(&ctx.root, &sp.plaintext)?;
         let body = read_repo_file(&ctx.root, &sp.plaintext)?;
         let header = secret::next_header(None, false, &ctx.current_epoch(&partition)?.members);

@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
+use crate::audit::Event;
 use crate::epoch::{self, Epoch};
 use crate::failure::{EpochFailure, is_not_a_recipient};
 use crate::files::read_repo_file;
@@ -23,6 +24,8 @@ pub(crate) struct Context {
     pub(crate) base: secret::BaseMap,
     epochs: RefCell<BTreeMap<String, Rc<Epoch>>>,
     failures: RefCell<BTreeMap<String, EpochFailure>>,
+    // Epochs the age-only pass failed on, so each is age-tried once per command (plan 5.6).
+    age_failed: RefCell<BTreeSet<String>>,
 }
 
 /// A decrypted secret: its header and body, the epoch that opened it and its partition.
@@ -69,7 +72,8 @@ impl Context {
             Some(path) => identity::load_identity_file(&path)?,
             None => Vec::new(),
         };
-        let (actor, gpg_fprs) = identity::find_actor(&members, &age_identities, gpg::is_held)?;
+        let (actor, gpg_fprs) =
+            identity::find_actor(&members, &age_identities, gpg::held_fingerprints)?;
         let base_path = git::git_path(dir, "amaga-base")?;
         Ok(Self {
             prefix: git::show_prefix(dir)?,
@@ -83,6 +87,7 @@ impl Context {
             gpg_fprs,
             epochs: RefCell::default(),
             failures: RefCell::default(),
+            age_failed: RefCell::default(),
         })
     }
 
@@ -122,6 +127,12 @@ impl Context {
 
     // Unwraps epoch `id` once per command, success or failure (plan 5.6).
     fn epoch(&self, id: &str) -> Result<Rc<Epoch>, Error> {
+        self.unwrap_epoch(id, true)
+    }
+
+    // Without `with_gpg` only the age identities try, so no gpg-agent prompt; a failure is then
+    // not an epoch failure, as a gpg attempt may still succeed.
+    fn unwrap_epoch(&self, id: &str, with_gpg: bool) -> Result<Rc<Epoch>, Error> {
         if let Some(epoch) = self.epochs.borrow().get(id) {
             return Ok(Rc::clone(epoch));
         }
@@ -136,7 +147,9 @@ impl Context {
             .iter()
             .map(|i| i as &dyn age::Identity)
             .collect();
-        identities.push(&gpg_identity);
+        if with_gpg {
+            identities.push(&gpg_identity);
+        }
         let unwrapped = read_repo_file(&self.root, &path)
             .and_then(|bytes| epoch::unwrap(id, &bytes, &identities))
             .map_err(|source| match source {
@@ -156,8 +169,12 @@ impl Context {
                 Ok(epoch)
             }
             Err(e) => {
-                let failure = EpochFailure::of(&epoch::file_path(id), &e);
-                self.failures.borrow_mut().insert(id.to_string(), failure);
+                if with_gpg {
+                    let failure = EpochFailure::of(&epoch::file_path(id), &e);
+                    self.failures.borrow_mut().insert(id.to_string(), failure);
+                } else {
+                    self.age_failed.borrow_mut().insert(id.to_string());
+                }
                 Err(e)
             }
         }
@@ -206,7 +223,8 @@ impl Context {
         self.epoch(&self.partition(p)?.current.to_string())
     }
 
-    // The label's current epoch first, then the others in name order (plan 5.6).
+    // The label's current epoch first, then the others in name order, those an age identity
+    // unwraps before those that need gpg: a smartcard prompts once per gpg unwrap (plan 5.6).
     pub(crate) fn decrypt(&self, path: &str, ciphertext: &[u8]) -> Result<Decrypted, Error> {
         let partition = secret::label_of(path, ciphertext)?;
         if !self.in_partition(&partition)? {
@@ -217,36 +235,45 @@ impl Context {
         }
         self.current_epoch(&partition)?;
         let current_id = self.partition(&partition)?.current.to_string();
-        let others = epoch::list(&self.root)?
-            .into_iter()
-            .filter(|id| *id != current_id);
+        let candidates: Vec<String> = std::iter::once(current_id.clone())
+            .chain(
+                epoch::list(&self.root)?
+                    .into_iter()
+                    .filter(|id| *id != current_id),
+            )
+            .collect();
         let undecryptable = |source| Error::SecretUndecryptable {
             path: path.to_string(),
             source: Box::new(source),
         };
         // The first reason an epoch could not be unwrapped, other than "not wrapped to us".
         let mut unwrap_failure = None;
-        for id in std::iter::once(current_id.clone()).chain(others) {
-            let epoch = match self.epoch(&id) {
-                Ok(epoch) => epoch,
-                Err(e) => {
-                    if !is_not_a_recipient(&e) {
-                        unwrap_failure.get_or_insert(e);
-                    }
+        for with_gpg in [false, true] {
+            for id in &candidates {
+                if !with_gpg && self.age_failed.borrow().contains(id) {
                     continue;
                 }
-            };
-            match open_with(ciphertext, &epoch) {
-                Ok(Some((header, body))) => {
-                    return Ok(Decrypted {
-                        header,
-                        body,
-                        epoch,
-                        partition,
-                    });
+                let epoch = match self.unwrap_epoch(id, with_gpg) {
+                    Ok(epoch) => epoch,
+                    Err(e) => {
+                        if with_gpg && !is_not_a_recipient(&e) {
+                            unwrap_failure.get_or_insert(e);
+                        }
+                        continue;
+                    }
+                };
+                match open_with(ciphertext, &epoch) {
+                    Ok(Some((header, body))) => {
+                        return Ok(Decrypted {
+                            header,
+                            body,
+                            epoch,
+                            partition,
+                        });
+                    }
+                    Ok(None) => {}
+                    Err(e) => return Err(undecryptable(e)),
                 }
-                Ok(None) => {}
-                Err(e) => return Err(undecryptable(e)),
             }
         }
         Err(unwrap_failure
@@ -308,16 +335,16 @@ impl Context {
         Ok(())
     }
 
+    pub(crate) fn record(&self, event: &Event) -> Result<(), Error> {
+        audit::append(&self.root.join(".amaga/audit.jsonl"), &self.actor, event)
+    }
+
     pub(crate) fn audit(&self, event: &str, path: &str) -> Result<(), Error> {
-        audit::append(
-            &self.root.join(".amaga/audit.jsonl"),
-            &self.actor,
+        self.record(&Event {
             event,
-            Some(path),
-            None,
-            None,
-            None,
-        )
+            path: Some(path),
+            ..Default::default()
+        })
     }
 
     // An event without a secret path: `rotated`, or `user.*` about `user` (plan 5.3).
@@ -327,15 +354,13 @@ impl Context {
         user: Option<&str>,
         gpg: Option<(&str, &str)>,
     ) -> Result<(), Error> {
-        audit::append(
-            &self.root.join(".amaga/audit.jsonl"),
-            &self.actor,
+        self.record(&Event {
             event,
-            None,
             user,
-            None,
-            gpg,
-        )
+            gpg_fpr: gpg.map(|(fpr, _)| fpr),
+            gpg_uid: gpg.map(|(_, uid)| uid),
+            ..Default::default()
+        })
     }
 
     // A `partition.*` event about `partition`, and `user` when it concerns a member (plan 5.3).
@@ -345,15 +370,12 @@ impl Context {
         partition: &str,
         user: Option<&str>,
     ) -> Result<(), Error> {
-        audit::append(
-            &self.root.join(".amaga/audit.jsonl"),
-            &self.actor,
+        self.record(&Event {
             event,
-            None,
             user,
-            Some(partition),
-            None,
-        )
+            partition: Some(partition),
+            ..Default::default()
+        })
     }
 }
 
@@ -389,4 +411,75 @@ pub(crate) fn write_epoch(
         .chain(pgp.iter().map(|r| r as &dyn age::Recipient))
         .collect();
     epoch::write(root, epoch, &recipients)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Partition `default` has a current age epoch, a pgp-only epoch and an older age epoch, in
+    // that name order; the secret is encrypted to the older age epoch.
+    #[test]
+    fn decrypt_tries_age_unwrappable_epochs_before_gpg_only_ones() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let alice = age::x25519::Identity::generate();
+        let asc = gpg::validate(include_str!("../tests/fixtures/valid_cv25519.asc")).unwrap();
+
+        let current = Epoch::generate(Default::default());
+        epoch::write(root, &current, &[&alice.to_public()]).unwrap();
+        let (pgp_only, older) = loop {
+            let (a, b) = (
+                Epoch::generate(Default::default()),
+                Epoch::generate(Default::default()),
+            );
+            if a.id() < b.id() {
+                break (a, b);
+            }
+        };
+        epoch::write(root, &pgp_only, &[&gpg::PgpRecipient::new(&asc)]).unwrap();
+        epoch::write(root, &older, &[&alice.to_public()]).unwrap();
+
+        let header = secret::Header {
+            v: secret::VERSION,
+            exposed_to: Default::default(),
+        };
+        let label = secret::Label::new(partition::DEFAULT).unwrap();
+        let ciphertext = secret::encrypt(
+            &header,
+            b"body",
+            &[&older.recipient() as &dyn age::Recipient, &label],
+        )
+        .unwrap();
+
+        let ctx = Context {
+            root: root.to_path_buf(),
+            prefix: String::new(),
+            actor: "alice".into(),
+            members: users::Members::new(),
+            partitions: Partitions::from([(
+                partition::DEFAULT.to_string(),
+                Partition {
+                    members: BTreeSet::from(["alice".to_string()]),
+                    current: current.recipient(),
+                },
+            )]),
+            age_identities: vec![alice],
+            gpg_fprs: Vec::new(),
+            base_path: root.join("amaga-base"),
+            base: secret::BaseMap::new(),
+            epochs: RefCell::default(),
+            failures: RefCell::default(),
+            age_failed: RefCell::default(),
+        };
+
+        let found = ctx.decrypt("x.amaga", &ciphertext).unwrap();
+        assert_eq!(found.body, b"body");
+        // The gpg pass never ran: it would have left a failure for the pgp-only epoch.
+        assert!(ctx.failures.borrow().is_empty());
+
+        // The age pass remembers its failure, so a second decrypt does not retry that epoch.
+        assert!(ctx.age_failed.borrow().contains(&pgp_only.id()));
+        assert_eq!(ctx.decrypt("x.amaga", &ciphertext).unwrap().body, b"body");
+    }
 }
