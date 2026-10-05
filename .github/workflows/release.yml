@@ -34,9 +34,18 @@ jobs:
       - name: Install GnuPG (Windows)
         if: runner.os == 'Windows'
         uses: ./.github/actions/install-gnupg
+      - name: Install git-crypt (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y git-crypt
       - run: rustup target add ${{ matrix.target }}
       - run: cargo test --locked
+        env:
+          # The release must run the git-crypt end-to-end test, not skip it.
+          AMAGA_REQUIRE_GIT_CRYPT: ${{ runner.os == 'Linux' && '1' || '' }}
       - run: cargo build --locked --release --target ${{ matrix.target }}
+      - name: Smoke-test the binary
+        shell: bash
+        run: target/${{ matrix.target }}/release/git-amaga${{ matrix.ext }} --version
       - name: Name the binary after its target
         shell: bash
         run: cp "target/${{ matrix.target }}/release/git-amaga${{ matrix.ext }}" "git-amaga-${{ matrix.target }}${{ matrix.ext }}"
