@@ -1,5 +1,6 @@
 //! Runs `git` as a subprocess, never through a shell (plan 10.2).
 
+use std::collections::{BTreeSet, HashSet};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -47,17 +48,17 @@ fn output_with_stdin(dir: &Path, args: &[&str], input: &[u8]) -> Result<Output, 
     })
 }
 
-// Runs `git` in `dir`, returning trimmed stdout; a non-zero exit is `Error::Git`.
-fn run_in(dir: &Path, args: &[&str]) -> Result<String, Error> {
+fn git_error(output: &Output) -> Error {
+    Error::Git(String::from_utf8_lossy(&output.stderr).trim().to_string())
+}
+
+// Runs `git` in `dir`, returning stdout; a non-zero exit is `Error::Git`.
+fn run_in(dir: &Path, args: &[&str]) -> Result<Vec<u8>, Error> {
     let output = output(dir, args)?;
     if !output.status.success() {
-        return Err(Error::Git(
-            String::from_utf8_lossy(&output.stderr).trim().to_string(),
-        ));
+        return Err(git_error(&output));
     }
-    Ok(String::from_utf8_lossy(&output.stdout)
-        .trim_end_matches('\n')
-        .to_string())
+    Ok(output.stdout)
 }
 
 // Exit 0 is true, exit 1 is false, anything else is an error.
@@ -66,9 +67,7 @@ fn succeeds_in(root: &Path, args: &[&str]) -> Result<bool, Error> {
     match output.status.code() {
         Some(0) => Ok(true),
         Some(1) => Ok(false),
-        _ => Err(Error::Git(
-            String::from_utf8_lossy(&output.stderr).trim().to_string(),
-        )),
+        _ => Err(git_error(&output)),
     }
 }
 
@@ -79,15 +78,28 @@ fn run_optional(dir: &Path, args: &[&str]) -> Result<Option<String>, Error> {
         return Ok(None);
     }
     if !output.status.success() {
-        return Err(Error::Git(
-            String::from_utf8_lossy(&output.stderr).trim().to_string(),
-        ));
+        return Err(git_error(&output));
     }
-    Ok(Some(
-        String::from_utf8_lossy(&output.stdout)
-            .trim_end_matches('\n')
-            .to_string(),
-    ))
+    line(&output.stdout).map(Some)
+}
+
+// A path git printed; never decoded lossily, so a non-UTF-8 name cannot turn into another one.
+fn utf8_path(bytes: &[u8]) -> Result<String, Error> {
+    String::from_utf8(bytes.to_vec())
+        .map_err(|_| Error::PathNotUtf8(String::from_utf8_lossy(bytes).into_owned()))
+}
+
+// One-line output (a path or a config value) without its trailing newline.
+fn line(stdout: &[u8]) -> Result<String, Error> {
+    Ok(utf8_path(stdout)?.trim_end_matches('\n').to_string())
+}
+
+fn nul_fields(output: &[u8]) -> impl Iterator<Item = &[u8]> {
+    output.split(|b| *b == 0).filter(|field| !field.is_empty())
+}
+
+fn nul_separated(output: &[u8]) -> Result<Vec<String>, Error> {
+    nul_fields(output).map(utf8_path).collect()
 }
 
 /// [`Error::NotAGitRepo`] when `dir` is outside a Git repository.
@@ -101,11 +113,7 @@ pub fn toplevel(dir: &Path) -> Result<PathBuf, Error> {
         // Other failures (e.g. "dubious ownership") must not read as "not a repo".
         return Err(Error::Git(stderr));
     }
-    Ok(PathBuf::from(
-        String::from_utf8_lossy(&output.stdout)
-            .trim_end_matches('\n')
-            .to_string(),
-    ))
+    line(&output.stdout).map(PathBuf::from)
 }
 
 fn is_not_a_git_repo_error(stderr: &str) -> bool {
@@ -114,16 +122,16 @@ fn is_not_a_git_repo_error(stderr: &str) -> bool {
 
 /// `dir` relative to the repository root, with a trailing slash; empty at the root.
 pub fn show_prefix(dir: &Path) -> Result<String, Error> {
-    run_in(dir, &["rev-parse", "--show-prefix"])
+    line(&run_in(dir, &["rev-parse", "--show-prefix"])?)
 }
 
 /// Absolute path of a per-worktree file under `.git/` (plan 5.5).
 pub fn git_path(dir: &Path, name: &str) -> Result<PathBuf, Error> {
-    run_in(
+    let out = run_in(
         dir,
         &["rev-parse", "--path-format=absolute", "--git-path", name],
-    )
-    .map(PathBuf::from)
+    )?;
+    line(&out).map(PathBuf::from)
 }
 
 /// `None` when unset.
@@ -140,8 +148,10 @@ pub fn config_get_path(dir: &Path, key: &str) -> Result<Option<String>, Error> {
     run_optional(dir, &["config", "--type=path", "--get", key])
 }
 
-/// Every `*.amaga` path git knows (tracked or not), sorted and deduplicated.
-pub fn managed_secrets(root: &Path) -> Result<Vec<String>, Error> {
+/// Every `*.amaga` path git knows (tracked or not), sorted and deduplicated. A path that is not
+/// UTF-8 is an `Err` holding its lossy form, for the caller to report, unless it is missing from
+/// the worktree: callers skip missing secrets, and only the raw name can be checked.
+pub fn managed_secrets(root: &Path) -> Result<Vec<Result<String, String>>, Error> {
     let out = run_in(
         root,
         &[
@@ -154,45 +164,62 @@ pub fn managed_secrets(root: &Path) -> Result<Vec<String>, Error> {
             "*.amaga",
         ],
     )?;
-    let mut paths: Vec<String> = out
-        .split('\0')
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .collect();
-    paths.sort();
-    paths.dedup();
-    Ok(paths)
+    Ok(sorted_paths(&out, |raw| raw_exists(root, raw)))
 }
 
-fn nul_separated(output: &str) -> Vec<String> {
-    output
-        .split('\0')
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
+// `exists` is asked only about names that are not UTF-8.
+fn sorted_paths(output: &[u8], exists: impl Fn(&[u8]) -> bool) -> Vec<Result<String, String>> {
+    let mut fields: Vec<&[u8]> = nul_fields(output).collect();
+    fields.sort();
+    fields.dedup();
+    fields
+        .into_iter()
+        .filter_map(|field| match String::from_utf8(field.to_vec()) {
+            Ok(path) => Some(Ok(path)),
+            Err(_) if exists(field) => Some(Err(String::from_utf8_lossy(field).into_owned())),
+            Err(_) => None,
+        })
         .collect()
+}
+
+#[cfg(unix)]
+fn raw_exists(root: &Path, raw: &[u8]) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    root.join(std::ffi::OsStr::from_bytes(raw)).exists()
+}
+
+// Git for Windows prints UTF-8 only, so a name that is not cannot be checked; it is reported.
+#[cfg(not(unix))]
+fn raw_exists(_root: &Path, _raw: &[u8]) -> bool {
+    true
 }
 
 /// Every tracked path.
 pub fn tracked_files(root: &Path) -> Result<Vec<String>, Error> {
-    run_in(root, &["ls-files", "-z"]).map(|out| nul_separated(&out))
+    run_in(root, &["ls-files", "-z"]).and_then(|out| nul_separated(&out))
 }
 
 /// The untracked paths that are not ignored.
 pub fn untracked_files(root: &Path) -> Result<Vec<String>, Error> {
     run_in(root, &["ls-files", "-z", "--others", "--exclude-standard"])
-        .map(|out| nul_separated(&out))
+        .and_then(|out| nul_separated(&out))
 }
 
 /// The tracked paths matching `pathspecs`.
 pub fn tracked_matching(root: &Path, pathspecs: &[&str]) -> Result<Vec<String>, Error> {
     let mut args = vec!["ls-files", "-z", "--"];
     args.extend(pathspecs);
-    run_in(root, &args).map(|out| nul_separated(&out))
+    run_in(root, &args).and_then(|out| nul_separated(&out))
 }
 
 /// The paths with staged changes.
 pub fn staged_paths(root: &Path) -> Result<Vec<String>, Error> {
-    run_in(root, &["diff", "--cached", "--name-only", "-z"]).map(|out| nul_separated(&out))
+    run_in(root, &["diff", "--cached", "--name-only", "-z"]).and_then(|out| nul_separated(&out))
+}
+
+/// The tracked paths whose working tree differs from the index.
+pub fn unstaged_paths(root: &Path) -> Result<Vec<String>, Error> {
+    run_in(root, &["diff", "--name-only", "-z"]).and_then(|out| nul_separated(&out))
 }
 
 /// `git rm --cached` for `paths`: removes them from the index only (plan 7.5).
@@ -212,9 +239,7 @@ pub fn rm_cached(root: &Path, paths: &[&str]) -> Result<(), Error> {
     let output = output_with_stdin(root, &args, &input)?;
     match output.status.success() {
         true => Ok(()),
-        false => Err(Error::Git(
-            String::from_utf8_lossy(&output.stderr).trim().to_string(),
-        )),
+        false => Err(git_error(&output)),
     }
 }
 
@@ -223,30 +248,50 @@ pub fn unmerged_paths(root: &Path, pathspecs: &[&str]) -> Result<Vec<String>, Er
     // `-z`: without it git C-quotes non-ASCII paths.
     let mut args = vec!["ls-files", "-u", "-z", "--"];
     args.extend(pathspecs);
-    let out = run_in(root, &args)?;
-    let mut paths: Vec<String> = out
-        .split('\0')
-        .filter_map(|entry| entry.split('\t').nth(1))
-        .map(str::to_string)
-        .collect();
+    unmerged_from(&run_in(root, &args)?)
+}
+
+// `ls-files -u -z` entries are `<mode> <object> <stage>\t<path>`.
+fn unmerged_from(output: &[u8]) -> Result<Vec<String>, Error> {
+    let mut paths = nul_fields(output)
+        .filter_map(|entry| {
+            let tab = entry.iter().position(|b| *b == b'\t')?;
+            Some(utf8_path(&entry[tab + 1..]))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     paths.sort();
     paths.dedup();
     Ok(paths)
 }
 
 // The `./` prefix on paths in `is_tracked`, `path_in_history` and `is_ignored` stops a leading `:`
-// being read as pathspec magic.
+// being read as pathspec magic; `--literal-pathspecs` stops `*` or `?` matching other paths.
 pub fn is_tracked(root: &Path, path: &str) -> Result<bool, Error> {
+    let path = format!("./{path}");
     succeeds_in(
         root,
-        &["ls-files", "--error-unmatch", "--", &format!("./{path}")],
+        &[
+            "--literal-pathspecs",
+            "ls-files",
+            "--error-unmatch",
+            "--",
+            &path,
+        ],
     )
 }
 
 pub fn path_in_history(root: &Path, path: &str) -> Result<bool, Error> {
+    let path = format!("./{path}");
     let out = run_in(
         root,
-        &["rev-list", "-n1", "--all", "--", &format!("./{path}")],
+        &[
+            "--literal-pathspecs",
+            "rev-list",
+            "-n1",
+            "--all",
+            "--",
+            &path,
+        ],
     )?;
     Ok(!out.is_empty())
 }
@@ -265,9 +310,36 @@ pub fn is_ignored(root: &Path, path: &str) -> Result<bool, Error> {
     )
 }
 
-/// Whether `git check-attr` reports the `text` attribute of `path` as `unset`.
-pub fn text_is_unset(root: &Path, path: &str) -> Result<bool, Error> {
-    Ok(run_in(root, &["check-attr", "text", "--", path])?.ends_with(": unset"))
+/// The `paths` that are tracked, from one `git ls-files`.
+pub fn tracked_among(root: &Path, paths: &[&str]) -> Result<BTreeSet<String>, Error> {
+    let out = run_in(root, &["ls-files", "-z"])?;
+    let tracked: HashSet<&[u8]> = nul_fields(&out).collect();
+    Ok(paths
+        .iter()
+        .filter(|path| tracked.contains(path.as_bytes()))
+        .map(|path| path.to_string())
+        .collect())
+}
+
+/// [`is_ignored`] for every one of `paths`, from one `git check-ignore`: the ignored ones.
+pub fn ignored_among(root: &Path, paths: &[&str]) -> Result<BTreeSet<String>, Error> {
+    let args = ["check-ignore", "-z", "--stdin", "--no-index"];
+    let input: Vec<u8> = paths
+        .iter()
+        .flat_map(|p| format!("./{p}\0").into_bytes())
+        .collect();
+    let output = output_with_stdin(root, &args, &input)?;
+    // Exit 1 means none is ignored.
+    if !matches!(output.status.code(), Some(0 | 1)) {
+        return Err(git_error(&output));
+    }
+    // Each ignored path is echoed as given.
+    let ignored: HashSet<&[u8]> = nul_fields(&output.stdout).collect();
+    Ok(paths
+        .iter()
+        .filter(|path| ignored.contains(format!("./{path}").as_bytes()))
+        .map(|path| path.to_string())
+        .collect())
 }
 
 /// `(path, attribute, value)` for each of `attrs` on each of `paths`, from `git check-attr`. The
@@ -285,14 +357,14 @@ pub fn check_attr(
         .collect();
     let output = output_with_stdin(root, &args, &input)?;
     if !output.status.success() {
-        return Err(Error::Git(
-            String::from_utf8_lossy(&output.stderr).trim().to_string(),
-        ));
+        return Err(git_error(&output));
     }
-    let triples = parse_check_attr(&String::from_utf8_lossy(&output.stdout));
-    // Fail closed: a misaligned or short answer must not read as "no attribute".
+    // Fail closed: a misaligned, short or undecodable answer must not read as "no attribute".
+    let unexpected = || Error::Git("unexpected `git check-attr` output".into());
+    let stdout = String::from_utf8(output.stdout).map_err(|_| unexpected())?;
+    let triples = parse_check_attr(&stdout);
     if triples.len() != paths.len() * attrs.len() {
-        return Err(Error::Git("unexpected `git check-attr` output".into()));
+        return Err(unexpected());
     }
     Ok(triples)
 }
@@ -344,6 +416,42 @@ mod tests {
                 triple("x", "unspecified"),
             ]
         );
+    }
+
+    #[test]
+    fn a_non_utf8_managed_secret_is_kept_as_an_error() {
+        let output = b"b.amaga\0caf\xe9.amaga\0a.amaga\0b.amaga\0gon\xe9.amaga\0";
+        let got = sorted_paths(output, |raw| raw == b"caf\xe9.amaga");
+        assert_eq!(
+            got,
+            [
+                Ok("a.amaga".to_string()),
+                Ok("b.amaga".to_string()),
+                Err("caf\u{fffd}.amaga".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn non_utf8_paths_are_errors_not_lossy() {
+        assert!(matches!(
+            nul_separated(b"a\0caf\xe9\0"),
+            Err(Error::PathNotUtf8(_))
+        ));
+        assert_eq!(nul_separated(b"a\0b\0").unwrap(), ["a", "b"]);
+        assert!(matches!(line(b"/r\xe9po\n"), Err(Error::PathNotUtf8(_))));
+        assert_eq!(line(b"/repo\n").unwrap(), "/repo");
+    }
+
+    #[test]
+    fn unmerged_entries_keep_the_path_after_the_tab() {
+        let entry = |path: &[u8]| [b"100644 0123 1\t", path, b"\0"].concat();
+        let output = [entry(b"b.amaga"), entry(b"a b.amaga"), entry(b"b.amaga")].concat();
+        assert_eq!(unmerged_from(&output).unwrap(), ["a b.amaga", "b.amaga"]);
+        assert!(matches!(
+            unmerged_from(&entry(b"caf\xe9.amaga")),
+            Err(Error::PathNotUtf8(_))
+        ));
     }
 
     #[test]

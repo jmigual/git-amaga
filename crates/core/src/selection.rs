@@ -37,7 +37,15 @@ pub(crate) fn all_secret_paths(
     warnings: &mut Vec<Warning>,
 ) -> Result<Vec<paths::SecretPath>, Error> {
     let mut found = Vec::new();
-    for ciphertext in git::managed_secrets(&ctx.root)? {
+    for entry in git::managed_secrets(&ctx.root)? {
+        let ciphertext = match entry {
+            Ok(path) => path,
+            Err(path) => {
+                let error = Error::PathNotUtf8(path.clone());
+                warnings.push(Warning::Skipped { path, error });
+                continue;
+            }
+        };
         if !ctx.root.join(&ciphertext).exists() {
             continue;
         }

@@ -1272,6 +1272,24 @@ fn add_refuses_tracked_plaintext_with_a_leading_colon() {
     assert!(!repo.path().join(":x.env.amaga").exists());
 }
 
+/// Glob characters are literal: a tracked `abc.env`, also in history, does not make `add a*.env`
+/// refuse or warn.
+#[cfg(unix)]
+#[test]
+fn add_treats_glob_characters_as_literal() {
+    let (repo, _identity_path) = repo_with_alice();
+    std::fs::write(repo.path().join("abc.env"), b"tracked").unwrap();
+    repo.git(&["add", "abc.env"]).assert_success();
+    repo.git(&["commit", "-m", "abc"]).assert_success();
+
+    std::fs::write(repo.path().join("a*.env"), b"v1").unwrap();
+    let add = repo.run(&["add", "a*.env"]);
+    add.assert_success();
+    let stderr = String::from_utf8_lossy(&add.stderr);
+    assert!(!stderr.contains("git history"), "got {stderr:?}");
+    assert!(repo.path().join("a*.env.amaga").exists());
+}
+
 /// Without paths, listed `*.amaga` files that are not valid secret paths are skipped.
 #[test]
 fn commands_without_paths_skip_invalid_managed_paths() {
@@ -1392,6 +1410,45 @@ fn status_lists_members_and_healthy_secrets() {
         stdout.contains("ok secret.env.amaga: in sync"),
         "got {stdout:?}"
     );
+}
+
+/// `status` runs as many git processes for three secrets as for one.
+#[cfg(unix)]
+#[test]
+fn status_runs_git_a_fixed_number_of_times() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (repo, _identity_path) = repo_with_alice();
+    let shim = tempfile::tempdir().unwrap();
+    let log = shim.path().join("log");
+    let script = format!(
+        "#!/bin/sh\necho >> '{}'\nexec '{}' \"$@\"\n",
+        log.display(),
+        common::find_on_path("git").display()
+    );
+    let git = shim.path().join("git");
+    std::fs::write(&git, script).unwrap();
+    std::fs::set_permissions(&git, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = std::env::join_paths(
+        std::iter::once(shim.path().to_path_buf())
+            .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+    )
+    .unwrap();
+    let git_runs = || {
+        let _ = std::fs::remove_file(&log);
+        repo.run_with_env(&["status"], &[("PATH", &path)])
+            .assert_success();
+        std::fs::read_to_string(&log).unwrap().lines().count()
+    };
+
+    std::fs::write(repo.path().join("a.env"), b"a").unwrap();
+    repo.run(&["add", "a.env"]).assert_success();
+    let one = git_runs();
+    for name in ["b.env", "c.env"] {
+        std::fs::write(repo.path().join(name), b"v").unwrap();
+        repo.run(&["add", name]).assert_success();
+    }
+    assert_eq!(git_runs(), one);
 }
 
 /// Test 10: a force-added (tracked) plaintext is a critical error.

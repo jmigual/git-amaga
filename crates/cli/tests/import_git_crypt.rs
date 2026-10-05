@@ -204,6 +204,25 @@ fn import_refuses_locked_or_staged_files_and_writes_nothing() {
     assert_eq!(snapshot(&repo), staged_before);
 }
 
+/// An unstaged change to an imported file is refused too: the documented recovery from an
+/// interrupted import, `git reset --hard`, would discard it.
+#[test]
+fn import_refuses_unstaged_changes_and_writes_nothing() {
+    let (repo, _keys, _identity_path) = simulated_repo(&[]);
+    std::fs::write(repo.path().join("prod/db.env"), b"DB=2\n").unwrap();
+    let before = snapshot(&repo);
+
+    let import = repo.run(&["import-git-crypt"]);
+
+    import.assert_failure();
+    assert!(
+        stderr(&import).contains("prod/db.env"),
+        "{}",
+        stderr(&import)
+    );
+    assert_eq!(snapshot(&repo), before);
+}
+
 /// Test 67: a repository that already has a secret is refused.
 #[test]
 fn import_refuses_repo_with_secrets() {

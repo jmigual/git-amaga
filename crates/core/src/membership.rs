@@ -24,7 +24,15 @@ pub(crate) fn reencrypt(
 ) -> Result<Vec<Reencrypted>, Error> {
     let mut failures = Vec::new();
     let mut targets = Vec::new();
-    for path in git::managed_secrets(&ctx.root)? {
+    for entry in git::managed_secrets(&ctx.root)? {
+        // Its partition is unknown, so it might be one of `selected`'s.
+        let path = match entry {
+            Ok(path) => path,
+            Err(path) => {
+                failures.push(Error::PathNotUtf8(path).to_string());
+                continue;
+            }
+        };
         if !ctx.root.join(&path).exists() {
             continue;
         }
@@ -195,9 +203,6 @@ pub fn cmd_user_remove(dir: &Path, name: &str) -> Result<Rotation, Error> {
     }
     let mut ctx = Context::load_for_removal(dir, name)?;
     let files: Vec<PathBuf> = member_files(&ctx.root.join(".amaga/users"), name).collect();
-    if files.is_empty() && !ctx.partitions.values().any(|p| p.members.contains(name)) {
-        return Err(Error::UserNotFound(name.to_string()));
-    }
     for (p, partition) in &ctx.partitions {
         let only_member = partition.members.contains(name)
             && !partition
@@ -213,6 +218,10 @@ pub fn cmd_user_remove(dir: &Path, name: &str) -> Result<Rotation, Error> {
     }
 
     let (selected, others) = removal_partitions(&ctx, name)?;
+    // An interrupted run leaves no file and no listing, only a current epoch still wrapped to them.
+    if files.is_empty() && selected.is_empty() && others.is_empty() {
+        return Err(Error::UserNotFound(name.to_string()));
+    }
     let warnings = others
         .into_iter()
         .map(Warning::PartitionNotRotated)
@@ -224,7 +233,10 @@ pub fn cmd_user_remove(dir: &Path, name: &str) -> Result<Rotation, Error> {
             }
         }
         for file in &files {
-            fs::remove_file(file)?;
+            fs::remove_file(file).map_err(|source| Error::IoPath {
+                path: file.display().to_string(),
+                source,
+            })?;
         }
         ctx.members.remove(name);
         ctx.audit_event("user.removed", Some(name), None)
