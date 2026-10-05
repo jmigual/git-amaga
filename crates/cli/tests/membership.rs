@@ -576,6 +576,25 @@ fn user_remove_locks_out_and_flags_all() {
     assert!(last.contains("\"user\":\"bob\""), "got {last:?}");
 }
 
+/// A `user remove` interrupted after its change step (user file deleted, name unlisted) but
+/// before the pointer moved is finished by a rerun, which locks the member out.
+#[test]
+fn user_remove_rerun_after_interruption_locks_out() {
+    let (repo, _identity_path, bob) = repo_with_two_members();
+    std::fs::remove_file(repo.path().join(".amaga/users/bob.txt")).unwrap();
+    let members = repo.path().join(".amaga/partitions/default/members");
+    std::fs::write(&members, "alice\n").unwrap();
+
+    repo.run(&["user", "remove", "bob"]).assert_success();
+
+    let id = common::current_epoch_id(&repo, "default");
+    assert!(!common::can_unwrap(&repo, &id, &bob));
+    for name in ["a.env.amaga", "b.env.amaga"] {
+        let ciphertext = std::fs::read(repo.path().join(name)).unwrap();
+        assert!(decrypt_as(&repo, &ciphertext, &bob).is_err(), "{name}");
+    }
+}
+
 /// Test 14: sealing an edit clears the flag only on that file, and re-encryption never clears it.
 #[test]
 fn seal_change_clears_only_that_file() {

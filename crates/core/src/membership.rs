@@ -203,9 +203,6 @@ pub fn cmd_user_remove(dir: &Path, name: &str) -> Result<Rotation, Error> {
     }
     let mut ctx = Context::load_for_removal(dir, name)?;
     let files: Vec<PathBuf> = member_files(&ctx.root.join(".amaga/users"), name).collect();
-    if files.is_empty() && !ctx.partitions.values().any(|p| p.members.contains(name)) {
-        return Err(Error::UserNotFound(name.to_string()));
-    }
     for (p, partition) in &ctx.partitions {
         let only_member = partition.members.contains(name)
             && !partition
@@ -221,6 +218,10 @@ pub fn cmd_user_remove(dir: &Path, name: &str) -> Result<Rotation, Error> {
     }
 
     let (selected, others) = removal_partitions(&ctx, name)?;
+    // An interrupted run leaves no file and no listing, only a current epoch still wrapped to them.
+    if files.is_empty() && selected.is_empty() && others.is_empty() {
+        return Err(Error::UserNotFound(name.to_string()));
+    }
     let warnings = others
         .into_iter()
         .map(Warning::PartitionNotRotated)
