@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
+use crate::audit::Event;
 use crate::epoch::{self, Epoch};
 use crate::failure::{EpochFailure, is_not_a_recipient};
 use crate::files::read_repo_file;
@@ -308,16 +309,16 @@ impl Context {
         Ok(())
     }
 
+    pub(crate) fn record(&self, event: &Event) -> Result<(), Error> {
+        audit::append(&self.root.join(".amaga/audit.jsonl"), &self.actor, event)
+    }
+
     pub(crate) fn audit(&self, event: &str, path: &str) -> Result<(), Error> {
-        audit::append(
-            &self.root.join(".amaga/audit.jsonl"),
-            &self.actor,
+        self.record(&Event {
             event,
-            Some(path),
-            None,
-            None,
-            None,
-        )
+            path: Some(path),
+            ..Default::default()
+        })
     }
 
     // An event without a secret path: `rotated`, or `user.*` about `user` (plan 5.3).
@@ -327,15 +328,13 @@ impl Context {
         user: Option<&str>,
         gpg: Option<(&str, &str)>,
     ) -> Result<(), Error> {
-        audit::append(
-            &self.root.join(".amaga/audit.jsonl"),
-            &self.actor,
+        self.record(&Event {
             event,
-            None,
             user,
-            None,
-            gpg,
-        )
+            gpg_fpr: gpg.map(|(fpr, _)| fpr),
+            gpg_uid: gpg.map(|(_, uid)| uid),
+            ..Default::default()
+        })
     }
 
     // A `partition.*` event about `partition`, and `user` when it concerns a member (plan 5.3).
@@ -345,15 +344,12 @@ impl Context {
         partition: &str,
         user: Option<&str>,
     ) -> Result<(), Error> {
-        audit::append(
-            &self.root.join(".amaga/audit.jsonl"),
-            &self.actor,
+        self.record(&Event {
             event,
-            None,
             user,
-            Some(partition),
-            None,
-        )
+            partition: Some(partition),
+            ..Default::default()
+        })
     }
 }
 

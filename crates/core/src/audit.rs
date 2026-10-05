@@ -10,45 +10,38 @@ use serde::Serialize;
 
 use crate::error::Error;
 
-#[derive(Serialize)]
-struct Event<'a> {
-    time: String,
-    actor: &'a str,
-    event: &'a str,
+/// One audit event (plan 5.3). `path` is the repo-relative plaintext path, `user` the member a
+/// `user.*`, `partition.*` or `exposure.*` event is about, `partition` the partition it concerns,
+/// and `gpg_fpr`/`gpg_uid` the member's primary fingerprint and first user ID if it has an `.asc`.
+#[derive(Default, Serialize)]
+pub struct Event<'a> {
+    pub event: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
-    path: Option<&'a str>,
+    pub path: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    user: Option<&'a str>,
+    pub user: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    partition: Option<&'a str>,
+    pub partition: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    gpg_fpr: Option<&'a str>,
+    pub gpg_fpr: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    gpg_uid: Option<&'a str>,
+    pub gpg_uid: Option<&'a str>,
 }
 
-/// Appends one JSONL event (plan 5.3); `secret_path` is the repo-relative plaintext path, `user`
-/// the member a `user.*` or `partition.*` event is about and `partition` the partition it
-/// concerns. `gpg` is the member's (primary fingerprint, first user
-/// ID), if it has an `.asc`.
-pub fn append(
-    path: &Path,
-    actor: &str,
-    event: &str,
-    secret_path: Option<&str>,
-    user: Option<&str>,
-    partition: Option<&str>,
-    gpg: Option<(&str, &str)>,
-) -> Result<(), Error> {
-    let line = serde_json::to_string(&Event {
+#[derive(Serialize)]
+struct Line<'a> {
+    time: String,
+    actor: &'a str,
+    #[serde(flatten)]
+    event: &'a Event<'a>,
+}
+
+/// Appends `event` as one JSONL line (plan 5.3).
+pub fn append(path: &Path, actor: &str, event: &Event) -> Result<(), Error> {
+    let line = serde_json::to_string(&Line {
         time: format_rfc3339(SystemTime::now()),
         actor,
         event,
-        path: secret_path,
-        user,
-        partition,
-        gpg_fpr: gpg.map(|(fpr, _)| fpr),
-        gpg_uid: gpg.map(|(_, uid)| uid),
     })
     // Serializing a struct of plain strings cannot fail: no maps, no non-UTF8 keys.
     .expect("audit event serialization is infallible");
@@ -132,15 +125,24 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("audit.jsonl");
 
-        append(&path, "alice", "init", None, None, None, None).unwrap();
         append(
             &path,
             "alice",
-            "rotated",
-            Some("secrets/prod.env"),
-            None,
-            Some("production"),
-            None,
+            &Event {
+                event: "init",
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        append(
+            &path,
+            "alice",
+            &Event {
+                event: "rotated",
+                path: Some("secrets/prod.env"),
+                partition: Some("production"),
+                ..Default::default()
+            },
         )
         .unwrap();
 
@@ -164,11 +166,12 @@ mod tests {
         append(
             &path,
             "alice",
-            "init",
-            None,
-            None,
-            None,
-            Some(("ABCD", "Alice <a@x>")),
+            &Event {
+                event: "init",
+                gpg_fpr: Some("ABCD"),
+                gpg_uid: Some("Alice <a@x>"),
+                ..Default::default()
+            },
         )
         .unwrap();
 

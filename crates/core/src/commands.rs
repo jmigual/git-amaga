@@ -2,6 +2,7 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
 
+use crate::audit::Event;
 use crate::context::{Context, Decrypted, write_epoch};
 use crate::epoch::Epoch;
 use crate::files::{ensure_ignored, read_plaintext, read_repo_file, write_repo_file};
@@ -72,11 +73,12 @@ pub fn cmd_init(dir: &Path, name: &str, keys: &[String]) -> Result<Option<GpgKey
     audit::append(
         &amaga_dir.join("audit.jsonl"),
         name,
-        "init",
-        None,
-        None,
-        None,
-        gpg_info,
+        &Event {
+            event: "init",
+            gpg_fpr: gpg_info.map(|(fpr, _)| fpr),
+            gpg_uid: gpg_info.map(|(_, uid)| uid),
+            ..Default::default()
+        },
     )?;
 
     Ok(resolved.gpg)
