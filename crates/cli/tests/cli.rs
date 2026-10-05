@@ -1270,6 +1270,24 @@ fn add_refuses_tracked_plaintext_with_a_leading_colon() {
     assert!(!repo.path().join(":x.env.amaga").exists());
 }
 
+/// Glob characters are literal: a tracked `abc.env`, also in history, does not make `add a*.env`
+/// refuse or warn.
+#[cfg(unix)]
+#[test]
+fn add_treats_glob_characters_as_literal() {
+    let (repo, _identity_path) = repo_with_alice();
+    std::fs::write(repo.path().join("abc.env"), b"tracked").unwrap();
+    repo.git(&["add", "abc.env"]).assert_success();
+    repo.git(&["commit", "-m", "abc"]).assert_success();
+
+    std::fs::write(repo.path().join("a*.env"), b"v1").unwrap();
+    let add = repo.run(&["add", "a*.env"]);
+    add.assert_success();
+    let stderr = String::from_utf8_lossy(&add.stderr);
+    assert!(!stderr.contains("git history"), "got {stderr:?}");
+    assert!(repo.path().join("a*.env.amaga").exists());
+}
+
 /// Without paths, listed `*.amaga` files that are not valid secret paths are skipped.
 #[test]
 fn commands_without_paths_skip_invalid_managed_paths() {

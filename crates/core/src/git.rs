@@ -259,18 +259,33 @@ fn unmerged_from(output: &[u8]) -> Result<Vec<String>, Error> {
 }
 
 // The `./` prefix on paths in `is_tracked`, `path_in_history` and `is_ignored` stops a leading `:`
-// being read as pathspec magic.
+// being read as pathspec magic; `--literal-pathspecs` stops `*` or `?` matching other paths.
 pub fn is_tracked(root: &Path, path: &str) -> Result<bool, Error> {
+    let path = format!("./{path}");
     succeeds_in(
         root,
-        &["ls-files", "--error-unmatch", "--", &format!("./{path}")],
+        &[
+            "--literal-pathspecs",
+            "ls-files",
+            "--error-unmatch",
+            "--",
+            &path,
+        ],
     )
 }
 
 pub fn path_in_history(root: &Path, path: &str) -> Result<bool, Error> {
+    let path = format!("./{path}");
     let out = run_in(
         root,
-        &["rev-list", "-n1", "--all", "--", &format!("./{path}")],
+        &[
+            "--literal-pathspecs",
+            "rev-list",
+            "-n1",
+            "--all",
+            "--",
+            &path,
+        ],
     )?;
     Ok(!out.is_empty())
 }
