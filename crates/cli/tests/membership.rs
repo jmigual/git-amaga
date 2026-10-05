@@ -595,6 +595,29 @@ fn user_remove_rerun_after_interruption_locks_out() {
     }
 }
 
+/// A user file `user remove` cannot delete is named in the error.
+#[cfg(unix)]
+#[test]
+fn user_remove_names_a_user_file_it_cannot_delete() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (repo, _identity_path, _bob) = repo_with_two_members();
+    let users = repo.path().join(".amaga/users");
+    let mode = |mode| std::fs::set_permissions(&users, std::fs::Permissions::from_mode(mode));
+    mode(0o555).unwrap();
+    if std::fs::write(users.join("probe"), b"").is_ok() {
+        mode(0o755).unwrap();
+        eprintln!("skipping: running as a user that ignores directory permissions");
+        return;
+    }
+
+    let remove = repo.run(&["user", "remove", "bob"]);
+    mode(0o755).unwrap();
+
+    remove.assert_failure();
+    assert!(stderr(&remove).contains("bob.txt"), "{}", stderr(&remove));
+}
+
 /// Test 14: sealing an edit clears the flag only on that file, and re-encryption never clears it.
 #[test]
 fn seal_change_clears_only_that_file() {

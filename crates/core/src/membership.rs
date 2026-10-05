@@ -233,7 +233,10 @@ pub fn cmd_user_remove(dir: &Path, name: &str) -> Result<Rotation, Error> {
             }
         }
         for file in &files {
-            fs::remove_file(file)?;
+            fs::remove_file(file).map_err(|source| Error::IoPath {
+                path: file.display().to_string(),
+                source,
+            })?;
         }
         ctx.members.remove(name);
         ctx.audit_event("user.removed", Some(name), None)
