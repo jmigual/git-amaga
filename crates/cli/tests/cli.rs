@@ -56,6 +56,16 @@ fn keygen_with_relative_path_stores_absolute_identity() {
 }
 
 #[test]
+fn keygen_without_a_path_writes_the_default_identity_under_home() {
+    let repo = Repo::new();
+
+    repo.run(&["keygen"]).assert_success();
+
+    let default = repo.home().join(".config/git-amaga/identity.txt");
+    assert!(default.is_file(), "expected {default:?}");
+}
+
+#[test]
 fn keygen_does_not_overwrite_an_already_configured_global_identity() {
     let repo = Repo::new();
     repo.git(&[

@@ -46,6 +46,11 @@ impl Repo {
         self.dir.path()
     }
 
+    /// The `HOME`/`USERPROFILE` the children run with.
+    pub fn home(&self) -> &Path {
+        self.home.path()
+    }
+
     fn isolate(&self, command: &mut Command, cwd: &Path) {
         // A hook or `rebase -x` exports GIT_DIR, GIT_INDEX_FILE, ...; children must not inherit
         // them.
