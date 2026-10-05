@@ -128,13 +128,20 @@ fn read_files(ctx: &Context) -> Result<Vec<ImportFile>, Error> {
     if !locked.is_empty() {
         return Err(Error::GitCryptLocked(locked.join(", ")));
     }
-    let staged = git::staged_paths(&ctx.root)?;
-    let clashing: Vec<&str> = (files.iter())
-        .map(|f| f.sp.plaintext.as_str())
-        .filter(|path| staged.iter().any(|s| s == path))
-        .collect();
-    if !clashing.is_empty() {
-        return Err(Error::ImportStagedChanges(clashing.join(", ")));
+    let changed = |listed: Vec<String>| {
+        (files.iter())
+            .map(|f| f.sp.plaintext.as_str())
+            .filter(|path| listed.iter().any(|s| s == path))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let staged = changed(git::staged_paths(&ctx.root)?);
+    if !staged.is_empty() {
+        return Err(Error::ImportStagedChanges(staged));
+    }
+    let unstaged = changed(git::unstaged_paths(&ctx.root)?);
+    if !unstaged.is_empty() {
+        return Err(Error::ImportUnstagedChanges(unstaged));
     }
     Ok(files)
 }

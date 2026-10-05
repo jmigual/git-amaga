@@ -217,6 +217,11 @@ pub fn staged_paths(root: &Path) -> Result<Vec<String>, Error> {
     run_in(root, &["diff", "--cached", "--name-only", "-z"]).and_then(|out| nul_separated(&out))
 }
 
+/// The tracked paths whose working tree differs from the index.
+pub fn unstaged_paths(root: &Path) -> Result<Vec<String>, Error> {
+    run_in(root, &["diff", "--name-only", "-z"]).and_then(|out| nul_separated(&out))
+}
+
 /// `git rm --cached` for `paths`: removes them from the index only (plan 7.5).
 pub fn rm_cached(root: &Path, paths: &[&str]) -> Result<(), Error> {
     let args = [
