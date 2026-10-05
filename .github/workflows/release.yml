@@ -37,7 +37,13 @@ jobs:
       - name: Install git-crypt (Linux)
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y git-crypt
-      - run: rustup target add ${{ matrix.target }}
+      # Same toolchain install as ci.yml, so the rust-cache key matches the cache saved on main.
+      - run: rustup toolchain install stable --profile minimal --target ${{ matrix.target }}
+      # Restore only: a tag's cache is never reused, and ci.yml saves the one tags restore.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: ci
+          save-if: false
       - run: cargo test --locked
         env:
           # The release must run the git-crypt end-to-end test, not skip it.
@@ -79,6 +85,11 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: rustup toolchain install stable --profile minimal
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: ci
+          save-if: false
       # If core uploads and the CLI then fails, a re-run fails on core with "already exists":
       # recover by hand with `cargo publish -p git-amaga --locked`.
       - run: cargo publish --workspace --locked

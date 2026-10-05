@@ -20,7 +20,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install Rust
         run: rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+      # shared-key: release.yml restores the cache this job saves on main.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: ci
       - name: Install GnuPG (Windows)
         if: runner.os == 'Windows'
         uses: ./.github/actions/install-gnupg
