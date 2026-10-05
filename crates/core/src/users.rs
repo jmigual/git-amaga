@@ -11,7 +11,7 @@ use pgp::types::KeyDetails;
 
 use crate::error::Error;
 use crate::gpg::{self, AscKey};
-use crate::keyring::ResolvedKeys;
+use crate::keyring::{self, ResolvedKeys};
 use crate::paths;
 use crate::secret::Recipients;
 
@@ -167,8 +167,13 @@ fn parse_age_keys(path: &Path) -> Result<Vec<x25519::Recipient>, Error> {
         .map(|line| line.trim_end_matches('\r').trim())
         .filter(|line| !line.is_empty() && !line.starts_with('#'))
         .map(|line| {
-            line.parse::<x25519::Recipient>()
-                .map_err(|_| Error::AgeRecipientParse(line.to_string()))
+            line.parse::<x25519::Recipient>().map_err(|_| {
+                if keyring::is_age_secret_key(line) {
+                    Error::AgeSecretKeyGiven
+                } else {
+                    Error::AgeRecipientParse(line.to_string())
+                }
+            })
         })
         .collect()
 }
@@ -272,6 +277,20 @@ mod tests {
             Error::UsersFileError { file, source } => {
                 assert_eq!(file, "alice.txt");
                 assert!(matches!(*source, Error::AgeRecipientParse(_)));
+            }
+            other => panic!("expected UsersFileError, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rejects_a_secret_key_in_a_user_file_without_echoing_it() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), "alice.txt", "AGE-SECRET-KEY-1QQQQ\n");
+
+        let err = load(dir.path()).err().unwrap();
+        match err {
+            Error::UsersFileError { source, .. } => {
+                assert!(matches!(*source, Error::AgeSecretKeyGiven));
             }
             other => panic!("expected UsersFileError, got {other:?}"),
         }

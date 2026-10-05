@@ -16,6 +16,12 @@ pub enum KeyKind {
     GpgSpec,
 }
 
+/// Whether `s` is an age secret key, which must never be echoed or passed to gpg.
+pub(crate) fn is_age_secret_key(s: &str) -> bool {
+    s.get(..15)
+        .is_some_and(|p| p.eq_ignore_ascii_case("AGE-SECRET-KEY-"))
+}
+
 /// Plan 7 rules 1-3: `age1…`, then an existing `.asc` file (relative to `dir`), else a gpg key
 /// spec.
 pub fn classify(dir: &Path, key: &str) -> KeyKind {
@@ -54,6 +60,9 @@ pub fn resolve(dir: &Path, keys: &[String]) -> Result<ResolvedKeys, Error> {
     let mut seen_age = BTreeSet::new();
     let mut gpg_key = None;
     for key in keys {
+        if is_age_secret_key(key) {
+            return Err(Error::AgeSecretKeyGiven);
+        }
         let kind = classify(dir, key);
         if kind == KeyKind::Age {
             let recipient: age::x25519::Recipient = key
@@ -239,6 +248,17 @@ uid:u::::1700000001::H2::Alice Two <dup@example.invalid>:::::::::0:\n\
 uid:u::::1700000001::H3::Second uid <other@example.invalid>:::::::::0:\n\
 sub:u:255:18:DDDD:1700000001::::::e:::::cv25519::\n\
 fpr:::::::::4444444444444444444444444444444444444444:\n";
+
+    #[test]
+    fn a_secret_key_is_refused_before_it_reaches_gpg() {
+        let key = "age-secret-key-1QQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQQ"
+            .to_string();
+        let err = resolve(Path::new("."), std::slice::from_ref(&key))
+            .err()
+            .unwrap();
+        assert!(matches!(err, Error::AgeSecretKeyGiven));
+        assert!(!err.to_string().contains(&key));
+    }
 
     #[test]
     fn classify_age_recipient() {

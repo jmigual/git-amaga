@@ -329,4 +329,8 @@ pub enum Error {
 
     #[error("repository is not initialized (run `git-amaga init`)")]
     NotInitialized,
+
+    /// Never echoes the value: it is secret key material.
+    #[error("an age secret key was given where a public key is expected (use the `age1…` line)")]
+    AgeSecretKeyGiven,
 }
