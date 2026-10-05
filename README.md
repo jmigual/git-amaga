@@ -353,6 +353,7 @@ fn main() -> Result<(), git_amaga_core::Error> {
 cargo fmt --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
+GIT_DIR=/nonexistent cargo test --workspace
 ```
 
 The workspace has two crates: `crates/core` (library `git-amaga-core`) and `crates/cli` (binary

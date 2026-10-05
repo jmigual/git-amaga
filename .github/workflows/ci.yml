@@ -35,3 +35,7 @@ jobs:
         env:
           # CI must run the git-crypt end-to-end test, not skip it.
           AMAGA_REQUIRE_GIT_CRYPT: ${{ runner.os == 'Linux' && '1' || '' }}
+      # Reuses the test binaries built above: the tests must not need a git repository.
+      - run: cargo test --workspace --locked
+        env:
+          GIT_DIR: /nonexistent
