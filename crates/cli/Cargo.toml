@@ -9,6 +9,7 @@ description = "Encrypted secret files in Git, shared with a team through age or 
 readme = "../../README.md"
 keywords = ["age", "gpg", "secrets", "git", "encryption"]
 categories = ["command-line-utilities", "cryptography", "development-tools"]
+exclude = ["tests/"]
 
 [dependencies]
 clap.workspace = true
