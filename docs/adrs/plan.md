@@ -352,7 +352,7 @@ At most one OpenPGP key (file or lookup) is allowed per member. It must pass 5.1
 | `close [<path>…]` | Delete the plaintext only when `InSync`. Drop the base entry. |
 | `remove <path>…` | Needs at least one path; duplicates are removed. Refuse unless every plaintext exists and is `InSync` (so the user keeps a copy; `open` or `seal` first), checked for all paths before anything is deleted. Delete the `.amaga` file and the base entry. Leave the plaintext and its ignore entry alone. Audit `secret.removed`. If the `.amaga` cannot be read or decrypted (corrupt, not encrypted to you, symlink), the error says to drop it with `git rm <path>.amaga`. |
 | `user add [--partition <p>]… <name> <KEY>…` | Partitions default to `default`; each must exist, list the actor and pass the stale guard. Refuse if `users/<name>.txt` or `.asc` exists (key changes: decision 5), or if the name is still listed in any `members` file (`UserStillListed`, with the hint `partition remove <p> <name>`): a merge can leave a removed member's name in a partition, and a different person given that name would silently join it. Resolve `KEY`s with the same code as `init` (age key, `.asc` file, or keyring lookup). Validate (5.1 + add-time expiry). Then, in this order: write the member file, audit `user.added`; then per partition, add the name to `members`, audit `partition.member_added`, and re-wrap the partition's current epoch (same key) to its members including the newcomer, atomically. No secret is rewritten (decision 1). Interrupted after the member file: `partition add <p> <name>` finishes it. Interrupted after a `members` file: that partition is stale, and `rotate` finishes the job without flagging anyone. |
-| `user remove <name>` | Must exist: a user file, a line in some `members` file, or (after an interrupted run) their name in a current epoch the actor can unwrap. Refuse with `LastMember { user, partition }` if they are the only member of any partition. The files being removed are not validated, so a revoked or broken key can still be removed. Re-encrypt (7.1) every partition that lists the actor and either lists them or has a current epoch wrapped to them (their name, or any of their keys), so a rerun after an interruption or a hand edit of `members` still locks them out. The change step removes the name from **every** `members` file, then deletes the user files. An interruption between the two leaves a user in no partition, which a rerun removes. Each partition that lists them but not the actor (and so cannot be unwrapped) gets `Warning::PartitionNotRotated` (decision 16). |
+| `user remove <name>` | Must exist: a user file, a line in some `members` file, or (after an interrupted run) their name in a current epoch the actor can unwrap. Refuse with `LastMember { user, partition }` if they are the only member of any partition. The files being removed are not validated, so a revoked or broken key can still be removed. Re-encrypt (7.1) every partition that lists the actor and either lists them or has a current epoch wrapped to them (their name, or any of their keys), so a rerun after an interruption or a hand edit of `members` still locks them out. The change step removes the name from the `members` file of each partition it re-encrypts, then deletes the user files. Each partition that lists them but not the actor (and so cannot be unwrapped) gets `Warning::PartitionNotRotated` (decision 16); it is unlisted last, after the pointers, so a rerun of `user remove` still reports it (recover by rerunning `user remove`, not `rotate`). |
 | `rotate [--partition <p>]…` | Re-encrypt (7.1) the named partitions, each of which must exist and list the actor. With none, re-encrypt every partition that lists the actor; each other partition gets `PartitionNotRotated`. Audit `rotated` per partition. This is also the recovery command. |
 | `partition create <p> <member>…` | Valid name, else `InvalidPartitionName`. `PartitionExists` if the directory exists. At least one member, each a user (`UserNotFound`). The actor need not be listed. Writes a new epoch wrapped to the members' keys, then `members`, then `current-epoch` last. Audit `partition.created`, plus `partition.member_added` per member. Interrupted before the pointer: loading fails with `PartitionInvalid` naming it; nothing is committed yet, so delete the directory and rerun. |
 | `partition add <p> <member>…` | P exists and lists the actor. Each name is a user (`UserNotFound`) not yet in P (`AlreadyInPartition`). Stale guard for P. Writes `members`, audits `partition.member_added` per name, then re-wraps P's current epoch (same key). No secret is rewritten (decision 1, per partition). |
@@ -367,7 +367,7 @@ At most one OpenPGP key (file or lookup) is allowed per member. It must pass 5.1
 Works on a set S of partitions, each listing the actor (ADR-0017).
 
 1. Read and decrypt **every** secret whose label is in S into memory, under whichever epoch the actor holds (5.6), keeping the `members` of the epoch that decrypted each one. If any fails, abort before writing anything and list the files that failed. Secrets of other partitions are read only for their label.
-2. The change step: `user remove` removes the name from every `members` file, deletes the user files and appends the audit event; `partition remove` writes P's `members` and its audit events.
+2. The change step: `user remove` removes the name from the `members` file of each partition in S, deletes the user files and appends the audit event (partitions the actor is not in are unlisted after step 5); `partition remove` writes P's `members` and its audit events.
 3. For each partition in S, in name order, take the current key set (5.7), generate a new epoch and write its file, wrapped to that key set, with `members` = that key set.
 4. For each secret, write `encrypt_to(new epoch of its partition, its label, next_header(Some((old, old members)), false, new members), body)` atomically.
 5. Write each partition's `current-epoch`, in name order.
@@ -734,7 +734,7 @@ members = ["crates/core", "crates/cli"]
 resolver = "3"
 
 [workspace.package]
-version = "0.3.0"
+version = "0.3.1"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT"
@@ -1116,8 +1116,10 @@ full. Struct and function names are illustrative unless 14.2 fixes them.
   - `membership.rs`:
     - `reencrypt` takes the partition set (7.1); `rotate` passes every partition.
     - `user add` adds the name to `default/members` before re-wrapping `default`.
-    - `user remove` edits every `members` file, then deletes the user files. `LastMember` becomes
-      `LastMember { user, partition }`, checked against every partition.
+    - `user remove` edits the `members` files of the partitions it re-encrypts, deletes the user
+      files, then edits the other partitions' `members` files (those the actor is not in) after the
+      pointers. `LastMember` becomes `LastMember { user, partition }`, checked against every
+      partition.
   - `error.rs`: `PartitionInvalid(String)`, `UnknownPartition`, and `EpochStale(String)`, which
     now names the partition.
 - Test edits:
