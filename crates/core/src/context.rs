@@ -72,7 +72,8 @@ impl Context {
             Some(path) => identity::load_identity_file(&path)?,
             None => Vec::new(),
         };
-        let (actor, gpg_fprs) = identity::find_actor(&members, &age_identities, gpg::is_held)?;
+        let (actor, gpg_fprs) =
+            identity::find_actor(&members, &age_identities, gpg::held_fingerprints)?;
         let base_path = git::git_path(dir, "amaga-base")?;
         Ok(Self {
             prefix: git::show_prefix(dir)?,
