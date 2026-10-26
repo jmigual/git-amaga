@@ -3,4 +3,12 @@ ignore = [
     # rsa (via pgp): Marvin timing attack on RSA private-key operations. git-amaga only
     # encrypts to RSA public keys; decryption runs in gpg. No fixed rsa release exists.
     "RUSTSEC-2023-0071",
+    # crypto-bigint 0.5 (via pgp's elliptic-curve 0.13): constant-time leaks, fixed only in
+    # 0.7.6+. Sealing to a NIST or X448 ECDH subkey multiplies an ephemeral secret scalar, so a
+    # co-resident timing observer could in theory recover that file key; Cv25519 and RSA are
+    # unaffected. Drop once pgp moves to elliptic-curve 0.14 (pgp 0.21 has not).
+    "RUSTSEC-2026-0387",
+    # basic-toml (via age's i18n-embed-fl proc-macro): unmaintained, no vulnerability. Build
+    # time only; drop once age moves off it (age 0.12.1 has not).
+    "RUSTSEC-2026-0374",
 ]
