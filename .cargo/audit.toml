@@ -1,7 +1,8 @@
 [advisories]
 ignore = [
     # rsa (via pgp): Marvin timing attack on RSA private-key operations. git-amaga only
-    # encrypts to RSA public keys; decryption runs in gpg. No fixed rsa release exists.
+    # encrypts to RSA public keys; decryption runs in gpg. Drop once pgp moves to rsa 0.10
+    # (pgp 0.21.1 has not).
     "RUSTSEC-2023-0071",
     # crypto-bigint 0.5 (via pgp's elliptic-curve 0.13): constant-time leaks, fixed only in
     # 0.7.6+. Sealing to a NIST or X448 ECDH subkey multiplies an ephemeral secret scalar, so a
