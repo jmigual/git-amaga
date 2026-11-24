@@ -711,6 +711,7 @@ fn set_mode(repo: &Repo, path: &str, mode: u32) {
     .unwrap();
 }
 
+#[cfg(unix)]
 fn append_attribute(repo: &Repo, line: &str) {
     let attributes = repo.path().join(".gitattributes");
     let original = std::fs::read_to_string(&attributes).unwrap();
@@ -786,6 +787,27 @@ fn open_refuses_an_invalid_amaga_mode_and_writes_nothing() {
             assert!(!repo.path().join(name).exists(), "{attr}: {name}");
         }
     }
+}
+
+/// Test 75: the exact mode survives a restrictive umask (ADR-0019).
+#[cfg(unix)]
+#[test]
+fn open_sets_the_amaga_mode_whatever_the_umask() {
+    let (repo, _identity_path) = repo_with_alice();
+    append_attribute(&repo, "*.env amaga-mode=0644");
+    std::fs::write(repo.path().join("secret.env"), b"v1").unwrap();
+    repo.run(&["add", "secret.env"]).assert_success();
+    std::fs::remove_file(repo.path().join("secret.env")).unwrap();
+
+    let binary = env!("CARGO_BIN_EXE_git-amaga");
+    repo.run_tool(
+        "sh",
+        &["-c", "umask 077; exec \"$0\" open secret.env", binary],
+        &[],
+    )
+    .assert_success();
+
+    assert_eq!(mode_of(&repo, "secret.env"), 0o644);
 }
 
 /// An unreadable plaintext is an error, not an absent one that `open` overwrites.

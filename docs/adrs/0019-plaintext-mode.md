@@ -18,10 +18,12 @@ the umask's mode, which made migrated repositories fail later and silently.
   without read-write are refused (`ModeAttributeInvalid`), as are a set, unset or empty
   attribute. `open` reads the attribute of every selected secret, in one `git check-attr` call,
   before it writes any plaintext, so one bad value writes nothing.
-- The mode is set on the temp file once its contents are written, before the rename, so the
-  umask does not change it and `path` never has the wrong mode. Until then the temp file is at
+- A mode with group or other bits is set on the temp file once its contents are written, before
+  the rename, so the umask does not change it and `path` never has the wrong mode. Until then the temp file is at
   most owner read-write.
-- The mode of a replaced file is kept as it is, whatever it is: the user set it.
+- The mode of a replaced file is kept after a clamp, `existing & 0o644 | 0o600`: execute bits, write
+  for group or others and the special bits are dropped, and owner read-write is forced. So a kept
+  mode is always one `amaga-mode` could have set.
 - On other platforms the attribute is still validated, but no mode is set.
 
 ## Alternatives
@@ -36,4 +38,8 @@ the umask's mode, which made migrated repositories fail later and silently.
 - A repository states its non-default modes in `.gitattributes`, where review sees them.
 - An attribute that is changed later takes effect at the next `open` that writes the file; an
   in-sync plaintext is not rewritten and keeps its mode.
+- Any member can widen a secret's mode on every checkout through a merged `.gitattributes` line,
+  so review is the safeguard. A local `.git/info/attributes` line (`<pattern> amaga-mode=0600`)
+  overrides it.
+- A mode wider than 0600 needs a filesystem that supports chmod; a 0600 write makes no chmod call.
 - One more `git check-attr` call per `open` that selects any secret.

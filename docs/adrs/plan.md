@@ -558,7 +558,7 @@ strip = true
   - Holder listing from a temp `.git-crypt/keys` tree: non-hex names are skipped, and directories other than `0` are ignored.
 - Users parsing: comments, CRLF, duplicate key across users, invalid names.
 - `.gitignore` entry insertion (existing block, no block) and escaping.
-- Plaintext mode (ADR-0019): `amaga-mode` accepts `0600`, `600`, `0640`, `0604`, `0644` and `644`, and refuses execute bits, write for group or others, an owner without read-write, more than four digits, non-octal digits, `set`, `unset` and the empty value. The attribute wins over the replaced file's mode, which wins over `0600`. `atomic_write` with `0644` over a `0600` file leaves exactly `0644`.
+- Plaintext mode (ADR-0019): `amaga-mode` accepts `0600`, `600`, `0640`, `0604`, `0644` and `644`, and refuses execute bits, write for group or others, an owner without read-write, more than four digits, non-octal digits, `set`, `unset` and the empty value. The attribute wins over the replaced file's mode, which wins over `0600`. A replaced file's mode is clamped to `mode & 0o644 | 0o600`: `0666` and `0775` give `0644`, `0640` stays, `0400` gives `0600`.
 - Path normalisation and rejection (`\`, `.git/`, `.amaga/`, `.amaga`/`.amaga-tmp` names).
 - RFC 3339 formatting against known timestamps.
 - `KEY` classification (7, rules 1–3), email wrapping, and `--with-colons` parsing (7.4): one key, two keys, a key whose subkey `fpr` lines must not be taken as primaries.
@@ -680,11 +680,12 @@ git-crypt import (ADR-0018), in `crates/cli/tests/import_git_crypt.rs`. None of 
 70. `init_with_elgamal_only_key_fails_and_creates_nothing`: `init alice <age key> elgamal_only.asc` exits 1, `.amaga/` does not exist, `.gitattributes` and `.gitignore` are unchanged, and `init alice <age key>` then succeeds. Needs no gpg.
 71. `import_skips_a_holder_whose_key_cannot_be_encrypted_to` (gpg): `elgamal_only.asc` is imported into the temp GNUPGHOME and its primary fingerprint is a default holder. The import succeeds, stderr has `not imported` and the fingerprint, `users/` holds only alice's files, and the default members are `alice`.
 
-Plaintext mode (ADR-0019), in `crates/cli/tests/cli.rs`; 72 and 73 are Unix only:
+Plaintext mode (ADR-0019), in `crates/cli/tests/cli.rs`; 72, 73 and 75 are Unix only:
 
 72. `open_keeps_the_mode_of_a_plaintext_it_replaces`: after `add`, `chmod 0640` the plaintext and replace the ciphertext with `v2`. `open` writes `v2` and the mode stays `0640`.
 73. `open_applies_the_amaga_mode_attribute`: with `*.env amaga-mode=0644`, `open` of a closed `secret.env` gives `0644`. After `chmod 0600` and a new ciphertext, `open` gives `0644` again.
 74. `open_refuses_an_invalid_amaga_mode_and_writes_nothing`: `a.env` and `b.key` are closed. For `*.key` with `amaga-mode`, `-amaga-mode`, `amaga-mode=`, `=0755`, `=0666` and `=0400`, a bare `open` exits 1 with `amaga-mode` on stderr, and neither plaintext exists.
+75. `open_sets_the_amaga_mode_whatever_the_umask`: with `*.env amaga-mode=0644` and a closed `secret.env`, `open` run as `sh -c 'umask 077; exec "$0" open secret.env'` gives `0644`.
 
 ## 12. Implementation steps
 

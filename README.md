@@ -229,11 +229,13 @@ partition's current epoch is not wrapped to exactly the keys of the users its `m
 lists (for example after a hand-edited or merged membership change): run
 `rotate --partition <p>` first.
 
-`open` writes a plaintext with mode 0600 on Unix, or keeps the mode of the file it replaces. A
+`open` writes a plaintext with mode 0600 on Unix, or keeps the mode of the file it replaces
+(without execute, group or other write, or special bits). A
 service that reads a secret as another user needs a wider mode, set by path in
 `.gitattributes`: `secrets/app/* amaga-mode=0644`. The attribute wins over the old file's mode;
 allowed values are `0600`, `0640`, `0604` and `0644`, and `open` checks every one before it
-writes anything.
+writes anything. An in-sync plaintext is not rewritten, so a new attribute applies at the next
+`open` that writes the file (or after `close` then `open`).
 
 If a sealed but uncommitted `.amaga` is discarded with `git checkout` or `git reset`, the
 plaintext shows as outdated and is the only copy of that content: run `seal --force`, not
