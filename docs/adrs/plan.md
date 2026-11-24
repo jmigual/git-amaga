@@ -325,7 +325,7 @@ Path handling:
 - In no-argument mode the list leaves out, without a warning, secrets whose label names a partition that does not list the actor (5.7). Reading a label needs no key.
 
 Every ciphertext, plaintext and base-file write goes through one helper:
-1. Write `<path>.amaga-tmp`. On Unix, plaintext temp files are created with at most mode `0600`, then set to their exact mode (ADR-0019) once written.
+1. Write `<path>.amaga-tmp`. On Unix, plaintext temp files are created with at most mode `0600`, then, if the mode has group or other bits, set to it exactly once written (ADR-0019).
 2. `sync_all`.
 3. `std::fs::rename` (replaces the target on Windows too).
 
@@ -744,7 +744,7 @@ members = ["crates/core", "crates/cli"]
 resolver = "3"
 
 [workspace.package]
-version = "0.3.2"
+version = "0.4.0"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT"

@@ -19,11 +19,11 @@ the umask's mode, which made migrated repositories fail later and silently.
   attribute. `open` reads the attribute of every selected secret, in one `git check-attr` call,
   before it writes any plaintext, so one bad value writes nothing.
 - A mode with group or other bits is set on the temp file once its contents are written, before
-  the rename, so the umask does not change it and `path` never has the wrong mode. Until then the temp file is at
-  most owner read-write.
-- The mode of a replaced file is kept after a clamp, `existing & 0o644 | 0o600`: execute bits, write
-  for group or others and the special bits are dropped, and owner read-write is forced. So a kept
-  mode is always one `amaga-mode` could have set.
+  the rename, so the umask does not change it and `path` never has the wrong mode. Until then
+  the temp file is at most owner read-write.
+- The mode of a replaced file is kept after a clamp, `existing & 0o644 | 0o600`: execute bits,
+  write for group or others and the special bits are dropped, and owner read-write is forced. So
+  a kept mode is always one `amaga-mode` could have set.
 - On other platforms the attribute is still validated, but no mode is set.
 
 ## Alternatives

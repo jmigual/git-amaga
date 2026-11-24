@@ -57,8 +57,8 @@ pub(crate) fn existing(root: &Path, path: &str) -> Result<Option<u32>, Error> {
     }
 }
 
-/// Drops execute, group and other write and the special bits, and forces owner read-write, so a
-/// kept mode is always one `amaga-mode` could have set.
+// Drops execute, group and other write and the special bits, and forces owner read-write, so a
+// kept mode is always one `amaga-mode` could have set.
 #[cfg(unix)]
 fn clamp(mode: u32) -> u32 {
     mode & 0o644 | 0o600

@@ -20,7 +20,8 @@ plaintext. Members hold age keys or GPG keys (a custom `pgp` age stanza).
   `selection.rs` which secrets a command acts on · `files.rs` repo file helpers ·
   `outcome.rs` the result types (`Outcome`, `Warning`, `StatusReport`, …) · `context.rs`
   per-command `Context` (partitions, epochs, decrypt) · `mode.rs` the `amaga-mode` attribute and
-  plaintext mode · `secret.rs` header, partition label, age encrypt/decrypt, `next_header`, `plaintext_state`, base file · `gpg.rs` `.asc` validation,
+  plaintext mode · `secret.rs` header, partition label, age encrypt/decrypt, `next_header`,
+  `plaintext_state`, base file · `gpg.rs` `.asc` validation,
   `pgp` stanza, gpg subprocess · `users.rs` `.amaga/users/` loading · `keyring.rs` `KEY`
   resolution and gpg keyring lookup · `identity.rs` keygen,
   identity, actor · `paths.rs` path mapping, `.gitignore` block, atomic write · `git.rs` git
