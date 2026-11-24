@@ -130,6 +130,15 @@ cargo install --locked --git https://github.com/jmigual/git-amaga git-amaga
 
 With `git-amaga` on your `PATH`, `git amaga <command>` works too.
 
+The man pages (`git-amaga.1` and one per subcommand) are in `git-amaga-man.tar.gz` on each
+release; `cargo install` does not install them. On Linux and macOS, extract them into a `man1`
+directory on your `MANPATH` to make `git amaga --help` work (Git for Windows opens HTML help
+instead):
+
+```sh
+mkdir -p ~/.local/share/man/man1 && curl -fsSL https://github.com/jmigual/git-amaga/releases/latest/download/git-amaga-man.tar.gz | tar -xz -C ~/.local/share/man/man1
+```
+
 The library is published as [`git-amaga-core`](https://docs.rs/git-amaga-core).
 
 ## Quick start
