@@ -40,7 +40,7 @@ pub enum Error {
     GpgKeyRevoked,
 
     #[error(
-        "armored OpenPGP key has no usable encryption subkey (hint: `gpg --quick-add-key <fpr> default encr`)"
+        "armored OpenPGP key has no encryption subkey git-amaga can encrypt to, e.g. ElGamal (hint: `gpg --quick-add-key <fpr> default encr`)"
     )]
     GpgKeyNoEncryptionSubkey,
 
