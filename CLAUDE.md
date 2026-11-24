@@ -8,7 +8,8 @@ plaintext. Members hold age keys or GPG keys (a custom `pgp` age stanza).
 - `docs/adrs/README.md`: decision index. Read it first; open only the relevant ADRs.
 - Workspace (ADR-0014): `crates/core` is package `git-amaga-core` (the library) and `crates/cli`
   is package `git-amaga` (the binary). The core never prints; the CLI owns output and exit codes.
-- CLI: `crates/cli/src/main.rs` clap, dispatch and rendering of the core's results.
+- CLI: `crates/cli/src/cli.rs` clap definitions (also the source of the man pages,
+  `crates/cli/examples/man.rs`) · `crates/cli/src/main.rs` dispatch and rendering of the core's results.
 - Core, under `crates/core/src/`: `lib.rs` module list and re-exports · `commands.rs` `keygen`,
   `init`, `add`, `seal`, `open` and `close` · `status.rs` `status` · `dismiss.rs` `dismiss` ·
   `epoch.rs` epoch files,

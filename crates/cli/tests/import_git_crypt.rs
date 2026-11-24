@@ -263,6 +263,34 @@ fn import_exports_holder_from_keyring_and_names_it() {
     assert!(repo.path().join(".amaga/users/dave.asc").exists());
 }
 
+/// Test 71: a holder whose key has no encryption subkey git-amaga can encrypt to (ElGamal-only)
+/// is skipped with a warning, and the import still succeeds (ADR-0018).
+#[test]
+fn import_skips_a_holder_whose_key_cannot_be_encrypted_to() {
+    let Some(gpg_home) = GpgHome::new("import_skips_a_holder_whose_key_cannot_be_encrypted_to")
+    else {
+        return;
+    };
+    let elgamal = include_str!("../../core/tests/fixtures/elgamal_only.asc");
+    let fpr = "8CA4A8552AFB47BB9BA2C310759D0F6B310BC48F";
+    gpg_home.import_secret_key(elgamal);
+
+    let (repo, _keys, _identity_path) = simulated_repo(&[("default", fpr)]);
+    let import = repo.run_with_env(&["import-git-crypt"], &gpg_home.env());
+    import.assert_success();
+    let err = stderr(&import);
+    assert!(err.contains("not imported"), "{err}");
+    assert!(err.contains(fpr), "{err}");
+
+    let mut users: Vec<_> = std::fs::read_dir(repo.path().join(".amaga/users"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    users.sort();
+    assert_eq!(users, ["alice.asc", "alice.txt"]);
+    assert_eq!(read(&repo, ".amaga/partitions/default/members"), b"alice\n");
+}
+
 /// Test 69: a repository set up and locked by the real git-crypt imports once unlocked.
 #[test]
 fn import_real_git_crypt_repo() {

@@ -418,8 +418,8 @@ fn user_add_refuses_duplicate_key_and_writes_nothing() {
     assert_eq!(user_files(&repo), ["alice.txt"]);
 }
 
-/// Test 30: expired, revoked, sign-only and third-party-certified keys are each refused and
-/// `.amaga/users` is unchanged. Needs no gpg.
+/// Test 30: expired, revoked, sign-only, third-party-certified and ElGamal-only keys are each
+/// refused and `.amaga/users` is unchanged. Needs no gpg.
 #[test]
 fn user_add_rejects_unusable_gpg_keys() {
     let (repo, _identity_path) = repo_with_alice();
@@ -441,6 +441,10 @@ fn user_add_rejects_unusable_gpg_keys() {
         (
             "third_party",
             include_str!("../../core/tests/fixtures/third_party.asc"),
+        ),
+        (
+            "elgamal_only",
+            include_str!("../../core/tests/fixtures/elgamal_only.asc"),
         ),
     ];
     for (name, armored) in fixtures {

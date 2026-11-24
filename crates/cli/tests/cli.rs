@@ -213,6 +213,38 @@ fn init_fails_on_unreadable_gitignore_and_creates_nothing() {
     assert!(!repo.path().join(".amaga").exists());
 }
 
+/// Test 70: an ElGamal-only GPG key is refused before `init` writes anything, so a retry works.
+#[test]
+fn init_with_elgamal_only_key_fails_and_creates_nothing() {
+    let repo = Repo::new();
+    let keygen = repo.run(&["keygen", "id.txt"]);
+    keygen.assert_success();
+    let age_key = String::from_utf8_lossy(&keygen.stdout).trim().to_string();
+    let asc_path = repo.path().join("elgamal.asc");
+    std::fs::write(
+        &asc_path,
+        include_str!("../../core/tests/fixtures/elgamal_only.asc"),
+    )
+    .unwrap();
+    std::fs::write(repo.path().join(".gitattributes"), "*.txt text\n").unwrap();
+    std::fs::write(repo.path().join(".gitignore"), "*.log\n").unwrap();
+
+    repo.run(&["init", "alice", &age_key, asc_path.to_str().unwrap()])
+        .assert_failure();
+
+    assert!(!repo.path().join(".amaga").exists());
+    assert_eq!(
+        std::fs::read_to_string(repo.path().join(".gitattributes")).unwrap(),
+        "*.txt text\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(repo.path().join(".gitignore")).unwrap(),
+        "*.log\n"
+    );
+
+    repo.run(&["init", "alice", &age_key]).assert_success();
+}
+
 #[test]
 fn init_deduplicates_a_key_given_twice() {
     let repo = Repo::new();

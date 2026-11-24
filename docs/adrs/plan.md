@@ -150,7 +150,7 @@ repo/
   - `SignedPublicKey::from_string_many` yields exactly one key.
   - `verify_bindings()` succeeds. It also rejects third-party certifications, so the error hint is `gpg --export --armor --export-options export-minimal <fpr>`. Verified: a key certified by another key fails, and its export-minimal export passes.
   - The primary key has no `KeyRevocation` signature in `details.revocation_signatures`.
-  - The **encryption subkey** is the newest (`created_at`) subkey that has no `SubkeyRevocation` signature, whose newest `SubkeyBinding` signature has `key_flags().encrypt_comms() || encrypt_storage()`, and whose `algorithm().can_encrypt()` is true. If there is none, error with the hint `gpg --quick-add-key <fpr> default encr`. Encrypting to the primary key is not supported.
+  - The **encryption subkey** is the newest (`created_at`) subkey that has no `SubkeyRevocation` signature, whose newest `SubkeyBinding` signature has `key_flags().encrypt_comms() || encrypt_storage()`, and that rPGP can encrypt to, checked by a trial `encrypt_to_key` with the builder `PgpRecipient` uses (so ElGamal subkeys are skipped). If there is none, error with the hint `gpg --quick-add-key <fpr> default encr`. Encrypting to the primary key is not supported.
   - Expiry is not checked here (change 18).
 - Key string (used in headers and comparisons): `age1…`, or `pgp:<FPR>` with `<FPR>` the encryption subkey fingerprint as uppercase hex (`format!("{:X}", subkey.fingerprint())`, the same form gpg prints).
 - Validation errors:
@@ -563,7 +563,7 @@ strip = true
 - `KEY` classification (7, rules 1–3), email wrapping, and `--with-colons` parsing (7.4): one key, two keys, a key whose subkey `fpr` lines must not be taken as primaries.
 - `gpg.rs`, from committed fixtures in `tests/fixtures/` (test-only keys, loaded with `include_str!`):
   - `.asc` validation: a valid cv25519 key, the same key with CRLF line endings (autocrlf), and a valid RSA key load; a sign-only key, a revoked key, a key with a third-party certification, two keys in one file, and garbage are each rejected with their own error variant. An expired key loads but fails the add-time check.
-  - Subkey selection: with two encryption subkeys, the newest non-revoked one is chosen.
+  - Subkey selection: with two encryption subkeys, the newest non-revoked one is chosen. An ElGamal-only key is rejected with `GpgKeyNoEncryptionSubkey`; a newer ElGamal subkey is skipped for an older cv25519 one, which then wraps a file key.
   - Stanza round trip without gpg: wrap a file key, then decrypt the body with rPGP (`Message::from_bytes(..)?.decrypt(&"".into(), &secret_key_fixture)`) and get the same 16 bytes.
   - A file encrypted to X25519 + `pgp` decrypts with the x25519 identity alone. `GpgIdentity` returns `None` for other tags and for unknown fingerprints.
   - With gpg: a `GpgIdentity` in a temp GNUPGHOME (below) unwraps an rPGP-written stanza.
@@ -611,7 +611,7 @@ Each test below must fail against an implementation lacking the behaviour:
 27. `no_identity_error_lists_members` (`NotAMember` exit code, and both member names appear)
 28. `init_with_gpg_key_file` (gpg): `init alice key.asc` with no age identity; then `add` and `open` work through gpg.
 29. `age_member_seals_for_gpg_member_without_gpg` (gpg, Unix only): the age member runs with a PATH holding only a `git` symlink and `seal`s; the GPG member then `open`s with gpg.
-30. `user_add_rejects_unusable_gpg_keys`: the expired, revoked, sign-only and third-party fixtures each exit 1, and `users/` is unchanged. Needs no gpg.
+30. `user_add_rejects_unusable_gpg_keys`: the expired, revoked, sign-only, third-party and ElGamal-only fixtures each exit 1, and `users/` is unchanged. Needs no gpg.
 31. `gpg_subkey_replacement_flags_exposure` (gpg): add a new encryption subkey, revoke the old one, and commit the re-exported `.asc`. `status` then reports stale, and `rotate` puts `pgp:<old FPR>` in `exposed_to`.
 32. `gpg_decrypt_failure_writes_nothing` (gpg): after `add`, delete only the encryption subkey's secret (`gpg --batch --yes --delete-secret-keys '<SUBFPR>!'`). The member is still detected as held, `open` exits 1, and no plaintext is written.
 
@@ -676,6 +676,8 @@ git-crypt import (ADR-0018), in `crates/cli/tests/import_git_crypt.rs`. None of 
 67. `import_refuses_repo_with_secrets`: after one `add`, the import exits 1, and nothing is written.
 68. `import_exports_holder_from_keyring_and_names_it` (gpg): a key `Dave Smith <dave.smith@example.invalid>` in the temp GNUPGHOME is a default holder. Without `--name` it becomes `users/dave.smith.asc`, and stdout has `dave.smith: GPG key <primary FPR>`. In a fresh repository, `--name <FPR>=dave` gives `users/dave.asc`. `--name <another FPR>=x` exits 1.
 69. `import_real_git_crypt_repo` (gpg and git-crypt; prints a skip notice when either is missing): `git-crypt init`, `git-crypt add-gpg-user --trusted <FPR>` with the temp GNUPGHOME (passed only to child processes), `secret.env filter=git-crypt diff=git-crypt`, commit. After `git-crypt lock` the import exits 1 (locked); after `git-crypt unlock` it succeeds. The derived member holds the GPG key, and alice decrypts `secret.env.amaga` to the original bytes. CI installs git-crypt on Linux (`sudo apt-get install -y git-crypt`, 16.10); Windows skips.
+70. `init_with_elgamal_only_key_fails_and_creates_nothing`: `init alice <age key> elgamal_only.asc` exits 1, `.amaga/` does not exist, `.gitattributes` and `.gitignore` are unchanged, and `init alice <age key>` then succeeds. Needs no gpg.
+71. `import_skips_a_holder_whose_key_cannot_be_encrypted_to` (gpg): `elgamal_only.asc` is imported into the temp GNUPGHOME and its primary fingerprint is a default holder. The import succeeds, stderr has `not imported` and the fingerprint, `users/` holds only alice's files, and the default members are `alice`.
 
 ## 12. Implementation steps
 
@@ -734,7 +736,7 @@ members = ["crates/core", "crates/cli"]
 resolver = "3"
 
 [workspace.package]
-version = "0.3.1"
+version = "0.3.2"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT"
