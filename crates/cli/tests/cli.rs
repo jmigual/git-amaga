@@ -691,6 +691,103 @@ fn open_writes_plaintext_with_mode_0600() {
     assert_eq!(mode & 0o777, 0o600);
 }
 
+#[cfg(unix)]
+fn mode_of(repo: &Repo, path: &str) -> u32 {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(repo.path().join(path))
+        .unwrap()
+        .permissions()
+        .mode()
+        & 0o777
+}
+
+#[cfg(unix)]
+fn set_mode(repo: &Repo, path: &str, mode: u32) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(
+        repo.path().join(path),
+        std::fs::Permissions::from_mode(mode),
+    )
+    .unwrap();
+}
+
+fn append_attribute(repo: &Repo, line: &str) {
+    let attributes = repo.path().join(".gitattributes");
+    let original = std::fs::read_to_string(&attributes).unwrap();
+    std::fs::write(&attributes, format!("{original}{line}\n")).unwrap();
+}
+
+/// Test 72: `open` keeps the mode of a plaintext it replaces (ADR-0019).
+#[cfg(unix)]
+#[test]
+fn open_keeps_the_mode_of_a_plaintext_it_replaces() {
+    let (repo, _identity_path) = repo_with_alice();
+    std::fs::write(repo.path().join("secret.env"), b"v1").unwrap();
+    repo.run(&["add", "secret.env"]).assert_success();
+    set_mode(&repo, "secret.env", 0o640);
+
+    rotate_ciphertext(&repo, b"v2");
+    repo.run(&["open", "secret.env"]).assert_success();
+
+    assert_eq!(
+        std::fs::read(repo.path().join("secret.env")).unwrap(),
+        b"v2"
+    );
+    assert_eq!(mode_of(&repo, "secret.env"), 0o640);
+}
+
+/// Test 73: the `amaga-mode` attribute sets the mode of a new plaintext and wins over the mode
+/// of one `open` replaces (ADR-0019).
+#[cfg(unix)]
+#[test]
+fn open_applies_the_amaga_mode_attribute() {
+    let (repo, _identity_path) = repo_with_alice();
+    append_attribute(&repo, "*.env amaga-mode=0644");
+    std::fs::write(repo.path().join("secret.env"), b"v1").unwrap();
+    repo.run(&["add", "secret.env"]).assert_success();
+    std::fs::remove_file(repo.path().join("secret.env")).unwrap();
+
+    repo.run(&["open", "secret.env"]).assert_success();
+    assert_eq!(mode_of(&repo, "secret.env"), 0o644);
+
+    set_mode(&repo, "secret.env", 0o600);
+    rotate_ciphertext(&repo, b"v2");
+    repo.run(&["open", "secret.env"]).assert_success();
+    assert_eq!(mode_of(&repo, "secret.env"), 0o644);
+}
+
+/// Test 74: an `amaga-mode` that is not owner read-write with at most read for the rest is
+/// refused before `open` writes any plaintext (ADR-0019).
+#[test]
+fn open_refuses_an_invalid_amaga_mode_and_writes_nothing() {
+    let (repo, _identity_path) = repo_with_alice();
+    for name in ["a.env", "b.key"] {
+        std::fs::write(repo.path().join(name), name).unwrap();
+        repo.run(&["add", name]).assert_success();
+        std::fs::remove_file(repo.path().join(name)).unwrap();
+    }
+    let attributes = repo.path().join(".gitattributes");
+    let original = std::fs::read_to_string(&attributes).unwrap();
+
+    for attr in [
+        "amaga-mode",
+        "-amaga-mode",
+        "amaga-mode=",
+        "amaga-mode=0755",
+        "amaga-mode=0666",
+        "amaga-mode=0400",
+    ] {
+        std::fs::write(&attributes, format!("{original}*.key {attr}\n")).unwrap();
+        let open = repo.run(&["open"]);
+        open.assert_failure();
+        let stderr = String::from_utf8_lossy(&open.stderr);
+        assert!(stderr.contains("amaga-mode"), "{attr}: {stderr}");
+        for name in ["a.env", "b.key"] {
+            assert!(!repo.path().join(name).exists(), "{attr}: {name}");
+        }
+    }
+}
+
 /// An unreadable plaintext is an error, not an absent one that `open` overwrites.
 #[cfg(unix)]
 #[test]

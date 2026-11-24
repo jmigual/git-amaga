@@ -204,7 +204,7 @@ Use `git amaga <command>` or `git-amaga <command>`.
 | `init <name> [KEY…]` | Set up the repository with you as the first member; without a `KEY` it uses your age identity |
 | `add [--force] [--partition <p>] <path>…` | Encrypt a new secret and make sure its plaintext is ignored; the partition is `--partition`, else the `amaga-partition` attribute, else `default` |
 | `seal [--force] [<path>…]` | Re-encrypt local edits (alias `lock`) |
-| `open [--force] [<path>…]` | Decrypt secrets to local plaintext (alias `unlock`) |
+| `open [--force] [<path>…]` | Decrypt secrets to local plaintext (alias `unlock`); the mode is the `amaga-mode` attribute, else the replaced file's, else 0600 |
 | `close [<path>…]` | Delete local plaintext that is already sealed (alias `shred`; deletes, does not overwrite) |
 | `status` | Members, partitions, per-secret state, problems and secrets that need rotation; exits 1 on errors |
 | `user add [--partition <p>]… <name> <KEY>…` | Add a member to `default`, or to the given partitions: re-wrap their current epoch keys to them; no secret is rewritten |
@@ -228,6 +228,12 @@ overwrite diverged files unless `--force` is given. A command that writes into a
 partition's current epoch is not wrapped to exactly the keys of the users its `members` file
 lists (for example after a hand-edited or merged membership change): run
 `rotate --partition <p>` first.
+
+`open` writes a plaintext with mode 0600 on Unix, or keeps the mode of the file it replaces. A
+service that reads a secret as another user needs a wider mode, set by path in
+`.gitattributes`: `secrets/app/* amaga-mode=0644`. The attribute wins over the old file's mode;
+allowed values are `0600`, `0640`, `0604` and `0644`, and `open` checks every one before it
+writes anything.
 
 If a sealed but uncommitted `.amaga` is discarded with `git checkout` or `git reset`, the
 plaintext shows as outdated and is the only copy of that content: run `seal --force`, not

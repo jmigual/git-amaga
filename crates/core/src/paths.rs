@@ -9,8 +9,9 @@ use std::path::{Path, PathBuf};
 use crate::error::Error;
 
 /// Temp file + `sync_all` + rename (plan 7), so `path` never holds a partial write. `mode` sets
-/// Unix permissions. A stale temp file is removed first (`mode` applies only on create; a symlink
-/// would be followed) and the temp file is cleaned up on failure.
+/// the exact Unix permissions, whatever the umask, once the contents are written; until then the
+/// file is at most owner read-write. A stale temp file is removed first (`mode` applies only on
+/// create; a symlink would be followed) and the temp file is cleaned up on failure.
 pub fn atomic_write(path: &Path, contents: &[u8], mode: Option<u32>) -> io::Result<()> {
     let mut tmp_name = path.as_os_str().to_owned();
     tmp_name.push(".amaga-tmp");
@@ -25,6 +26,7 @@ pub fn atomic_write(path: &Path, contents: &[u8], mode: Option<u32>) -> io::Resu
     let result = (|| -> io::Result<()> {
         let mut file = create_tmp_file(&tmp_path, mode)?;
         file.write_all(contents)?;
+        set_mode(&file, mode)?;
         file.sync_all()?;
         drop(file);
         fs::rename(&tmp_path, path)
@@ -41,7 +43,7 @@ fn create_tmp_file(path: &Path, mode: Option<u32>) -> io::Result<fs::File> {
     fs::OpenOptions::new()
         .write(true)
         .create_new(true)
-        .mode(mode.unwrap_or(0o666))
+        .mode(mode.map_or(0o666, |m| m & 0o600))
         .open(path)
 }
 
@@ -51,6 +53,20 @@ fn create_tmp_file(path: &Path, _mode: Option<u32>) -> io::Result<fs::File> {
         .write(true)
         .create_new(true)
         .open(path)
+}
+
+#[cfg(unix)]
+fn set_mode(file: &fs::File, mode: Option<u32>) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    match mode {
+        Some(m) => file.set_permissions(fs::Permissions::from_mode(m)),
+        None => Ok(()),
+    }
+}
+
+#[cfg(not(unix))]
+fn set_mode(_file: &fs::File, _mode: Option<u32>) -> io::Result<()> {
+    Ok(())
 }
 
 /// Repository-relative plaintext and ciphertext paths for a `<path>` argument (plan 7).
@@ -658,6 +674,22 @@ mod tests {
 
         let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn atomic_write_sets_the_exact_mode_over_an_existing_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("out.txt");
+        atomic_write(&path, b"old", Some(0o600)).unwrap();
+
+        atomic_write(&path, b"new", Some(0o644)).unwrap();
+
+        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o644);
+        assert_eq!(fs::read(&path).unwrap(), b"new");
     }
 
     #[cfg(unix)]
