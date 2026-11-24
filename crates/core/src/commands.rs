@@ -9,7 +9,7 @@ use crate::files::{ensure_ignored, read_plaintext, read_repo_file, write_repo_fi
 use crate::keyring::{GpgKey, ResolvedKeys};
 use crate::outcome::{Outcome, Warning};
 use crate::selection::secret_paths_for;
-use crate::{Error, audit, git, identity, keyring, partition, paths, secret, users};
+use crate::{Error, audit, git, identity, keyring, mode, partition, paths, secret, users};
 
 const GITATTRIBUTES_LINES: [&str; 4] = [
     "*.amaga binary",
@@ -219,7 +219,11 @@ pub fn cmd_open(dir: &Path, force: bool, args: &[String]) -> Result<Outcome, Err
     let mut ctx = Context::load(dir)?;
     let mut outcome = Outcome::default();
 
-    for sp in secret_paths_for(&ctx, args, false, &mut outcome.warnings)? {
+    let secrets = secret_paths_for(&ctx, args, false, &mut outcome.warnings)?;
+    // Every attribute is checked before anything is written (ADR-0019).
+    let plaintexts: Vec<&str> = secrets.iter().map(|sp| sp.plaintext.as_str()).collect();
+    let attributes = mode::attributes(&ctx.root, &plaintexts)?;
+    for (sp, attribute) in secrets.into_iter().zip(attributes) {
         let ciphertext = read_repo_file(&ctx.root, &sp.ciphertext)?;
         let body = ctx.decrypt(&sp.ciphertext, &ciphertext)?.body;
         if git::is_tracked(&ctx.root, &sp.plaintext)? {
@@ -244,7 +248,8 @@ pub fn cmd_open(dir: &Path, force: bool, args: &[String]) -> Result<Outcome, Err
             _ => {}
         }
 
-        write_repo_file(&ctx.root, &sp.plaintext, &body, Some(0o600))?;
+        let file_mode = mode::choose(attribute, mode::existing(&ctx.root, &sp.plaintext)?);
+        write_repo_file(&ctx.root, &sp.plaintext, &body, Some(file_mode))?;
         ctx.set_base(&sp.plaintext, &body)?;
         outcome.changed.push(sp.plaintext);
     }

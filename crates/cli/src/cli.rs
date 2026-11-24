@@ -55,6 +55,9 @@ pub(crate) enum Command {
         paths: Vec<String>,
     },
     /// Decrypt secrets to local plaintext.
+    ///
+    /// A plaintext gets the mode of its `amaga-mode` attribute (0600, 0640, 0604 or 0644), else
+    /// the mode of the file it replaces, else 0600.
     #[command(visible_alias = "unlock")]
     Open {
         /// Discard local edits and take the repository version.

@@ -18,6 +18,7 @@ pub mod identity;
 mod import;
 mod keyring;
 mod membership;
+mod mode;
 mod outcome;
 pub mod partition;
 mod partition_commands;

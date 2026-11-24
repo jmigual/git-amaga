@@ -8,9 +8,11 @@ use std::path::{Path, PathBuf};
 
 use crate::error::Error;
 
-/// Temp file + `sync_all` + rename (plan 7), so `path` never holds a partial write. `mode` sets
-/// Unix permissions. A stale temp file is removed first (`mode` applies only on create; a symlink
-/// would be followed) and the temp file is cleaned up on failure.
+/// Temp file + `sync_all` + rename (plan 7), so `path` never holds a partial write. A `mode`
+/// with group or other bits is set exactly, whatever the umask, once the contents are written;
+/// until then the file is at most owner read-write. A narrower `mode` is only the create mode, so
+/// no `chmod` is made. A stale temp file is removed first (`mode` applies only on create; a
+/// symlink would be followed) and the temp file is cleaned up on failure.
 pub fn atomic_write(path: &Path, contents: &[u8], mode: Option<u32>) -> io::Result<()> {
     let mut tmp_name = path.as_os_str().to_owned();
     tmp_name.push(".amaga-tmp");
@@ -25,6 +27,7 @@ pub fn atomic_write(path: &Path, contents: &[u8], mode: Option<u32>) -> io::Resu
     let result = (|| -> io::Result<()> {
         let mut file = create_tmp_file(&tmp_path, mode)?;
         file.write_all(contents)?;
+        set_mode(&file, mode)?;
         file.sync_all()?;
         drop(file);
         fs::rename(&tmp_path, path)
@@ -41,7 +44,7 @@ fn create_tmp_file(path: &Path, mode: Option<u32>) -> io::Result<fs::File> {
     fs::OpenOptions::new()
         .write(true)
         .create_new(true)
-        .mode(mode.unwrap_or(0o666))
+        .mode(mode.map_or(0o666, |m| m & 0o600))
         .open(path)
 }
 
@@ -51,6 +54,20 @@ fn create_tmp_file(path: &Path, _mode: Option<u32>) -> io::Result<fs::File> {
         .write(true)
         .create_new(true)
         .open(path)
+}
+
+#[cfg(unix)]
+fn set_mode(file: &fs::File, mode: Option<u32>) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    match mode {
+        Some(m) if m & 0o077 != 0 => file.set_permissions(fs::Permissions::from_mode(m)),
+        _ => Ok(()),
+    }
+}
+
+#[cfg(not(unix))]
+fn set_mode(_file: &fs::File, _mode: Option<u32>) -> io::Result<()> {
+    Ok(())
 }
 
 /// Repository-relative plaintext and ciphertext paths for a `<path>` argument (plan 7).

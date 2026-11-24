@@ -266,6 +266,11 @@ pub enum Error {
     )]
     PartitionAttributeInvalid(String),
 
+    #[error(
+        "'{0}': the `amaga-mode` attribute must be 0600, 0640, 0604 or 0644 (owner read-write, at most read for group and others)"
+    )]
+    ModeAttributeInvalid(String),
+
     #[error("partition '{0}' already exists")]
     PartitionExists(String),
 
