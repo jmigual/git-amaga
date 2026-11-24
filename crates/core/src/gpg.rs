@@ -7,7 +7,10 @@ use std::process::{Command, Stdio};
 
 use age::secrecy::ExposeSecret;
 use age_core::format::{FileKey, Stanza};
-use pgp::composed::{Deserializable, MessageBuilder, SignedPublicKey, SignedPublicSubKey};
+use pgp::composed::{
+    Deserializable, DummyReader, EncryptionSeipdV1, MessageBuilder, SignedPublicKey,
+    SignedPublicSubKey,
+};
 use pgp::crypto::sym::SymmetricKeyAlgorithm;
 use pgp::packet::{Signature, SignatureType};
 use pgp::types::{KeyDetails, Timestamp};
@@ -102,7 +105,8 @@ fn reject_concatenated_armor(armored: &str) -> Result<(), CrateError> {
     Ok(())
 }
 
-// Newest non-revoked encryption-capable subkey (plan 5.1); expiry is not considered.
+// Newest non-revoked encryption-flagged subkey rPGP can encrypt to, checked by a trial encryption
+// (plan 5.1); expiry is not considered.
 fn select_encryption_subkey(key: &SignedPublicKey) -> Option<SignedPublicSubKey> {
     key.public_subkeys
         .iter()
@@ -118,10 +122,19 @@ fn select_encryption_subkey(key: &SignedPublicKey) -> Option<SignedPublicSubKey>
                 return false;
             };
             let flags = binding.key_flags();
-            (flags.encrypt_comms() || flags.encrypt_storage()) && sk.key.algorithm().can_encrypt()
+            (flags.encrypt_comms() || flags.encrypt_storage())
+                && message_builder(&[0; 16])
+                    .encrypt_to_key(&mut rand::thread_rng(), sk)
+                    .is_ok()
         })
         .max_by_key(|sk| sk.key.created_at().as_secs())
         .cloned()
+}
+
+// The builder `PgpRecipient` encrypts with, so the subkey check runs the code encryption runs.
+fn message_builder(data: &[u8]) -> MessageBuilder<'static, DummyReader, EncryptionSeipdV1> {
+    MessageBuilder::from_bytes("", data.to_vec())
+        .seipd_v1(rand::thread_rng(), SymmetricKeyAlgorithm::AES256)
 }
 
 fn newest_binding(signatures: &[Signature]) -> Option<&Signature> {
@@ -185,8 +198,7 @@ impl age::Recipient for PgpRecipient {
         file_key: &FileKey,
     ) -> Result<(Vec<Stanza>, HashSet<String>), age::EncryptError> {
         let mut rng = rand::thread_rng();
-        let mut builder = MessageBuilder::from_bytes("", file_key.expose_secret().to_vec())
-            .seipd_v1(&mut rng, SymmetricKeyAlgorithm::AES256);
+        let mut builder = message_builder(file_key.expose_secret());
         builder
             .encrypt_to_key(&mut rng, &self.subkey)
             .map_err(|e| age::EncryptError::Io(io::Error::other(e.to_string())))?;
@@ -397,6 +409,8 @@ mod tests {
             "expired" => include_str!("../tests/fixtures/expired.asc"),
             "subkey_expired" => include_str!("../tests/fixtures/subkey_expired.asc"),
             "two_subkeys" => include_str!("../tests/fixtures/two_subkeys.asc"),
+            "elgamal_only" => include_str!("../tests/fixtures/elgamal_only.asc"),
+            "elgamal_newest" => include_str!("../tests/fixtures/elgamal_newest.asc"),
             other => panic!("unknown fixture {other}"),
         }
     }
@@ -481,6 +495,23 @@ fpr:::::::::3333333333333333333333333333333333333333:\n";
             validate(fixture("sign_only")),
             Err(CrateError::GpgKeyNoEncryptionSubkey)
         ));
+    }
+
+    #[test]
+    fn rejects_elgamal_only_key() {
+        assert!(matches!(
+            validate(fixture("elgamal_only")),
+            Err(CrateError::GpgKeyNoEncryptionSubkey)
+        ));
+    }
+
+    #[test]
+    fn skips_elgamal_subkey_for_a_supported_one() {
+        // The ElGamal subkey is newer, so only the trial encryption keeps it from being picked.
+        let asc = validate(fixture("elgamal_newest")).unwrap();
+        assert_eq!(asc.fpr, "4509204D06D02AC3826365257BA2D28C167261AD");
+        let file_key = FileKey::new(Box::new([7u8; 16]));
+        assert!(PgpRecipient::new(&asc).wrap_file_key(&file_key).is_ok());
     }
 
     #[test]

@@ -26,7 +26,8 @@ rotated retroactively: everyone who held it can read the history.
   - The holders are the fingerprints in the `.git-crypt/keys/<key>/0/*.gpg` file names.
   - A fingerprint that matches an existing member's primary key or subkey reuses that member.
   - Otherwise the key is exported from the local keyring (ADR-0013). A key that cannot be
-    exported or used (not in the keyring, revoked, expired, or gpg missing) is skipped with a
+    exported or used (not in the keyring, revoked, expired, with no encryption subkey
+    git-amaga can encrypt to, e.g. ElGamal-only, or gpg missing) is skipped with a
     warning and never added.
   - The name comes from `--name`. Without it, the name is the local part of the email in the
     first user ID, normalised to the name rule, with `-2`, `-3`… appended on a collision; with
