@@ -8,7 +8,7 @@ Encrypted secret files in Git, shared with a team through age or GPG keys.
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/jmigual/git-amaga/blob/main/LICENSE)
 [![MSRV 1.88](https://img.shields.io/badge/MSRV-1.88-orange.svg)](https://github.com/jmigual/git-amaga/blob/main/Cargo.toml)
 
-> **Status: 0.3.1, not audited.** The on-disk formats and commands may still change before 1.0.
+> **Status: 0.3.2, not audited.** The on-disk formats and commands may still change before 1.0.
 > 0.2.0 and later (format version 2) cannot read repositories written by 0.1.0.
 > Read [Security model and limitations](#security-model-and-limitations) before trusting it with
 > production secrets.
@@ -129,6 +129,15 @@ cargo install --locked --git https://github.com/jmigual/git-amaga git-amaga
 ```
 
 With `git-amaga` on your `PATH`, `git amaga <command>` works too.
+
+The man pages (`git-amaga.1` and one per subcommand) are in `git-amaga-man.tar.gz` on each
+release; `cargo install` does not install them. On Linux and macOS, extract them into a `man1`
+directory on your `MANPATH` to make `git amaga --help` work (Git for Windows opens HTML help
+instead):
+
+```sh
+mkdir -p ~/.local/share/man/man1 && curl -fsSL https://github.com/jmigual/git-amaga/releases/latest/download/git-amaga-man.tar.gz | tar -xz -C ~/.local/share/man/man1
+```
 
 The library is published as [`git-amaga-core`](https://docs.rs/git-amaga-core).
 

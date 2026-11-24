@@ -11,7 +11,8 @@ file is, how a key is identified in headers, and when expiry matters.
   which rejects third-party certifications, so keys are exported with
   `--export-options export-minimal` (plan.md §5.1). It is stored byte-for-byte.
 - A key is identified by its **encryption subkey** fingerprint, `pgp:<FPR>` (the newest
-  non-revoked encryption-capable subkey). Encrypting to a primary key is unsupported.
+  non-revoked encryption subkey that rPGP can encrypt to, checked by a trial encryption; ElGamal
+  is skipped). Encrypting to a primary key is unsupported.
 - Structure, signatures and revocation are checked on every load; expiry only at
   `init`/`user add` (plan.md §1 change 18, §2 decision 9).
 
